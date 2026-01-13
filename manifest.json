@@ -1,0 +1,75 @@
+{
+  "name": "Easy Stock POS - Point of Sale Solution",
+  "short_name": "POS Solution",
+  "description": "Complete Point of Sale system for businesses",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "any",
+  "theme_color": "#ffffff",
+  "background_color": "#ffffff",
+  "lang": "en-US",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "icon512_rounded.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon512_rounded.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon512_maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon512_maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["business", "productivity", "finance"],
+  "screenshots": [
+    {
+      "src": "icon512_rounded.png",
+      "sizes": "540x720",
+      "type": "image/png",
+      "form_factor": "narrow"
+    },
+    {
+      "src": "icon512_rounded.png",
+      "sizes": "1024x768",
+      "type": "image/png",
+      "form_factor": "wide"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "POS Terminal",
+      "short_name": "POS",
+      "description": "Open the main POS interface",
+      "url": "/home.php",
+      "icons": [
+        {
+          "src": "icon512_rounded.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "prefer_related_applications": false,
+  "related_applications": [],
+  "edge_side_panel": {
+    "preferred_width": 400
+  }
+}

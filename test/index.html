@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>POS System</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1>Simple POS System</h1>
+
+  <section>
+    <h2>Add Product</h2>
+    <form id="productForm">
+      <input type="text" id="productName" placeholder="Product Name" required>
+      <input type="number" id="productPrice" placeholder="Price" required>
+      <button type="submit">Add Product</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Make Sale</h2>
+    <select id="productSelect"></select>
+    <input type="number" id="quantity" value="1" min="1">
+    <select id="paymentMethod">
+      <option value="cash">Cash</option>
+      <option value="eft">EFT</option>
+      <option value="credit">Credit</option>
+    </select>
+    <button onclick="makeSale()">Process Sale</button>
+  </section>
+
+  <section>
+    <h2>Dashboard</h2>
+    <p>Total Cash in Till: N$ <span id="cashTill">0</span></p>
+    <p>Net Profit: N$ <span id="netProfit">0</span></p>
+  </section>
+
+  <script src="script.js"></script>
+</body>
+</html>

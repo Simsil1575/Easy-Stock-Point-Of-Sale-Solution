@@ -1,0 +1,2775 @@
+<?php
+
+session_start();
+
+// Set timezone to Central Africa Time (CAT)
+date_default_timezone_set('Africa/Harare');
+
+// Check if user is logged in
+if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SESSION['role'])) {
+    // Redirect to login page if not logged in
+    header("Location: ../");
+    exit();
+}
+
+// Check activation status with expiration
+require_once 'activation_helper.php';
+$activationCheck = checkActivationStatus();
+if ($activationCheck['status'] === 'not_activated' || $activationCheck['status'] === 'expired') {
+    header('Location: settings');
+    exit();
+}
+
+// Get business closing time from business_info
+$businessInfo = [];
+try {
+    $businessInfoDb = new PDO('sqlite:info.db');
+    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $closingTime = $businessInfo['closing_time'] ?? '00:00'; // Default to 00:00 if not set
+} catch (PDOException $e) {
+    // Default closing time if DB error
+    $closingTime = '00:00';
+}
+
+// Database connection
+$db = new PDO('sqlite:pos.db');
+if ($db->errorCode()) {
+    die("Connection failed: " . $db->errorInfo()[2]);
+}
+
+// Helper function to get username from user_id or return username if already a string
+function getUsernameById($userId) {
+    if (empty($userId)) return 'Unknown';
+    
+    // If it's already a username (not numeric), return it as is
+    if (!is_numeric($userId)) {
+        return $userId;
+    }
+    
+    try {
+        $userDb = new PDO('sqlite:user.db');
+        $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        
+        $stmt = $userDb->prepare("SELECT username FROM users WHERE id = ?");
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        return $user ? $user['username'] : 'User #' . $userId;
+    } catch (Exception $e) {
+        return 'User #' . $userId;
+    }
+}
+
+// Calculate business day boundaries based on closing time
+$closingHour = (int)substr($closingTime, 0, 2);
+$closingMinute = (int)substr($closingTime, 3, 2);
+
+// If closing time is after midnight (e.g., 2:00 AM), we need to consider transactions
+// that happened after midnight but before closing time as part of the previous day
+$isAfterMidnight = $closingHour < 12;
+
+// Prepare date calculation snippet for SQL
+$dateSql = "
+    CASE 
+        WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+        THEN date(datetime(created_at, '-1 day'))
+        ELSE date(created_at)
+    END AS business_date
+";
+
+// Optimized: Single query to get all distinct dates with better performance
+$distinctDatesQuery = $db->prepare("
+    WITH all_dates AS (
+        SELECT DISTINCT
+            CASE 
+                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(created_at, '-1 day'))
+                ELSE date(created_at)
+            END AS business_date
+        FROM orders
+        WHERE created_at IS NOT NULL
+        
+        UNION
+        
+        SELECT DISTINCT
+            CASE 
+                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(created_at, '-1 day'))
+                ELSE date(created_at)
+            END AS business_date
+        FROM credit_sales
+        WHERE created_at IS NOT NULL
+        
+        UNION
+        
+        SELECT DISTINCT
+            CASE 
+                WHEN strftime('%H:%M', payment_date) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(payment_date, '-1 day'))
+                ELSE date(payment_date)
+            END AS business_date
+        FROM payments
+        WHERE payment_date IS NOT NULL
+    )
+    SELECT business_date
+    FROM all_dates
+    WHERE business_date IS NOT NULL
+    ORDER BY business_date DESC
+");
+$distinctDatesQuery->execute();
+$distinctDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
+
+// Always add today's date if it's not already in the list
+$today = date('Y-m-d');
+$yesterday = date('Y-m-d', strtotime('-1 day'));
+
+if (!in_array($today, $distinctDates)) {
+    array_unshift($distinctDates, $today); // Add today at the beginning of the array
+}
+
+// Also add yesterday's date if it's not already in the list
+if (!in_array($yesterday, $distinctDates)) {
+    array_unshift($distinctDates, $yesterday); // Add yesterday at the beginning of the array
+}
+
+// Determine which date to show by default based on current time vs closing time
+$currentTime = date('H:i');
+
+// If current time is before closing time, show yesterday's data
+// If current time is after closing time, show today's data
+$defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
+
+// Handle date selection
+$selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
+
+// Calculate the next day date for queries
+$nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+
+// Pre-calculate date conditions for reuse
+$dateCondition = "(
+    (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= '$closingTime') OR
+    (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+)";
+
+$paymentDateCondition = "(
+    (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
+    (DATE(payment_date) = :nextDay AND strftime('%H:%M', payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+)";
+
+// Optimized: Single query to get all financial data for the selected date
+$financialDataQuery = $db->prepare("
+    WITH order_totals AS (
+        SELECT 
+            o.id,
+            o.total,
+            COALESCE(SUM(ep.amount), 0) as eft_total,
+            o.total - COALESCE(SUM(ep.amount), 0) as cash_total
+        FROM orders o
+        LEFT JOIN eft_payments ep ON o.id = ep.order_id
+        WHERE $dateCondition
+        GROUP BY o.id, o.total
+    ),
+    cash_transactions_totals AS (
+        SELECT 
+            SUM(CASE WHEN type = 'cash-in' THEN amount ELSE 0 END) as cash_in,
+            SUM(CASE WHEN type = 'cash-out' THEN amount ELSE 0 END) as cash_out
+        FROM cash_transactions 
+        WHERE $dateCondition
+    ),
+    credit_payments_totals AS (
+        SELECT 
+            SUM(p.amount) as credit_payments
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE cs.payment_status = 'paid' AND $paymentDateCondition
+    ),
+    eft_credit_totals AS (
+        SELECT 
+            SUM(ep.amount) as eft_credit_payments
+        FROM eft_payments ep
+        JOIN credit_sales cs ON ep.order_id = cs.id
+        WHERE cs.payment_status = 'eft' AND $paymentDateCondition
+    )
+    SELECT 
+        COALESCE(SUM(ot.cash_total), 0) as cash_sales,
+        COALESCE(SUM(ot.eft_total), 0) as eft_sales,
+        COALESCE(ctt.cash_in, 0) as cash_in,
+        COALESCE(ctt.cash_out, 0) as cash_out,
+        COALESCE(cpt.credit_payments, 0) as credit_payments,
+        COALESCE(ect.eft_credit_payments, 0) as eft_credit_payments
+    FROM order_totals ot
+    CROSS JOIN cash_transactions_totals ctt
+    CROSS JOIN credit_payments_totals cpt
+    CROSS JOIN eft_credit_totals ect
+");
+$financialDataQuery->bindParam(':selectedDate', $selectedDate);
+$financialDataQuery->bindParam(':nextDay', $nextDay);
+$financialDataQuery->execute();
+$financialData = $financialDataQuery->fetch(PDO::FETCH_ASSOC);
+
+$cashSalesTotal = $financialData['cash_sales'] ?: 0;
+$eftSalesTotal = $financialData['eft_sales'] ?: 0;
+$totalCashIn = $financialData['cash_in'] ?: 0;
+$totalCashOut = $financialData['cash_out'] ?: 0;
+$totalCreditPayments = $financialData['credit_payments'] ?: 0;
+$eftCreditSalesTotal = $financialData['eft_credit_payments'] ?: 0;
+
+// Get cumulative cash sales up to selected date (optimized)
+$cumulativeCashSalesQuery = $db->prepare("
+    WITH order_totals AS (
+        SELECT 
+            o.total - COALESCE(SUM(ep.amount), 0) as net_total,
+            CASE 
+                WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(o.created_at, '-1 day'))
+                ELSE date(o.created_at)
+            END AS business_date
+        FROM orders o
+        LEFT JOIN eft_payments ep ON o.id = ep.order_id
+        GROUP BY o.id, o.total, o.created_at
+    )
+    SELECT COALESCE(SUM(net_total), 0)
+    FROM order_totals
+    WHERE business_date <= :selectedDate
+");
+$cumulativeCashSalesQuery->bindParam(':selectedDate', $selectedDate);
+$cumulativeCashSalesQuery->execute();
+$cumulativeCashSales = $cumulativeCashSalesQuery->fetchColumn() ?: 0;
+
+// Calculate cash available in till for the selected date
+$totalCashSales = $cashSalesTotal; // Already calculated in the optimized query above
+$cashAvailableInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+
+// Calculate expected amount using cash in till logic for the selected date
+$expectedAmount = $cashAvailableInTill;
+
+// Total EFT payments including both regular EFT and credit sales with payment_status 'eft'
+$totalEftPayments = $eftSalesTotal + $eftCreditSalesTotal;
+
+// Optimized: Single query for all credit sales data
+$creditSalesDataQuery = $db->prepare("
+    WITH credit_totals AS (
+        SELECT 
+            SUM(CASE 
+                WHEN payment_status IN ('unpaid', 'partial') THEN total_amount 
+                ELSE 0 
+            END) as total_issued,
+            SUM(CASE 
+                WHEN payment_status = 'unpaid' THEN total_amount - paid_amount 
+                WHEN payment_status = 'partial' THEN total_amount - paid_amount 
+                ELSE 0 
+            END) as total_unpaid,
+            SUM(CASE 
+                WHEN payment_status = 'partial' THEN paid_amount 
+                ELSE 0 
+            END) as total_partial_paid
+        FROM credit_sales 
+        WHERE $dateCondition
+    ),
+    paid_credit_totals AS (
+        SELECT 
+            SUM(p.amount) as paid_credit,
+            COUNT(DISTINCT cs.id) as total_transactions
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE $paymentDateCondition AND cs.payment_status IN ('paid', 'partial', 'eft')
+    ),
+    cumulative_paid_credit AS (
+        SELECT SUM(p.amount) as cumulative_paid
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE DATE(p.payment_date) <= :selectedDate
+    )
+    SELECT 
+        ct.total_issued,
+        ct.total_unpaid,
+        ct.total_partial_paid,
+        pct.paid_credit,
+        pct.total_transactions,
+        cpc.cumulative_paid
+    FROM credit_totals ct
+    CROSS JOIN paid_credit_totals pct
+    CROSS JOIN cumulative_paid_credit cpc
+");
+$creditSalesDataQuery->bindParam(':selectedDate', $selectedDate);
+$creditSalesDataQuery->bindParam(':nextDay', $nextDay);
+$creditSalesDataQuery->execute();
+$creditData = $creditSalesDataQuery->fetch(PDO::FETCH_ASSOC);
+
+$creditTotal = $creditData['total_issued'] ?: 0;
+$unpaidTotal = $creditData['total_unpaid'] ?: 0;
+$partialPaidTotal = $creditData['total_partial_paid'] ?: 0;
+$paidCreditAmount = $creditData['paid_credit'] ?: 0;
+$totalTransactions = $creditData['total_transactions'] ?: 0;
+$cumulativePaidCredit = $creditData['cumulative_paid'] ?: 0;
+
+// Use unpaid total for the selected day instead of all-time unpaid credit
+$totalUnpaidCredit = $unpaidTotal;
+
+// Update cash sales display total to include partial payments
+$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount - $eftCreditSalesTotal ;
+
+// Total revenue includes all sales regardless of payment method (only for selected date)
+$totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments -$partialPaidTotal - $eftCreditSalesTotal;
+
+// Fetch top selling products with business day logic
+$topProductsQuery = $db->prepare("
+    SELECT 
+        t.product_name, 
+        SUM(CASE WHEN t.payment_method = 'cash' THEN t.quantity ELSE 0 END) as cash_qty,
+        SUM(CASE WHEN t.payment_method = 'eft' THEN t.quantity ELSE 0 END) as eft_qty,
+        SUM(CASE WHEN t.payment_method = 'credit' THEN t.quantity ELSE 0 END) as credit_qty,
+        SUM(t.quantity) as total_qty, 
+        SUM(t.price * t.quantity) as historical_value,
+        COALESCE(p.price, t.price) as current_price,
+        COALESCE(p.id, 'Deleted') as id,
+        GROUP_CONCAT(DISTINCT t.payment_method) as payment_methods
+    FROM (
+        SELECT 
+            product_name, 
+            quantity, 
+            price,
+            created_at,
+            CASE 
+                WHEN e.order_id IS NOT NULL THEN 'eft'
+                ELSE 'cash'
+            END as payment_method
+        FROM order_items
+        JOIN orders ON order_items.order_id = orders.id
+        LEFT JOIN eft_payments e ON orders.id = e.order_id
+        
+        UNION ALL
+        
+        SELECT 
+            product_name, 
+            quantity, 
+            price,
+            created_at,
+            CASE 
+                WHEN cs.payment_status = 'eft' THEN 'eft'
+                WHEN cs.payment_status = 'paid' THEN 'cash'
+                ELSE 'credit'
+            END as payment_method
+        FROM credit_sale_items
+        JOIN credit_sales cs ON credit_sale_items.sale_id = cs.id
+    ) t
+    LEFT JOIN products p ON t.product_name = p.name
+    WHERE (
+        (DATE(t.created_at) = :selectedDate AND strftime('%H:%M', t.created_at) >= '$closingTime') OR
+        (DATE(t.created_at) = :nextDay AND strftime('%H:%M', t.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+    )
+    GROUP BY t.product_name
+    ORDER BY total_qty DESC
+");
+$topProductsQuery->bindParam(':selectedDate', $selectedDate);
+$topProductsQuery->bindParam(':nextDay', $nextDay);
+$topProductsQuery->execute();
+$topProducts = $topProductsQuery->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch sales data with business day logic
+$ordersQuery = $db->prepare("
+    WITH order_sums AS (
+        SELECT order_id, SUM(amount) AS eft_sum, MIN(wallet_provider) AS provider_name
+        FROM eft_payments
+        GROUP BY order_id
+    ), order_products AS (
+        SELECT oi.order_id, GROUP_CONCAT(oi.product_name || ' (x' || oi.quantity || ')', ', ') AS products
+        FROM order_items oi
+        GROUP BY oi.order_id
+    ), order_tab_info AS (
+        SELECT tp.order_id, t.tab_name, tp.cashier_id as tab_cashier_id
+        FROM tab_payments tp
+        JOIN tabs t ON tp.tab_id = t.id
+    ), order_splits AS (
+        SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
+               MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
+               MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
+               oti.tab_name, oti.tab_cashier_id
+        FROM orders o
+        LEFT JOIN order_sums os ON os.order_id = o.id
+        LEFT JOIN order_products op ON op.order_id = o.id
+        LEFT JOIN order_tab_info oti ON oti.order_id = o.id
+        WHERE (
+            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
+            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+        )
+        GROUP BY o.id
+    )
+    SELECT id, cash_amount AS total, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    FROM order_splits
+    WHERE cash_amount > 0
+    UNION ALL
+    SELECT id, eft_amount AS total, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    FROM order_splits
+    WHERE eft_amount > 0
+    ORDER BY created_at DESC
+");
+
+$creditQuery = $db->prepare("
+    WITH payment_details AS (
+        SELECT 
+            cs.id as sale_id,
+            p.amount,
+            p.payment_date,
+            cs.payment_status,
+            cs.total_amount,
+            cs.created_at,
+            GROUP_CONCAT(csi.product_name || ' (x' || csi.quantity || ')', ', ') as products,
+            cr.name as creditor_name,
+            COALESCE(p.cashier_id, cs.cashier_id) as cashier_id,
+            CASE 
+                WHEN cs.payment_status = 'unpaid' THEN 'credit'
+                WHEN cs.payment_status = 'partial' THEN 'credit'
+                WHEN EXISTS (
+                    SELECT 1 FROM eft_payments ep 
+                    WHERE ep.order_id = cs.id 
+                    AND ep.payment_date = p.payment_date
+                    AND ep.amount = p.amount
+                ) THEN 'Credit (EFT)'
+                ELSE 'Credit (Cash)'
+            END as sale_type
+        FROM credit_sales cs
+        JOIN credit_sale_items csi ON cs.id = csi.sale_id
+        LEFT JOIN creditors cr ON cs.creditor_id = cr.id
+        LEFT JOIN payments p ON cs.id = p.sale_id
+        WHERE (
+            -- Show unpaid/partial credit sales on their original creation date
+            (
+                (DATE(cs.created_at) = :selectedDate AND strftime('%H:%M', cs.created_at) >= '$closingTime') OR
+                (DATE(cs.created_at) = :nextDay AND strftime('%H:%M', cs.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+            ) AND cs.payment_status IN ('unpaid', 'partial')
+        )
+        OR (
+            -- Show paid/eft credit sales only on their payment date
+            cs.payment_status IN ('paid', 'eft', 'partial') AND cs.id IN (
+                SELECT sale_id FROM payments 
+                WHERE (
+                    (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
+                    (DATE(payment_date) = :nextDay AND strftime('%H:%M', payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+                )
+            )
+        )
+        GROUP BY cs.id, p.id
+    )
+    SELECT 
+        sale_id as id,
+        COALESCE(amount, total_amount) as total,
+        COALESCE(payment_date, created_at) as created_at,
+        products,
+        sale_type,
+        payment_status,
+        NULL as provider_name,
+        creditor_name,
+        payment_date,
+        amount as paid_amount,
+        total_amount,
+        cashier_id
+    FROM payment_details
+    ORDER BY COALESCE(payment_date, created_at) DESC
+");
+$ordersQuery->bindParam(':selectedDate', $selectedDate);
+$ordersQuery->bindParam(':nextDay', $nextDay);
+$ordersQuery->execute();
+$ordersResult = $ordersQuery->fetchAll(PDO::FETCH_ASSOC);
+
+$creditQuery->bindParam(':selectedDate', $selectedDate);
+$creditQuery->bindParam(':nextDay', $nextDay);
+$creditQuery->execute();
+$creditResult = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
+
+// Combine results
+$salesData = array_merge($ordersResult, $creditResult);
+
+// Sort combined results by created_at in descending order (most recent first)
+usort($salesData, function($a, $b) {
+    $aDate = isset($a['payment_date']) && $a['payment_date'] ? strtotime($a['payment_date']) : strtotime($a['created_at']);
+    $bDate = isset($b['payment_date']) && $b['payment_date'] ? strtotime($b['payment_date']) : strtotime($b['created_at']);
+    return $bDate - $aDate;
+});
+
+// Fetch daily breakdown data for the date with business day logic
+$dailyBreakdownQuery = $db->prepare("
+    SELECT 
+        t.business_date as sale_date,
+        SUM(CASE WHEN t.transaction_type = 'income' AND t.source = 'cash' THEN t.amount ELSE 0 END) as cash_sales,
+        SUM(CASE WHEN t.transaction_type = 'income' AND t.source = 'credit_unpaid' THEN t.amount ELSE 0 END) as credit_unpaid,
+        SUM(CASE WHEN t.transaction_type = 'income' AND t.source = 'credit_payment' THEN t.amount ELSE 0 END) as credit_cash,
+        SUM(CASE WHEN t.transaction_type = 'income' AND t.source = 'credit_eft' THEN t.amount ELSE 0 END) as credit_eft,
+        SUM(CASE WHEN t.transaction_type = 'income' AND t.source = 'eft' THEN t.amount ELSE 0 END) as eft_sales,
+        SUM(CASE WHEN t.transaction_type = 'income' THEN t.amount ELSE 0 END) as total_sales,
+        SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount ELSE 0 END) as total_expense,
+        SUM(CASE WHEN t.transaction_type = 'income' THEN t.amount ELSE -t.amount END) as net_amount
+    FROM (
+        -- Get all order transactions
+        SELECT 
+            CASE 
+                WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(o.created_at, '-1 day'))
+                ELSE date(o.created_at)
+            END AS business_date, 
+            (o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)) as amount,
+            'cash' as source,
+            'income' as transaction_type
+        FROM orders o
+        
+        UNION ALL
+        
+        SELECT 
+            CASE 
+                WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(o.created_at, '-1 day'))
+                ELSE date(o.created_at)
+            END AS business_date, 
+            COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0) as amount,
+            'eft' as source,
+            'income' as transaction_type
+        FROM orders o
+        
+        UNION ALL
+        
+        -- Include only unpaid/partial credit sales on their creation date
+        SELECT 
+            CASE 
+                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(created_at, '-1 day'))
+                ELSE date(created_at)
+            END AS business_date, 
+            total_amount as amount, 
+            CASE 
+                WHEN payment_status = 'unpaid' THEN 'credit_unpaid'
+                WHEN payment_status = 'partial' THEN 'credit_unpaid'
+                ELSE 'credit_unpaid'
+            END as source,
+            'income' as transaction_type
+        FROM credit_sales
+        WHERE payment_status IN ('unpaid', 'partial')
+        
+        UNION ALL
+        
+        -- Include credit payments on payment date based on payment type
+        SELECT 
+            CASE 
+                WHEN strftime('%H:%M', p.payment_date) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime(p.payment_date, '-1 day'))
+                ELSE date(p.payment_date)
+            END AS business_date,
+            p.amount as amount,
+            CASE
+                WHEN cs.payment_status = 'eft' THEN 'credit_eft'
+                ELSE 'credit_payment'
+            END as source,
+            'income' as transaction_type
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        
+        UNION ALL
+        
+        -- Include cash-out transactions as expenses
+        SELECT 
+            date(created_at) as business_date,
+            amount,
+            'cash-out' as source,
+            'expense' as transaction_type
+        FROM cash_transactions
+        WHERE type = 'cash-out'
+    ) t
+    WHERE business_date = :selectedDate
+    GROUP BY sale_date
+");
+$dailyBreakdownQuery->bindParam(':selectedDate', $selectedDate);
+$dailyBreakdownQuery->execute();
+$dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
+
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sales Report</title>
+    <script src="navigation.js" async></script>
+    <link rel="icon" href="favicon.ico" type="image/png">
+    <link href="src/output.css" rel="stylesheet">
+    <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
+    <script src="src/jquery-3.6.0.min.js"></script>
+
+
+    <style>
+        :root {
+            --table-row-height: 27px;
+        }
+        /* Disable text selection for the entire UI */
+ 
+        .container {
+            max-width: 100vw; /* Ensure container does not exceed viewport width */
+            padding: 0 1rem; /* Add some padding for better spacing */
+        }
+        
+        /* Mobile hamburger menu styles */
+        .hamburger {
+            position: relative;
+            width: 30px;
+            height: 24px;
+            cursor: pointer;
+            z-index: 10000;
+        }
+        
+        .hamburger span {
+            display: block;
+            position: absolute;
+            height: 3px;
+            width: 100%;
+            background: rgb(0, 0, 0);
+            border-radius: 2px;
+            opacity: 1;
+            left: 0;
+            transform: rotate(0deg);
+            transition: .25s ease-in-out;
+        }
+        
+        .hamburger span:nth-child(1) {
+            top: 0px;
+        }
+        
+        .hamburger span:nth-child(2) {
+            top: 10px;
+        }
+        
+        .hamburger span:nth-child(3) {
+            top: 20px;
+        }
+        
+        .hamburger.open span:nth-child(1) {
+            top: 10px;
+            transform: rotate(135deg);
+        }
+        
+        .hamburger.open span:nth-child(2) {
+            opacity: 0;
+            left: -60px;
+        }
+        
+        .hamburger.open span:nth-child(3) {
+            top: 10px;
+            transform: rotate(-135deg);
+        }
+        
+        /* Mobile sidebar overlay */
+        .mobile-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 80;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .mobile-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        /* Mobile responsive adjustments */
+        @media (max-width: 1023px) {
+            .content {
+                margin-left: 0 !important;
+            }
+            
+            .container {
+                padding: 1rem;
+            }
+        }
+        /* Compact Table Styles */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 0.75rem !important; /* 12px */
+            table-layout: fixed; /* Ensure table does not exceed container width */
+        }
+        th, td {
+            padding: 0.375rem 0.5rem !important; /* 6px 8px - very compact */
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+            color: #374151;
+            font-weight: 500;
+            vertical-align: middle;
+            overflow: hidden; /* Prevent content from overflowing */
+            text-overflow: ellipsis; /* Add ellipsis for overflow text */
+            white-space: nowrap; /* Prevent text from wrapping */
+            height: var(--table-row-height) !important;
+            line-height: 1.2 !important;
+        }
+        th {
+            background-color: #f9fafb; 
+            font-weight: 700;
+            color: #111827;
+            text-transform: uppercase;
+            font-size: 0.7rem !important;
+            letter-spacing: 0.025em;
+            height: calc(var(--table-row-height) + 0.5rem) !important;
+        }
+        td:nth-child(2),
+        td:nth-child(3) {
+            font-weight: 600;
+            color: #111827;
+        }
+        tr {
+            transition: all 0.2s ease;
+            height: var(--table-row-height) !important;
+        }
+        tr:hover {
+            background-color: #f3f4f6;
+        }
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .table-container {
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            width: 100%; /* Ensure table container fits within the viewport */
+        }
+        /* Make status badges smaller */
+        td span.inline-flex {
+            font-size: 0.7rem !important;
+            padding: 0.15rem 0.375rem !important;
+            height: var(--table-row-height) !important;
+            line-height: 1.2 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            margin: 0 !important;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); /* Ensure grid items fit within the viewport */
+            gap: 1rem;
+        }
+        .bg-header {
+            background-color: #f3f4f6;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .sort-icon {
+            opacity: 0.5;
+            transition: all 0.2s;
+        }
+        th:hover .sort-icon {
+            opacity: 1;
+        }
+        /* Premium shadcn grey theme */
+        .bg-card {
+            background-color: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.5rem;
+        }
+        .bg-muted {
+            background-color: #f9fafb;
+        }
+        .border-border {
+            border-color: #e5e7eb;
+        }
+        .text-muted-foreground {
+            color: #6b7280;
+        }
+        .text-card-foreground {
+            color: #111827;
+        }
+        /* Allow products column to wrap text */
+        .products-cell {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            vertical-align: top !important;
+            height: auto !important;
+            min-height: var(--table-row-height) !important;
+            line-height: 1.4 !important;
+            padding: 0.5rem 0.5rem !important;
+        }
+        /* Ensure parent row can expand */
+        .expandable-row {
+            height: auto !important;
+        }
+        
+        /* Mobile Vertical Table Structure */
+        @media (max-width: 768px) {
+            .table-container {
+                overflow: visible;
+                background: #f3f4f6;
+            }
+            
+            /* Hide table headers on mobile */
+            table thead {
+                display: none;
+            }
+            
+            /* Convert table rows to compact cards */
+            table tbody tr {
+                display: block;
+                width: 100%;
+                margin-bottom: 0.75rem;
+                background: white;
+                border: 2px solid #d1d5db;
+                border-radius: 0.375rem;
+                padding: 0.5rem;
+                box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.1);
+                height: auto !important;
+                position: relative;
+            }
+            
+            /* Convert table cells to compact inline blocks */
+            table tbody td {
+                display: flex;
+                align-items: center;
+                width: 100% !important;
+                padding: 0.375rem 0.25rem !important;
+                text-align: left !important;
+                border: none !important;
+                border-bottom: 1px solid #f3f4f6 !important;
+                white-space: normal !important;
+                overflow: visible !important;
+                text-overflow: unset !important;
+                height: auto !important;
+                line-height: 1.3 !important;
+                gap: 0.5rem;
+                font-size: 0.8rem !important;
+                color: #111827;
+            }
+            
+            /* Remove border from last visible cell in each row */
+            table tbody td:last-child:not([data-label="Print"]) {
+                border-bottom: none !important;
+            }
+            
+            /* If Print is the last child, remove border from the cell before it */
+            table tbody tr td[data-label="Print"]:last-child {
+                border-bottom: none !important;
+            }
+            
+            table tbody tr td[data-label="Print"]:last-child + td,
+            table tbody tr td:nth-last-child(2):not([data-label="Print"]) {
+                border-bottom: none !important;
+            }
+            
+            /* Add labels inline with data using CSS */
+            table tbody td::before {
+                content: attr(data-label) ":";
+                display: inline-block;
+                font-weight: 600;
+                font-size: 0.7rem;
+                color: #6b7280;
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+                min-width: 4rem;
+                flex-shrink: 0;
+            }
+            
+            /* Center align specific cells */
+            table tbody td[data-label="ID"] {
+                justify-content: flex-start;
+            }
+            
+            /* Hide Print cell from normal flow but keep button visible */
+            table tbody td[data-label="Print"] {
+                position: absolute;
+                top: 0.5rem;
+                right: 0.5rem;
+                width: auto !important;
+                padding: 0 !important;
+                border: none !important;
+                justify-content: flex-end;
+            }
+            
+            table tbody td[data-label="Print"]::before {
+                display: none; /* Hide label for Print column */
+            }
+            
+            /* Products cell special handling */
+            table tbody td.products-cell {
+                padding: 0.375rem 0.25rem !important;
+                align-items: flex-start;
+            }
+            
+            /* Print button styling on mobile - positioned in top right */
+            table tbody td[data-label="Print"] button {
+                width: auto;
+                height: 2rem;
+                min-height: 2rem;
+                padding: 0.375rem 0.625rem;
+                justify-content: center;
+                box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.15);
+                border: 1px solid #9ca3af;
+            }
+            
+            /* Ensure content inside cells wraps properly and takes remaining space */
+            table tbody td > div {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 0.25rem;
+                flex: 1;
+                min-width: 0;
+                justify-content: flex-start !important;
+            }
+            
+            table tbody td > span:not(::before),
+            table tbody td > button {
+                flex: 1;
+                min-width: 0;
+            }
+            
+            /* Ensure badges are aligned to the left */
+            table tbody td > div span.inline-flex {
+                flex: 0 0 auto;
+                margin-left: 0;
+            }
+            
+            /* Remove hover effect on mobile cards */
+            table tbody tr:hover {
+                background: white;
+            }
+            
+            /* Ensure badges and buttons display properly */
+            table tbody td span.inline-flex {
+                display: inline-flex !important;
+                width: auto !important;
+                font-size: 0.7rem !important;
+                padding: 0.2rem 0.4rem !important;
+            }
+            
+            /* Compact badge styling */
+            table tbody td span.inline-flex svg {
+                width: 0.75rem !important;
+                height: 0.75rem !important;
+            }
+            
+            /* Mobile Pagination - Fit in one row */
+            .bg-gray-50.border-t {
+                padding: 0.5rem 0.375rem !important;
+                overflow-x: visible !important;
+            }
+            
+            .bg-gray-50.border-t > div {
+                flex-wrap: nowrap !important;
+                gap: 0.25rem !important;
+                align-items: center !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                overflow: visible !important;
+            }
+            
+            /* Ensure parent containers don't restrict pagination */
+            .bg-white.shadow-lg {
+                overflow-x: visible !important;
+            }
+            
+            /* Compact button groups */
+            .bg-gray-50.border-t > div > div {
+                display: flex !important;
+                gap: 0.25rem !important;
+                flex-shrink: 0;
+            }
+            
+            /* Left button group - first and prev */
+            .bg-gray-50.border-t > div > div:first-child {
+                flex-shrink: 0;
+            }
+            
+            /* Right button group - next and last */
+            .bg-gray-50.border-t > div > div:last-child {
+                flex-shrink: 0;
+            }
+            
+            /* First/Last buttons - icon only, smaller */
+            .bg-gray-50.border-t button#firstPage,
+            .bg-gray-50.border-t button#lastPage,
+            .bg-gray-50.border-t button#topProductsFirstPage,
+            .bg-gray-50.border-t button#topProductsLastPage {
+                padding: 0.375rem !important;
+                min-width: 2rem !important;
+                width: 2rem !important;
+            }
+            
+            .bg-gray-50.border-t button#firstPage svg,
+            .bg-gray-50.border-t button#lastPage svg,
+            .bg-gray-50.border-t button#topProductsFirstPage svg,
+            .bg-gray-50.border-t button#topProductsLastPage svg {
+                width: 1rem !important;
+                height: 1rem !important;
+                margin: 0 !important;
+            }
+            
+            /* Prev/Next buttons - compact text */
+            .bg-gray-50.border-t button#prevPage,
+            .bg-gray-50.border-t button#nextPage,
+            .bg-gray-50.border-t button#topProductsPrevPage,
+            .bg-gray-50.border-t button#topProductsNextPage {
+                padding: 0.375rem 0.4rem !important;
+                font-size: 0.65rem !important;
+                min-width: auto !important;
+                white-space: nowrap;
+            }
+            
+            .bg-gray-50.border-t button#prevPage svg,
+            .bg-gray-50.border-t button#nextPage svg,
+            .bg-gray-50.border-t button#topProductsPrevPage svg,
+            .bg-gray-50.border-t button#topProductsNextPage svg {
+                width: 0.875rem !important;
+                height: 0.875rem !important;
+            }
+            
+            /* Center section - compact and flexible */
+            .bg-gray-50.border-t > div > div:nth-child(2) {
+                flex-wrap: nowrap !important;
+                gap: 0.25rem !important;
+                flex-shrink: 1;
+                min-width: 0;
+                max-width: 100%;
+                overflow: hidden;
+            }
+            
+            /* Page number text - smaller and compact */
+            .bg-gray-50.border-t span[id*="PageNumber"] {
+                font-size: 0.65rem !important;
+                white-space: nowrap;
+                flex-shrink: 1;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 5rem;
+            }
+            
+            /* Page input - compact */
+            .bg-gray-50.border-t input[type="number"] {
+                width: 2.5rem !important;
+                padding: 0.375rem 0.375rem !important;
+                font-size: 0.65rem !important;
+                min-width: 2.5rem;
+                max-width: 2.5rem;
+            }
+            
+            /* Go button - compact */
+            .bg-gray-50.border-t input[type="number"] + button {
+                padding: 0.375rem 0.5rem !important;
+                font-size: 0.65rem !important;
+                white-space: nowrap;
+            }
+            
+            /* All pagination buttons - consistent height */
+            .bg-gray-50.border-t button {
+                height: 2rem !important;
+                min-height: 2rem !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+            }
+        }
+    </style>
+</head>
+<body style="background-color:rgb(249 250 251 / var(--tw-bg-opacity, 1))">
+
+    <div class="flex">
+        <?php include 'sidebar.php'; ?>
+        <div class="flex-1 content lg:ml-0 ml-0">
+            <!-- Mobile Sidebar Overlay -->
+            <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
+            
+            <div class="container mx-auto p-6">
+                <!-- Header Row: Daily Report + Controls -->
+                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
+                    <!-- Mobile Controls Row -->
+                    <div class="flex items-center gap-3">
+                        <!-- Mobile Hamburger Menu Button -->
+                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </div>
+                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0">Daily Report</h1>
+                    </div>
+                    
+                    <!-- Date Selection Form -->
+                    <form method="POST" action="" class="flex items-center gap-2" id="dateForm" style="margin-bottom:0;">
+                        <div class="relative">
+                            <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                                <!-- calendar icon -->
+                                <svg class="w-4 h-4 lg:w-5 lg:h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                                    <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 0 0 -2H6z" clip-rule="evenodd"/>
+                                </svg>
+                            </div>
+                            <select id="date" name="date" onchange="updateReport();" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs lg:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-8 lg:pl-10 pr-8 lg:pr-10 p-2 lg:p-2.5 shadow-sm transition-colors cursor-pointer">
+                                <?php foreach ($distinctDates as $date): ?>
+                                    <option value="<?= htmlspecialchars($date) ?>" <?= $date == $selectedDate ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($date) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Stats Cards -->
+                <?php if (count($salesData) > 0): ?>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+
+<!-- Cash Sales Card -->
+<div class="bg-card rounded-xl shadow-sm border border-border p-6 transform hover:scale-105 transition-transform duration-200 cursor-pointer" data-filter-type="cash" onclick="filterByCard('cash')">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <p class="text-sm font-medium text-muted-foreground">Cash Sales</p>
+            <h3 class="text-2xl font-bold text-teal-600">N$<?= number_format($cashSalesDisplayTotal, 2) ?></h3>
+        </div>
+        <div class="p-3 bg-teal-100 rounded-full">
+            <i class="fas fa-dollar-sign text-teal-600 text-lg"></i>
+        </div>
+    </div>
+    <p class="text-sm text-muted-foreground">Cash transactions + cash credit payments</p>
+</div>
+
+<!-- EFT Payments Card -->
+<div class="bg-card rounded-xl shadow-sm border border-border p-6 transform hover:scale-105 transition-transform duration-200 cursor-pointer" data-filter-type="eft" onclick="filterByCard('eft')">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <p class="text-sm font-medium text-muted-foreground">EFT Payments</p>
+            <h3 class="text-2xl font-bold text-purple-600">N$<?= number_format($totalEftPayments, 2) ?></h3>
+        </div>
+        <div class="p-3 bg-purple-100 rounded-full">
+            <i class="fas fa-credit-card text-purple-600 text-lg"></i>
+        </div>
+    </div>
+    <p class="text-sm text-muted-foreground">Direct and credit EFT payments</p>
+</div>
+
+<!-- Unpaid Credit Card -->
+<div class="bg-card rounded-xl shadow-sm border border-border p-6 transform hover:scale-105 transition-transform duration-200 cursor-pointer" data-filter-type="unpaid" onclick="filterByCard('unpaid')">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <p class="text-sm font-medium text-muted-foreground">Unpaid Credit</p>
+            <h3 class="text-2xl font-bold text-amber-600">N$<?= number_format($totalUnpaidCredit, 2) ?></h3>
+        </div>
+        <div class="p-3 bg-amber-100 rounded-full">
+            <i class="fas fa-hand-holding-usd text-amber-600 text-lg"></i>
+        </div>
+    </div>
+    <p class="text-sm text-muted-foreground">Outstanding Balance</p>
+</div>
+
+<!-- Total Revenue Card -->
+<div class="bg-card rounded-xl shadow-sm border border-border p-6 transform hover:scale-105 transition-transform duration-200 cursor-pointer" data-filter-type="all" onclick="filterByCard('all')">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <p class="text-sm font-medium text-muted-foreground">Total Revenue</p>
+            <h3 class="text-2xl font-bold text-gray-600">N$<?= number_format($totalCashOnHand, 2) ?></h3>
+        </div>
+        <div class="p-3 bg-gray-100 rounded-full">
+            <i class="fas fa-wallet text-gray-600 text-lg"></i>
+        </div>
+    </div>
+    <p class="text-sm text-muted-foreground">All sales (Cash, EFT, Credit)</p>
+</div>
+</div>
+
+<!-- Cash Transactions Table -->
+<div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
+    <div class="flex items-center justify-between p-2 bg-gray-300">
+        <h2 class="text-xl font-bold p-1 text-gray-500 pr-4">
+            <span class="inline-flex items-center">
+                <svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M7 20l5-5 5 5"></path>
+                    <path d="M7 4l5 5 5-5"></path>
+                </svg>
+                Transactions
+            </span>
+        </h2>
+        <div class="relative max-w-xs">
+            <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                <svg class="w-3 h-3 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
+                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
+                </svg>
+            </div>
+            <input type="text" id="search" onkeyup="filterSales()" placeholder="Search by any field..." 
+                   class="w-full pl-8 pr-3 py-1.5 border border-gray-400 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500 shadow-sm transition duration-200 text-sm">
+        </div>
+    </div>
+    <div class="table-container">
+        <table class="min-w-full table-auto">
+                <thead class="sticky top-0 select-none">
+                    <tr class="bg-gray-100 border-b-2 border-gray-200 text-sm">
+                        <th class="py-2 px-2 text-center cursor-pointer w-16" onclick="sortTable(0)">
+                            <div class="flex items-center justify-center">
+                                <span class="text-gray-700 text-center w-full">ID</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-2 text-center cursor-pointer w-20" onclick="sortTable(1)">
+                            <div class="flex items-center justify-center">
+                                <span class="text-gray-700 text-center w-full">Type</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-2 text-left cursor-pointer w-24" onclick="sortTable(2, true)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Total</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-2 text-left cursor-pointer" onclick="sortTable(3)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Products</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-2 text-center cursor-pointer w-16" onclick="sortTable(5)">
+                            <div class="flex items-center justify-center">
+                                <span class="text-gray-700 text-center w-full">Print</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-2 text-center cursor-pointer w-32" onclick="sortTable(6)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Date</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-2 text-center cursor-pointer w-24" onclick="sortTable(7)">
+                            <div class="flex items-center justify-center">
+                                <span class="text-gray-700 text-center w-full">Cashier</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+     
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200" id="salesTableBody">
+                    <?php
+                    if (count($salesData) > 0) {
+                        foreach($salesData as $row) {
+                    ?>
+                        <tr class="hover:bg-gray-50 transition-colors">
+                            <td class="py-1 px-2 text-sm font-medium text-gray-500 text-center" data-label="ID"><?= $row['id'] ?></td>
+                            <td class="py-1 px-2 text-sm font-medium text-gray-500 text-center" data-label="Type">
+                                <div class="flex justify-center items-center">
+                                    <?php if ($row['sale_type'] === 'credit' && $row['payment_status'] === 'unpaid'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-amber-100 text-amber-800 border border-amber-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                                        <span>Unpaid Credit</span>
+                                    </span>
+                                    <?php elseif ($row['payment_status'] === 'partial'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800 border border-yellow-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 14a6 6 0 110-12 6 6 0 010 12z"></path><path d="M10 5a1 1 0 011 1v3.586l2.707 2.707a1 1 0 01-1.414 1.414l-3-3A1 1 0 019 10V6a1 1 0 011-1z"></path></svg>
+                                        <span>Partial Payment (N$<?= number_format($row['paid_amount'], 2) ?>)</span>
+                                    </span>
+                                    <?php elseif ($row['payment_status'] === 'eft'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
+                                        <span>EFT Credit Payment</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'eft'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
+                                        <span>EFT</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'cash'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800 border border-teal-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z"></path><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clip-rule="evenodd"></path></svg>
+                                        <span>Cash Sales</span>
+                                    </span>
+                                    <?php elseif ($row['payment_status'] === 'paid' && $row['sale_type'] === 'credit'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800 border border-teal-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z"></path><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clip-rule="evenodd"></path></svg>
+                                        <span>Credit Payment</span>
+                                    </span>
+                                    <?php elseif ($row['payment_status'] === 'paid'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800 border border-teal-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>
+                                        <span>Credit Payment</span>
+                                    </span>
+                                    <?php elseif ($row['payment_status'] === 'eft'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
+                                        <span>Credit (EFT)</span>
+                                    </span>
+                                    <?php elseif ($row['payment_status'] === 'partial'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800 border border-yellow-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 14a6 6 0 110-12 6 6 0 010 12z"></path><path d="M10 5a1 1 0 011 1v3.586l2.707 2.707a1 1 0 01-1.414 1.414l-3-3A1 1 0 019 10V6a1 1 0 011-1z"></path></svg>
+                                        <span>Partial Credit (Cash)</span>
+                                    </span>
+                                    <?php else: ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800 border border-teal-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                                        <span>Credit Payment</span>
+                                    </span>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                            <td class="py-1 px-2 text-sm font-bold text-gray-900" data-label="Total">
+                                <?php
+                                if ($row['payment_status'] === 'eft' && !empty($row['payment_details'])) {
+                                    // Split payment details into individual payments
+                                    $payments = explode('||', $row['payment_details']);
+                                    foreach ($payments as $payment) {
+                                        if (!empty($payment)) {
+                                            list($amount, $date) = explode('|', $payment);
+                                            echo "N$" . number_format($amount, 2) . "<br>";
+                                        }
+                                    }
+                                } else {
+                                    echo "N$" . number_format($row['total'], 2);
+                                }
+                                ?>
+                            </td>
+                            <td class="py-1 px-2 text-sm text-teal-600 text-left align-top products-cell" data-label="Products" title="<?= htmlspecialchars($row['products']) . (isset($row['creditor_name']) && $row['creditor_name'] ? ' (' . htmlspecialchars($row['creditor_name']) . ')' : '') . (isset($row['tab_name']) && $row['tab_name'] ? ' (Tab: ' . htmlspecialchars($row['tab_name']) . ')' : '') . (isset($row['provider_name']) && $row['provider_name'] ? ' via ' . htmlspecialchars($row['provider_name']) : '') ?>">
+                                <span class="font-medium <?= $row['sale_type'] === 'credit' ? 'text-gray-600' : 'text-gray-600' ?>"><?= htmlspecialchars($row['products']) ?></span>
+                                <?php if (isset($row['creditor_name']) && $row['creditor_name']): ?>
+                                <span class="text-xs text-orange-500 font-medium">(<?= htmlspecialchars($row['creditor_name']) ?>)</span>
+                                <?php endif; ?>
+                                <?php if (isset($row['tab_name']) && $row['tab_name']): ?>
+                                <span class="text-xs text-blue-500 font-medium">(Tab: <?= htmlspecialchars($row['tab_name']) ?>)</span>
+                                <?php if (isset($row['tab_cashier_id']) && $row['tab_cashier_id']): ?>
+                                <span class="text-xs text-blue-400 font-medium">by <?= htmlspecialchars(getUsernameById($row['tab_cashier_id'])) ?></span>
+                                <?php endif; ?>
+                                <?php endif; ?>
+                                <?php if ($row['provider_name']): ?>
+                                <span class="text-xs text-purple-500 font-medium">via <?= htmlspecialchars($row['provider_name']) ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="py-1 px-2 text-center" data-label="Print">
+                                <button onclick="reprintReceipt('<?= $row['id'] ?>', '<?= $row['sale_type'] ?>', '<?= $row['payment_status'] ?>')" 
+                                        class="inline-flex items-center justify-center w-8 h-8 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200" 
+                                        title="Reprint Receipt">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
+                                    </svg>
+                                </button>
+                            </td>
+                            <td class="py-1 px-2 text-sm text-gray-500" data-label="Date">
+                                <?php
+                                // Use payment_date for paid/eft credits, otherwise use created_at
+                                $displayDate = isset($row['payment_date']) && $row['payment_date'] && 
+                                               ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft') ? 
+                                               $row['payment_date'] : $row['created_at'];
+                                echo date('d M Y H:i', strtotime($displayDate));
+                                ?>
+                            </td>
+                            <td class="py-1 px-2 text-sm text-gray-500 text-center" data-label="Cashier">
+                                <?= htmlspecialchars(getUsernameById($row['cashier_id'] ?? null)) ?>
+                            </td>
+  
+                        </tr>
+                    <?php
+                        }
+                    } else {
+                    ?>
+            
+                    <?php
+                    }
+                    ?>
+                </tbody>
+            </table>
+
+        <!-- Pagination Controls -->
+        <div class="px-6 py-2 bg-gray-50 border-t border-gray-200">
+            <div class="flex justify-between items-center">
+                <div class="flex gap-2">
+                    <button id="firstPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"></path>
+                        </svg>
+                    </button>
+                    <button id="prevPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                        </svg>
+                        Prev
+                    </button>
+                </div>
+                <div class="flex items-center gap-4">
+                    <span id="pageNumber" class="text-sm text-gray-700 font-medium">Page 1 of 1</span>
+                    <div class="flex items-center gap-2">
+                        <input type="number" id="pageInput" min="1" class="w-20 px-3 py-2 border border-gray-300 rounded-md text-sm shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" placeholder="Page">
+                        <button class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-white bg-blue-500 hover:bg-blue-600 transition-colors shadow-sm">Go</button>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button id="nextPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        Next
+                        <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                        </svg>
+                    </button>
+                    <button id="lastPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
+    <div class="flex items-center justify-between p-3 bg-gray-300">
+        <h2 class="text-xl font-bold text-gray-600"><i class="fas fa-box-open mr-2"></i>Products</h2>
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <label class="text-sm font-medium text-gray-700">Payment Method:</label>
+                <select id="paymentMethodFilter" onchange="filterProducts()" class="bg-white border border-gray-300 text-gray-700 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5">
+                    <option value="all">All Methods</option>
+                    <option value="cash">Cash Only</option>
+                    <option value="eft">EFT Only</option>
+                    <option value="credit">Credit Only</option>
+                </select>
+            </div>
+            <div class="relative">
+                <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                    <svg class="w-3 h-3 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
+                    </svg>
+                </div>
+                <input type="text" id="productSearch" onkeyup="filterProducts()" placeholder="Search products..." 
+                       class="w-full pl-8 pr-3 py-1.5 border border-gray-400 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500 shadow-sm transition duration-200 text-sm">
+            </div>
+        </div>
+    </div>
+    <div class="table-container">
+        <table class="min-w-full table-auto">
+                <thead>
+                    <tr class="bg-gray-100 border-b-2 border-gray-200 text-sm">
+                        <th class="py-2 px-3 text-center cursor-pointer" onclick="sortTopProductsTable(0, true)">
+                            <div class="flex items-center justify-center">
+                                <span class="text-gray-700">ID</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-3 text-left cursor-pointer" onclick="sortTopProductsTable(1)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Product</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-3 text-left cursor-pointer" onclick="sortTopProductsTable(2, true)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Quantity</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-3 text-left cursor-pointer" onclick="sortTopProductsTable(3, true)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Price</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                        <th class="py-2 px-3 text-left cursor-pointer" onclick="sortTopProductsTable(4, true)">
+                            <div class="flex items-center">
+                                <span class="text-gray-700">Total Value</span>
+                                <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                </svg>
+                            </div>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200" id="topProductsTableBody">
+                    <?php if (count($topProducts) > 0): ?>
+                        <?php foreach ($topProducts as $product): ?>
+                            <tr class="hover:bg-gray-50 transition-colors h-6">
+                                <td class="py-1 px-3 text-sm font-medium text-gray-500 text-center" data-label="ID"><?= $product['id'] ?? 'N/A' ?></td>
+                                <td class="products-cell py-1 px-3 text-sm font-medium text-gray-800 text-left align-top" data-label="Product"><?= htmlspecialchars($product['product_name']) . ' (x' . $product['total_qty'] . ')' ?></td>
+                                <td class="py-1 px-3 text-sm font-semibold text-gray-900" data-label="Quantity">
+                                    <?php
+                                    // Determine badge color based on quantity value
+                                    // Create a map of quantities to ensure same quantities have same color
+                                    static $quantityColorMap = [];
+                                    $qty = $product['total_qty'];
+                                    
+                                    if (!isset($quantityColorMap[$qty])) {
+                                        // First time seeing this quantity, assign a color
+                                        $count = count($quantityColorMap);
+                                        if ($count === 0) {
+                                            // Top seller - gold
+                                            $quantityColorMap[$qty] = "bg-amber-100 text-amber-800 border-amber-200";
+                                        } elseif ($count === 1) {
+                                            // Second best - silver
+                                            $quantityColorMap[$qty] = "bg-slate-100 text-slate-800 border-slate-200";
+                                        } elseif ($count === 2) {
+                                            // Third best - bronze
+                                            $quantityColorMap[$qty] = "bg-orange-100 text-orange-800 border-orange-200";
+                                        } elseif ($count < 5) {
+                                            // Top 5 - teal
+                                            $quantityColorMap[$qty] = "bg-teal-100 text-teal-800 border-teal-200";
+                                        } elseif ($count < 10) {
+                                            // Top 10 - blue
+                                            $quantityColorMap[$qty] = "bg-blue-100 text-blue-800 border-blue-200";
+                                        } else {
+                                            // Others - gray
+                                            $quantityColorMap[$qty] = "bg-gray-100 text-gray-800 border-gray-200";
+                                        }
+                                    }
+                                    
+                                    $badgeClass = $quantityColorMap[$qty];
+                                    ?>
+                                    <span class="inline-flex items-center justify-center px-3 py-1 rounded-full text-sm font-bold <?= $badgeClass ?> shadow-sm border" style="min-width:2.2em; min-height:2.2em;">
+                                        <?= $product['total_qty'] ?>
+                                    </span>
+                                </td>
+                                <td class="py-1 px-3 text-sm font-semibold text-gray-900" data-label="Price">N$<?= number_format($product['current_price'], 2) ?></td>
+                                <td class="py-1 px-3 text-sm font-bold text-teal-700" data-label="Total Value">N$<?= number_format($product['current_price'] * $product['total_qty'], 2) ?></td>
+ 
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="6" class="py-6 px-6 text-center text-gray-500">No products sold on this date</td>
+                        </tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+
+        <!-- Pagination Controls -->
+        <div class="px-6 py-2 bg-gray-50 border-t border-gray-200">
+            <div class="flex justify-between items-center">
+                <div class="flex gap-2">
+                    <button id="topProductsFirstPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"></path>
+                        </svg>
+                    </button>
+                    <button id="topProductsPrevPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                        </svg>
+                        Prev
+                    </button>
+                </div>
+                <div class="flex items-center gap-4">
+                    <span id="topProductsPageNumber" class="text-sm text-gray-700 font-medium">Page 1 of 1</span>
+                    <div class="flex items-center gap-2">
+                        <input type="number" id="topProductsPageInput" min="1" class="w-20 px-3 py-2 border border-gray-300 rounded-md text-sm shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" placeholder="Page">
+                        <button class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-white bg-blue-500 hover:bg-blue-600 transition-colors shadow-sm">Go</button>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button id="topProductsNextPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        Next
+                        <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                        </svg>
+                    </button>
+                    <button id="topProductsLastPage" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<?php else: ?>
+<!-- No Transactions Alert -->
+<div class="bg-gray-50 border border-gray-200 rounded-xl shadow-lg p-8 h-full">
+    <div class="flex flex-col items-center text-center">
+        <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-6">
+            <svg class="w-10 h-10 text-teal-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+        </div>
+        <h3 class="text-xl font-semibold text-gray-800 mb-2">No Transactions Today</h3>
+        <p class="text-gray-600 mb-4">There are no transactions recorded for the selected date (<?= htmlspecialchars($selectedDate) ?>).</p>
+        <p class="text-gray-500 text-sm">Please select a different date or create a new transaction.</p>
+    </div>
+</div>
+<?php endif; ?>
+
+
+            
+                <!-- Top Selling Products Section -->
+
+
+
+            </div>
+            <?php $db = null; ?>
+        </div>
+    </div>
+
+
+
+    <?php
+    // Fetch business info for Android printing
+    $dbInfo = new PDO('sqlite:info.db');
+    $businessInfoForPrint = $dbInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    if (!$businessInfoForPrint) {
+        $businessInfoForPrint = [
+            'name' => 'POS SOLUTION',
+            'location' => '',
+            'phone' => '',
+            'footer_text' => 'Thank you!',
+            'vat_inclusive' => 'exclusive',
+            'vat_rate' => 15.0
+        ];
+    }
+    ?>
+
+    <script>
+        // Business info for Android printing
+        var businessInfo = {
+            business_name: <?= json_encode($businessInfoForPrint['name'] ?? 'POS SOLUTION') ?>,
+            location: <?= json_encode($businessInfoForPrint['location'] ?? '') ?>,
+            phone: <?= json_encode($businessInfoForPrint['phone'] ?? '') ?>,
+            footer_text: <?= json_encode($businessInfoForPrint['footer_text'] ?? 'Thank you!') ?>,
+            vat_inclusive: <?= json_encode($businessInfoForPrint['vat_inclusive'] ?? 'exclusive') ?>,
+            vat_rate: <?= json_encode(floatval($businessInfoForPrint['vat_rate'] ?? 15.0)) ?>
+        };
+
+        // Helper function to send receipt to printer - uses Android native printing if available
+        function sendToPrinter(receiptData) {
+            console.log('[sendToPrinter] Input receiptData:', JSON.stringify(receiptData).substring(0, 500));
+            console.log('[sendToPrinter] Items in input:', receiptData.items ? receiptData.items.length : 'missing');
+            
+            // Preserve items array explicitly
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate,
+                items: receiptData.items || [] // Explicitly preserve items array
+            });
+            
+            console.log('[sendToPrinter] Output dataWithBusiness items:', dataWithBusiness.items ? dataWithBusiness.items.length : 'missing');
+            console.log('[sendToPrinter] Full data keys:', Object.keys(dataWithBusiness).join(', '));
+            
+            var printer = window.AndroidPrinter || window.NativePrinter || null;
+            
+            if (printer && typeof printer.printReceipt === 'function') {
+                console.log('[sendToPrinter] Using Android native printing');
+                try {
+                    var jsonString = JSON.stringify(dataWithBusiness);
+                    console.log('[sendToPrinter] JSON string length:', jsonString.length);
+                    console.log('[sendToPrinter] JSON preview:', jsonString.substring(0, 300));
+                    printer.printReceipt(jsonString);
+                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
+                } catch (e) {
+                    console.error('[sendToPrinter] Android print error:', e.message);
+                }
+            }
+            
+            return fetch('receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { return r.json(); });
+        }
+    // Function to update report data via form submission
+    function updateReport() {
+        // Simply submit the form to reload the page with the new date
+        const dateForm = document.getElementById('dateForm');
+        if (dateForm) {
+            dateForm.submit();
+        }
+    }
+
+    // Function to filter tables (generic approach)
+    function filterTable(inputId, tableBodyId) {
+        const input = document.getElementById(inputId);
+        const filter = input.value.toLowerCase();
+        const tableBody = document.getElementById(tableBodyId);
+        const rows = tableBody ? tableBody.querySelectorAll('tr') : [];
+
+        rows.forEach(row => {
+            const cells = row.getElementsByTagName('td');
+            let showRow = false;
+            // Skip if it's the "no data" row
+            if (row.querySelector('td[colspan]')) {
+                 showRow = true; // Always show the 'no data' row if it exists initially
+            } else {
+                Array.from(cells).forEach(cell => {
+                    if (cell.textContent.toLowerCase().includes(filter)) {
+                        showRow = true;
+                    }
+                });
+            }
+             row.style.display = showRow ? '' : 'none';
+        });
+         // Re-initialize pagination after filtering might be needed if filter changes the number of rows significantly
+        // This example doesn't re-paginate on filter, but keeps the display style change.
+        // For full re-pagination on filter, you'd need to update the `rows` array and call `showPage(1)`.
+    }
+
+    // Simplified filter function call for the main search bar
+    function filterSales() {
+        // Assuming the search bar filters multiple tables or just the main 'All Transactions' table
+        filterTable('search', 'salesTableBody');
+        filterTable('search', 'topProductsTableBody'); // If search should also filter products
+        filterTable('search', 'dailyBreakdownTableBody'); // If search should also filter daily breakdown
+    }
+
+    // --- Generic Pagination and Sorting ---
+    function initializePaginationAndSorting(config) {
+        const tableBody = document.getElementById(config.tableBodyId);
+        if (!tableBody) {
+            console.warn(`Table body not found: ${config.tableBodyId}`);
+            return null; // Return null instead of undefined
+        }
+
+        let allRows = Array.from(tableBody.children).filter(row => !row.querySelector('td[colspan]')); // Exclude 'no data' row from sorting/pagination logic
+        let currentRows = [...allRows]; // Rows currently being displayed/sorted/paginated
+        let sortDirection = {};
+        let currentPage = 1;
+        
+        // Function to detect mobile device
+        function isMobile() {
+            return window.innerWidth <= 768;
+        }
+        
+        // Get rows per page - 5 for mobile, config value or 10 for desktop
+        function getRowsPerPage() {
+            return isMobile() ? 5 : (config.rowsPerPage || 10);
+        }
+        
+        let rowsPerPage = getRowsPerPage();
+
+        function showPage(page) {
+            // Recalculate rows per page in case screen size changed
+            rowsPerPage = getRowsPerPage();
+            
+            const start = (page - 1) * rowsPerPage;
+            const end = start + rowsPerPage;
+            const maxPage = Math.ceil(currentRows.length / rowsPerPage) || 1; // Use currentRows.length
+            
+            // If current page exceeds max pages after resize, go to last page
+            if (page > maxPage && maxPage > 0) {
+                page = maxPage;
+            }
+            
+            // Hide all rows first
+            allRows.forEach(row => row.style.display = 'none');
+            
+            // Display only the rows for the current page from the potentially sorted/filtered list
+            currentRows.slice(start, end).forEach(row => row.style.display = '');
+
+            // Update page indicator
+            const pageNumberEl = document.getElementById(config.pageNumberId);
+            if (pageNumberEl) {
+                pageNumberEl.textContent = `Page ${page} of ${maxPage}`;
+            }
+
+            // Update page input field
+            const pageInputEl = document.getElementById(config.pageInputId);
+            if (pageInputEl) {
+                pageInputEl.value = page;
+                pageInputEl.max = maxPage;
+                pageInputEl.placeholder = `Page (1-${maxPage})`;
+            }
+
+            // Update button states
+            const firstBtn = document.getElementById(config.firstPageId);
+            const prevBtn = document.getElementById(config.prevPageId);
+            const nextBtn = document.getElementById(config.nextPageId);
+            const lastBtn = document.getElementById(config.lastPageId);
+
+            if (firstBtn) firstBtn.disabled = page === 1;
+            if (prevBtn) prevBtn.disabled = page === 1;
+            if (nextBtn) nextBtn.disabled = page >= maxPage;
+            if (lastBtn) lastBtn.disabled = page >= maxPage;
+
+            currentPage = page;
+        }
+
+        function sortTable(columnIndex, isNumeric = false) {
+            // Update sort direction
+            const currentSortDir = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
+            sortDirection = { [columnIndex]: currentSortDir }; // Reset other column sorts
+
+            // Sort the rows
+            currentRows.sort((a, b) => {
+                let aValue = a.children[columnIndex]?.textContent.trim() || '';
+                let bValue = b.children[columnIndex]?.textContent.trim() || '';
+
+                if (isNumeric) {
+                    // More robust parsing for currency etc.
+                    aValue = parseFloat(aValue.replace(/[^0-9.-]+/g, '')) || 0;
+                    bValue = parseFloat(bValue.replace(/[^0-9.-]+/g, '')) || 0;
+                } else {
+                    aValue = aValue.toLowerCase();
+                    bValue = bValue.toLowerCase();
+                }
+
+                if (aValue < bValue) return currentSortDir === 'asc' ? -1 : 1;
+                if (aValue > bValue) return currentSortDir === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            // Re-append the sorted rows
+            currentRows.forEach(row => tableBody.appendChild(row));
+
+            // Go back to first page after sorting
+            showPage(1);
+        }
+
+        // Set up event listeners for pagination controls
+        const setupButton = (id, callback) => {
+            const button = document.getElementById(id);
+            if (button) {
+                // Remove existing listeners to prevent duplicates
+                const newButton = button.cloneNode(true);
+                button.parentNode.replaceChild(newButton, button);
+                newButton.addEventListener('click', callback);
+            }
+        };
+
+        // Setup pagination buttons
+        setupButton(config.firstPageId, () => showPage(1));
+        setupButton(config.prevPageId, () => showPage(Math.max(1, currentPage - 1)));
+        setupButton(config.nextPageId, () => {
+            rowsPerPage = getRowsPerPage(); // Recalculate for mobile/desktop
+            const maxPage = Math.ceil(currentRows.length / rowsPerPage) || 1;
+            showPage(Math.min(maxPage, currentPage + 1));
+        });
+        setupButton(config.lastPageId, () => {
+            rowsPerPage = getRowsPerPage(); // Recalculate for mobile/desktop
+            const maxPage = Math.ceil(currentRows.length / rowsPerPage) || 1;
+            showPage(maxPage);
+        });
+
+        // Setup page input
+        const pageInput = document.getElementById(config.pageInputId);
+        const pageGoBtn = pageInput?.nextElementSibling;
+        
+        if (pageInput) {
+            // Remove existing listeners
+            const newPageInput = pageInput.cloneNode(true);
+            pageInput.parentNode.replaceChild(newPageInput, pageInput);
+            
+            newPageInput.addEventListener('change', function() {
+                const desiredPage = parseInt(this.value);
+                if (!isNaN(desiredPage)) {
+                    rowsPerPage = getRowsPerPage(); // Recalculate for mobile/desktop
+                    const maxPage = Math.ceil(currentRows.length / rowsPerPage) || 1;
+                    showPage(Math.min(Math.max(1, desiredPage), maxPage));
+                }
+            });
+        }
+        
+        // Add window resize listener to update pagination when screen size changes
+        let resizeTimeout;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(function() {
+                const oldRowsPerPage = rowsPerPage;
+                rowsPerPage = getRowsPerPage();
+                // If rows per page changed, recalculate and show current page
+                if (oldRowsPerPage !== rowsPerPage) {
+                    showPage(currentPage);
+                }
+            }, 250); // Debounce resize events
+        });
+
+        if (pageGoBtn) {
+            // Remove existing listeners
+            const newPageGoBtn = pageGoBtn.cloneNode(true);
+            pageGoBtn.parentNode.replaceChild(newPageGoBtn, pageGoBtn);
+            
+            newPageGoBtn.addEventListener('click', function() {
+                const desiredPage = parseInt(pageInput.value);
+                if (!isNaN(desiredPage)) {
+                    rowsPerPage = getRowsPerPage(); // Recalculate for mobile/desktop
+                    const maxPage = Math.ceil(currentRows.length / rowsPerPage) || 1;
+                    showPage(Math.min(Math.max(1, desiredPage), maxPage));
+                }
+            });
+        }
+
+        // Setup sorting
+        // Find all sortable headers in the thead (assuming thead is sibling of tbody)
+        const headers = tableBody.parentElement.querySelector('thead')?.querySelectorAll('th');
+        if (headers) {
+            headers.forEach((th, index) => {
+                // Check if this header has sorting functionality
+                if (th.querySelector('.sort-icon')) {
+                    // Remove old listeners and onclick attributes
+                    const newTh = th.cloneNode(true);
+                    th.parentNode.replaceChild(newTh, th);
+                    newTh.removeAttribute('onclick');
+                    
+                    // Determine if this column contains numeric data
+                    const isNum = newTh.textContent.trim().includes('Total') || 
+                                  newTh.textContent.trim().includes('Price') || 
+                                  newTh.textContent.trim().includes('Quantity') || 
+                                  newTh.textContent.trim().includes('Sales');
+                    
+                    // Add new event listener
+                    newTh.addEventListener('click', () => sortTable(index, isNum));
+                }
+            });
+        }
+
+        // Initial display
+        showPage(1);
+        
+        // Return functions and data for external use
+        return { 
+            sort: sortTable,
+            showPage: showPage,
+            getAllRows: () => allRows,
+            getCurrentRows: () => currentRows,
+            updateCurrentRows: (newRows) => {
+                currentRows = newRows;
+                showPage(1);
+            }
+        };
+    }
+
+    // Table-specific initialization functions
+    function initializeSalesPaginationAndSorting() {
+        const result = initializePaginationAndSorting({
+            tableBodyId: 'salesTableBody',
+            rowsPerPage: 10,
+            pageNumberId: 'pageNumber',
+            pageInputId: 'pageInput',
+            firstPageId: 'firstPage',
+            prevPageId: 'prevPage',
+            nextPageId: 'nextPage',
+            lastPageId: 'lastPage'
+        });
+        window.sortTable = result && result.sort ? result.sort : function() {};
+        window.salesPaginationManager = result;
+    }
+
+    function initializeTopProductsPaginationAndSorting() {
+        const result = initializePaginationAndSorting({
+            tableBodyId: 'topProductsTableBody',
+            rowsPerPage: 10,
+            pageNumberId: 'topProductsPageNumber',
+            pageInputId: 'topProductsPageInput',
+            firstPageId: 'topProductsFirstPage',
+            prevPageId: 'topProductsPrevPage',
+            nextPageId: 'topProductsNextPage',
+            lastPageId: 'topProductsLastPage'
+        });
+        window.sortTopProductsTable = result && result.sort ? result.sort : function() {};
+        window.topProductsPaginationManager = result;
+    }
+
+    function initializeDailyBreakdownPaginationAndSorting() {
+        const result = initializePaginationAndSorting({
+            tableBodyId: 'dailyBreakdownTableBody',
+            rowsPerPage: 10,
+            pageNumberId: 'dailyPageNumber',
+            pageInputId: 'dailyPageInput',
+            firstPageId: 'dailyFirstPage',
+            prevPageId: 'dailyPrevPage',
+            nextPageId: 'dailyNextPage',
+            lastPageId: 'dailyLastPage'
+        });
+        window.sortDailyBreakdownTable = result && result.sort ? result.sort : function() {};
+        window.dailyBreakdownPaginationManager = result;
+    }
+
+
+    // --- Delete Functions ---
+    function deleteRecord(type, id) {
+        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+            fetch('delete_record.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `type=${type}&id=${id}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('Success', 'Record deleted successfully.', 'success');
+                    // Reload the page after deletion
+                    location.reload();
+                } else {
+                    showNotification('Error', 'Error deleting record: ' + (data.message || 'Unknown error'), 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error', 'An error occurred while deleting the record.', 'error');
+            });
+        });
+    }
+
+    function deleteDailyRecord(date) {
+        showConfirmationModal(`Are you sure you want to delete all records for ${date}?`, 'This action cannot be undone.', () => {
+            fetch('delete_record.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `type=daily&date=${date}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('Success', 'Records deleted successfully.', 'success');
+                    updateReport(); // Refresh data
+                } else {
+                    showNotification('Error', 'Error deleting records: ' + (data.message || 'Unknown error'), 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error', 'An error occurred while deleting the records.', 'error');
+            });
+        });
+    }
+
+    function deleteProductRecord(productName) {
+        showConfirmationModal(`Are you sure you want to delete all sales records for ${productName}?`, 'This action cannot be undone.', () => {
+            fetch('delete_record.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `type=product&name=${encodeURIComponent(productName)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('Success', 'Records deleted successfully.', 'success');
+                    // Reload the page after deletion
+                    location.reload();
+                } else {
+                    showNotification('Error', 'Error deleting records: ' + (data.message || 'Unknown error'), 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Error', 'An error occurred while deleting the records.', 'error');
+            });
+        });
+    }
+
+    // Notification Function
+    function showNotification(title, message, type = 'info') {
+        // Remove existing notification if present
+        const existingNotification = document.getElementById('notification-toast');
+        if (existingNotification) {
+            existingNotification.remove();
+        }
+        
+        // Create notification element
+        const notification = document.createElement('div');
+        notification.id = 'notification-toast';
+        notification.className = 'fixed top-4 right-4 max-w-sm w-full shadow-lg rounded-lg overflow-hidden z-50 transform transition-all duration-300 ease-in-out translate-x-full opacity-0';
+        
+        // Define background and icon based on type
+        let bgColor, icon;
+        switch (type) {
+            case 'success':
+                bgColor = 'bg-teal-100 border-l-4 border-teal-500';
+                icon = `<svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>`;
+                break;
+            case 'error':
+                bgColor = 'bg-red-100 border-l-4 border-red-500';
+                icon = `<svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>`;
+                break;
+            case 'warning':
+                bgColor = 'bg-yellow-50 border-l-4 border-yellow-500';
+                icon = `<svg class="w-6 h-6 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                        </svg>`;
+                break;
+            default: // info
+                bgColor = 'bg-blue-100 border-l-4 border-blue-500';
+                icon = `<svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>`;
+        }
+        
+        // Create notification content
+        notification.innerHTML = `
+            <div class="${bgColor}">
+                <div class="flex items-center p-4">
+                    <div class="flex-shrink-0">
+                        ${icon}
+                    </div>
+                    <div class="ml-3 w-0 flex-1">
+                        <p class="text-sm font-medium text-gray-900">${title}</p>
+                        <p class="mt-1 text-sm text-gray-500">${message}</p>
+                    </div>
+                    <div class="ml-4 flex-shrink-0 flex">
+                        <button class="inline-flex text-gray-400 hover:text-gray-500 focus:outline-none" 
+                                onclick="dismissNotification()">
+                            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Add to DOM
+        document.body.appendChild(notification);
+        
+        // Trigger animation after a small delay (to ensure DOM is ready)
+        setTimeout(() => {
+            notification.classList.remove('translate-x-full', 'opacity-0');
+        }, 10);
+        
+        // Auto remove after 5 seconds
+        setTimeout(() => {
+            dismissNotification();
+        }, 5000);
+    }
+    
+    function dismissNotification() {
+        const toast = document.getElementById('notification-toast');
+        if (toast) {
+            toast.classList.add('translate-x-full', 'opacity-0');
+            setTimeout(() => {
+                if (document.body.contains(toast)) {
+                    toast.remove();
+                }
+            }, 300);
+        }
+    }
+
+    // Confirmation Modal Function
+    function showConfirmationModal(title, message, onConfirm) {
+        // Create modal backdrop
+        const modal = document.createElement('div');
+        modal.className = 'fixed inset-0 bg-black bg-opacity-0 flex items-center justify-center z-50 transition-all duration-300';
+        modal.id = 'confirmation-modal';
+        
+        // Create modal content
+        modal.innerHTML = `
+            <div class="bg-white rounded-lg shadow-xl border border-gray-200 p-6 max-w-md w-full transform transition-all duration-300 scale-90 opacity-0">
+                <div class="flex items-center mb-4">
+                    <div class="rounded-full bg-red-100 p-2 mr-3">
+                        <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-medium text-gray-900">${title}</h3>
+                </div>
+                <p class="text-gray-600 mb-6">${message}</p>
+                <div class="flex justify-end space-x-3">
+                    <button 
+                        class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300"
+                        onclick="dismissConfirmationModal()">
+                        Cancel
+                    </button>
+                    <button 
+                        class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors focus:outline-none focus:ring-2 focus:ring-red-300"
+                        id="confirm-delete-btn">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        // Add to DOM
+        document.body.appendChild(modal);
+        
+        // Trigger animation after a small delay (to ensure DOM is ready)
+        setTimeout(() => {
+            modal.classList.add('bg-opacity-50');
+            const modalContent = modal.querySelector('div');
+            if (modalContent) {
+                modalContent.classList.remove('scale-90', 'opacity-0');
+            }
+        }, 10);
+        
+        // Setup confirm button
+        document.getElementById('confirm-delete-btn').addEventListener('click', () => {
+            dismissConfirmationModal();
+            setTimeout(() => {
+                onConfirm();
+            }, 300); // Wait for the animation to finish before executing the callback
+        });
+        
+        // Close on background click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                dismissConfirmationModal();
+            }
+        });
+        
+        // Close on ESC key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && document.getElementById('confirmation-modal')) {
+                dismissConfirmationModal();
+            }
+        });
+    }
+    
+    function dismissConfirmationModal() {
+        const modal = document.getElementById('confirmation-modal');
+        if (modal) {
+            modal.classList.remove('bg-opacity-50');
+            modal.classList.add('bg-opacity-0');
+            
+            const modalContent = modal.querySelector('div');
+            if (modalContent) {
+                modalContent.classList.add('scale-90', 'opacity-0');
+            }
+            
+            setTimeout(() => {
+                if (document.body.contains(modal)) {
+                    modal.remove();
+                }
+            }, 300);
+        }
+    }
+
+    // --- Reprint Receipt Function ---
+    function reprintReceipt(transactionId, saleType, paymentStatus) {
+        // Show loading notification
+        showNotification('Processing', 'Fetching receipt data...', 'info');
+        
+        // Send reprint request to reprint_receipt.php using form-encoded POST
+        fetch('reprint_receipt.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                transaction_id: transactionId,
+                sale_type: saleType,
+                payment_status: paymentStatus
+            })
+        })
+        .then(async (response) => {
+            const text = await response.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (e) { /* non-JSON */ }
+            if (!response.ok) {
+                const message = (data && data.message) ? data.message : (text || 'Server error');
+                throw new Error(message);
+            }
+            if (!data || !data.success) {
+                const message = (data && data.message) ? data.message : 'Unknown error';
+                throw new Error(message);
+            }
+            
+            // If receipt_data is returned (Android mode), use sendToPrinter
+            if (data.receipt_data) {
+                // Debug: Log receipt data
+                console.log('[Reprint] Receipt data:', JSON.stringify(data.receipt_data).substring(0, 500));
+                console.log('[Reprint] Items count:', data.receipt_data.items ? data.receipt_data.items.length : 0);
+                
+                // Ensure items array exists
+                if (!data.receipt_data.items || data.receipt_data.items.length === 0) {
+                    console.error('[Reprint] No items found in receipt_data!');
+                    throw new Error('Receipt data missing items');
+                }
+                
+                return sendToPrinter(data.receipt_data);
+            } else {
+                // Server-side printing was used
+                return Promise.resolve({ success: true, message: 'Receipt sent to printer' });
+            }
+        })
+        .then(result => {
+            if (result && result.success) {
+                showNotification('Success', 'Receipt sent to printer successfully!', 'success');
+            } else {
+                throw new Error(result?.message || 'Printing failed');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showNotification('Error', 'Failed to print receipt: ' + (error.message || 'Unknown error'), 'error');
+        });
+    }
+
+    // --- Initial Setup ---
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize pagination and sorting for tables present on initial load
+        initializeSalesPaginationAndSorting();
+        initializeDailyBreakdownPaginationAndSorting();
+        initializeTopProductsPaginationAndSorting();
+
+        // Add listener to the date select (already done in HTML via onchange, but ensure updateReport is globally available)
+        // The 'onchange' in HTML should now work as updateReport is defined above.
+        const dateSelect = document.getElementById('date');
+        if (dateSelect) {
+             // Optional: Remove HTML onchange and add listener here if preferred
+             // dateSelect.onchange = null; // Remove inline handler
+             // dateSelect.addEventListener('change', updateReport);
+        } else {
+            console.error("Date select element ('date') not found.");
+        }
+    });
+
+    function updateDownloadLink() {
+        var date = document.getElementById('date').value;
+        var year = '';
+        var month = '';
+        // Expecting date in format YYYY-MM-DD
+        if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            var parts = date.split('-');
+            year = parts[0];
+            month = parts[1];
+        } else {
+            // fallback: use today's date
+            var today = new Date();
+            year = today.getFullYear();
+            month = ("0" + (today.getMonth() + 1)).slice(-2);
+        }
+        var link = document.getElementById('downloadMonthlyReport');
+        if (link) {
+            link.href = "generate_monthly_report.php?month=" + month + "&year=" + year;
+        }
+    }
+
+    // Ensure the link is correct on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize pagination and sorting for tables present on initial load
+        initializeSalesPaginationAndSorting();
+        initializeTopProductsPaginationAndSorting();
+        if (document.getElementById('dailyBreakdownTableBody')) {
+            initializeDailyBreakdownPaginationAndSorting();
+        }
+
+        // Update download link on page load
+        updateDownloadLink();
+        
+        // Add change event listener to the date select to update the download link
+        const dateSelect = document.getElementById('date');
+        if (dateSelect) {
+            dateSelect.addEventListener('change', function() {
+                updateDownloadLink();
+            });
+        }
+    });
+
+    function showTransactionDetails(date) {
+        // Create modal to show detailed transactions for the specified date
+        const modal = document.createElement('div');
+        modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+        modal.id = 'transaction-modal';
+        
+        // Fetch transaction details for this date
+        fetch('fetch_transaction_details.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `date=${date}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error loading transaction details: ' + data.error);
+                document.body.removeChild(modal);
+                return;
+            }
+            
+            // Create modal content
+            modal.innerHTML = `
+                <div class="bg-white rounded-lg shadow-xl border border-gray-200 max-w-3xl w-full max-h-[80vh] overflow-hidden">
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+                        <h3 class="text-lg font-semibold text-gray-900">Transactions for ${date}</h3>
+                        <button class="text-gray-500 hover:text-gray-700 p-1 rounded-md hover:bg-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300" onclick="document.getElementById('transaction-modal').remove()">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="p-4 overflow-y-auto max-h-[calc(80vh-8rem)]">
+                        <div class="mb-4">
+                            <h4 class="font-medium text-gray-700 mb-2">Income</h4>
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead>
+                                        <tr class="bg-gray-50">
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Type</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Amount</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Time</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Details</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-100">
+                                        ${data.income.map(item => `
+                                            <tr>
+                                                <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-900">${item.type}</td>
+                                                <td class="px-3 py-2 whitespace-nowrap text-sm text-blue-600">N$${parseFloat(item.amount).toFixed(2)}</td>
+                                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-600">${item.time}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-600 truncate max-w-xs" title="${item.details}">${item.details}</td>
+                                            </tr>
+                                        `).join('') || '<tr><td colspan="4" class="px-3 py-2 text-center text-sm text-gray-500">No income transactions</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <h4 class="font-medium text-gray-700 mb-2">Expenses</h4>
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead>
+                                        <tr class="bg-gray-50">
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Description</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Amount</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-100">
+                                        ${data.expenses.map(item => `
+                                            <tr>
+                                                <td class="px-3 py-2 text-sm font-medium text-gray-900">${item.description}</td>
+                                                <td class="px-3 py-2 whitespace-nowrap text-sm text-red-600">N$${parseFloat(item.amount).toFixed(2)}</td>
+                                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-600">${item.time}</td>
+                                            </tr>
+                                        `).join('') || '<tr><td colspan="3" class="px-3 py-2 text-center text-sm text-gray-500">No expense transactions</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-4 pt-4 border-t border-gray-200">
+                            <div class="flex justify-between items-center">
+                                <span class="font-bold text-gray-700">Total Income:</span>
+                                <span class="text-blue-600 font-bold">N$${parseFloat(data.totals.income).toFixed(2)}</span>
+                            </div>
+                            <div class="flex justify-between items-center mt-2">
+                                <span class="font-bold text-gray-700">Total Expenses:</span>
+                                <span class="text-red-600 font-bold">N$${parseFloat(data.totals.expenses).toFixed(2)}</span>
+                            </div>
+                            <div class="flex justify-between items-center mt-2 pt-2 border-t border-gray-200">
+                                <span class="font-bold text-gray-900">Net (Profit/Loss):</span>
+                                <span class="font-bold ${data.totals.net >= 0 ? 'text-teal-600' : 'text-red-600'}">
+                                    N$${parseFloat(data.totals.net).toFixed(2)}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-4 bg-gray-50 border-t border-gray-200 flex justify-end">
+                        <button class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300" 
+                                onclick="document.getElementById('transaction-modal').remove()">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            `;
+        })
+        .catch(error => {
+            console.error('Error fetching transaction details:', error);
+            modal.innerHTML = `
+                <div class="bg-white rounded-lg shadow-xl border border-gray-200 p-6 max-w-md w-full">
+                    <h3 class="text-lg font-semibold text-red-600 mb-4">Error</h3>
+                    <p class="text-gray-700">Failed to load transaction details.</p>
+                    <div class="mt-6 flex justify-end">
+                        <button class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300"
+                                onclick="document.getElementById('transaction-modal').remove()">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+        
+        document.body.appendChild(modal);
+    }
+
+
+
+    function filterProducts() {
+        const searchText = document.getElementById('productSearch').value.toLowerCase();
+        const paymentMethod = document.getElementById('paymentMethodFilter').value;
+        
+        // Use pagination manager if available
+        if (window.topProductsPaginationManager) {
+            const allProductRows = window.topProductsPaginationManager.getAllRows();
+            const filteredProductRows = allProductRows.filter(row => {
+                // Skip "no data" rows
+                if (row.querySelector('td[colspan]')) {
+                    return true;
+                }
+                
+                const productNameCell = row.querySelector('td:nth-child(2)');
+                if (!productNameCell) return false;
+                
+                const productName = productNameCell.textContent.toLowerCase();
+                const paymentMethods = row.getAttribute('data-payment-methods')?.split(',') || [];
+                const quantityBadge = row.querySelector('td:nth-child(3) span'); // Fixed selector
+                const totalValueCell = row.querySelector('td:nth-child(5)'); // Fixed selector
+                const priceCell = row.querySelector('td:nth-child(4)');
+                
+                if (!quantityBadge || !totalValueCell || !priceCell) return false;
+                
+                const price = parseFloat(priceCell.textContent.replace('N$', '').replace(',', ''));
+                
+                let quantity = 0;
+                if (paymentMethod === 'all') {
+                    quantity = parseInt(row.getAttribute('data-total-qty')) || 0;
+                } else if (paymentMethod === 'cash') {
+                    quantity = parseInt(row.getAttribute('data-cash-qty')) || 0;
+                } else if (paymentMethod === 'eft') {
+                    quantity = parseInt(row.getAttribute('data-eft-qty')) || 0;
+                } else if (paymentMethod === 'credit') {
+                    quantity = parseInt(row.getAttribute('data-credit-qty')) || 0;
+                }
+                
+                // Update quantity badge
+                quantityBadge.textContent = quantity;
+                
+                // Update total value
+                totalValueCell.textContent = 'N$' + (price * quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                
+                // Check if row matches search and payment method filters
+                const matchesSearch = productName.includes(searchText);
+                const matchesPaymentMethod = paymentMethod === 'all' || paymentMethods.includes(paymentMethod);
+                
+                // Show products even if quantity is 0 for specific payment methods
+                return matchesSearch && (paymentMethod === 'all' ? quantity > 0 : matchesPaymentMethod);
+            });
+            
+            // Update the pagination manager with filtered rows
+            window.topProductsPaginationManager.updateCurrentRows(filteredProductRows);
+        } else {
+            // Fallback to old method if pagination manager not available
+            const rows = document.querySelectorAll('#topProductsTableBody tr');
+            
+            rows.forEach(row => {
+                // Skip "no data" rows
+                if (row.querySelector('td[colspan]')) {
+                    row.style.display = '';
+                    return;
+                }
+                
+                const productNameCell = row.querySelector('td:nth-child(2)');
+                if (!productNameCell) {
+                    row.style.display = 'none';
+                    return;
+                }
+                
+                const productName = productNameCell.textContent.toLowerCase();
+                const paymentMethods = row.getAttribute('data-payment-methods')?.split(',') || [];
+                const quantityBadge = row.querySelector('td:nth-child(3) span'); // Fixed selector
+                const totalValueCell = row.querySelector('td:nth-child(5)'); // Fixed selector
+                const priceCell = row.querySelector('td:nth-child(4)');
+                
+                if (!quantityBadge || !totalValueCell || !priceCell) {
+                    row.style.display = 'none';
+                    return;
+                }
+                
+                const price = parseFloat(priceCell.textContent.replace('N$', '').replace(',', ''));
+                
+                let quantity = 0;
+                if (paymentMethod === 'all') {
+                    quantity = parseInt(row.getAttribute('data-total-qty')) || 0;
+                } else if (paymentMethod === 'cash') {
+                    quantity = parseInt(row.getAttribute('data-cash-qty')) || 0;
+                } else if (paymentMethod === 'eft') {
+                    quantity = parseInt(row.getAttribute('data-eft-qty')) || 0;
+                } else if (paymentMethod === 'credit') {
+                    quantity = parseInt(row.getAttribute('data-credit-qty')) || 0;
+                }
+                
+                // Update quantity badge
+                quantityBadge.textContent = quantity;
+                
+                // Update total value
+                totalValueCell.textContent = 'N$' + (price * quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                
+                // Show/hide row based on search and payment method
+                const matchesSearch = productName.includes(searchText);
+                const matchesPaymentMethod = paymentMethod === 'all' || paymentMethods.includes(paymentMethod);
+                
+                // Show products even if quantity is 0 for specific payment methods
+                row.style.display = (matchesSearch && (paymentMethod === 'all' ? quantity > 0 : matchesPaymentMethod)) ? '' : 'none';
+            });
+        }
+    }
+
+    // Add data attributes to each row
+    document.addEventListener('DOMContentLoaded', function() {
+        const rows = document.querySelectorAll('#topProductsTableBody tr');
+        rows.forEach(row => {
+            const productNameCell = row.querySelector('td:nth-child(2)');
+            if (productNameCell) {
+                // Extract product name from the cell text (remove the quantity part)
+                const fullText = productNameCell.textContent;
+                const productName = fullText.replace(/\s*\(x\d+\)$/, '').trim();
+                const product = <?= json_encode($topProducts ?? []) ?>.find(p => p.product_name === productName);
+                if (product) {
+                    row.setAttribute('data-payment-methods', product.payment_methods);
+                    row.setAttribute('data-cash-qty', product.cash_qty);
+                    row.setAttribute('data-eft-qty', product.eft_qty);
+                    row.setAttribute('data-credit-qty', product.credit_qty);
+                    row.setAttribute('data-total-qty', product.total_qty);
+                }
+            }
+        });
+        
+        // Initialize pagination managers
+        initializeSalesPaginationAndSorting();
+        initializeTopProductsPaginationAndSorting();
+        
+        // Don't call filterByCard immediately, let the table show first
+        // filterByCard('all');
+    });
+
+    function filterByCard(type) {
+        // Filter Sales Table using pagination manager
+        if (window.salesPaginationManager) {
+            const allSalesRows = window.salesPaginationManager.getAllRows();
+            const filteredSalesRows = allSalesRows.filter(row => {
+                const typeCell = row.querySelector('td:nth-child(2) span');
+                if (!typeCell) {
+                    return true; // Show rows without type cell
+                }
+                const typeText = typeCell.textContent.toLowerCase();
+                // Debug: log the type text for unpaid filtering
+                if (type === 'unpaid') {
+                    console.log('Checking transaction type:', typeText);
+                }
+                let show = false;
+                if (type === 'cash') {
+                    // Include Cash Sales and all Credit (Cash) payments, but exclude EFT credit payments
+                    show = typeText.includes('cash sales') || 
+                           (typeText.includes('credit') && typeText.includes('cash') && !typeText.includes('eft'));
+                } else if (type === 'eft') {
+                    // Include EFT and all EFT Credit Payments
+                    show = typeText.includes('eft');
+                } else if (type === 'unpaid') {
+                    // Include unpaid credit and partial payments - comprehensive matching
+                    show = typeText.includes('unpaid credit') || 
+                           typeText.includes('partial payment') || 
+                           typeText.includes('partial credit') ||
+                           (typeText.includes('partial') && typeText.includes('n$'));
+                } else if (type === 'all') {
+                    show = true;
+                }
+                return show;
+            });
+            
+            // Update the pagination manager with filtered rows
+            window.salesPaginationManager.updateCurrentRows(filteredSalesRows);
+        } else {
+            // Fallback to direct DOM manipulation if pagination manager is not available
+            const rows = document.querySelectorAll('#salesTableBody tr');
+            rows.forEach(row => {
+                const typeCell = row.querySelector('td:nth-child(2) span');
+                if (!typeCell) {
+                    row.style.display = ''; // Show rows without type cell
+                    return;
+                }
+                
+                const typeText = typeCell.textContent.toLowerCase();
+                // Debug: log the type text for unpaid filtering
+                if (type === 'unpaid') {
+                    console.log('Fallback - Checking transaction type:', typeText);
+                }
+                let show = false;
+                
+                if (type === 'cash') {
+                    // Include Cash Sales and all Credit (Cash) payments, but exclude EFT credit payments
+                    show = typeText.includes('cash sales') || 
+                           (typeText.includes('credit') && typeText.includes('cash') && !typeText.includes('eft'));
+                } else if (type === 'eft') {
+                    // Include EFT and all EFT Credit Payments
+                    show = typeText.includes('eft');
+                } else if (type === 'unpaid') {
+                    // Include unpaid credit and partial payments - comprehensive matching
+                    show = typeText.includes('unpaid credit') || 
+                           typeText.includes('partial payment') || 
+                           typeText.includes('partial credit') ||
+                           (typeText.includes('partial') && typeText.includes('n$'));
+                } else if (type === 'all') {
+                    show = true;
+                }
+                
+                row.style.display = show ? '' : 'none';
+            });
+        }
+        
+        // Update Top Products Table Filter
+        const paymentMethodFilter = document.getElementById('paymentMethodFilter');
+        if (paymentMethodFilter) {
+            let filterValue = 'all';
+            if (type === 'cash') {
+                filterValue = 'cash';
+            } else if (type === 'eft') {
+                filterValue = 'eft';
+            } else if (type === 'unpaid') {
+                filterValue = 'credit';
+            } else if (type === 'all') {
+                filterValue = 'all';
+            }
+            
+            // Update the dropdown value
+            paymentMethodFilter.value = filterValue;
+            
+            // Call the existing filterProducts function to apply the filter
+            filterProducts();
+        }
+        
+        // Highlight the active card with matching colors
+        document.querySelectorAll('[data-filter-type]').forEach(card => {
+            // Remove all possible ring colors
+            card.classList.remove('ring-2', 'ring-gray-400', 'ring-teal-500', 'ring-purple-500', 'ring-amber-500', 'ring-gray-500');
+        });
+        const activeCard = document.querySelector(`[data-filter-type="${type}"]`);
+        if (activeCard) {
+            // Add ring with matching color for each card type
+            let ringColor = 'ring-gray-500'; // default
+            if (type === 'cash') {
+                ringColor = 'ring-teal-500';
+            } else if (type === 'eft') {
+                ringColor = 'ring-purple-500';
+            } else if (type === 'unpaid') {
+                ringColor = 'ring-amber-500';
+            } else if (type === 'all') {
+                ringColor = 'ring-gray-500';
+            }
+            activeCard.classList.add('ring-2', ringColor);
+        }
+    }
+
+    // Mobile sidebar functions
+    function toggleSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('mobileOverlay');
+        const hamburger = document.querySelector('.hamburger');
+        
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('active');
+        hamburger.classList.toggle('open');
+    }
+    
+    function closeSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('mobileOverlay');
+        const hamburger = document.querySelector('.hamburger');
+        
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+        hamburger.classList.remove('open');
+    }
+    </script>
+</body>
+</html>

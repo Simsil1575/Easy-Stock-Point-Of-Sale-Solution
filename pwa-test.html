@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PWA Test - POS Solution</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#f3f4f6">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .test-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        button {
+            background-color: #4F46E5;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #3730A3;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .home-link {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+        }
+        .home-link:hover {
+            background-color: #218838;
+        }
+    </style>
+</head>
+<body>
+    <h1>PWA Test Page</h1>
+    <p>This page helps you test if your Progressive Web App is working correctly.</p>
+    
+    <div class="test-container">
+        <h2>Service Worker Status</h2>
+        <div id="serviceWorkerStatus" class="status info">Checking...</div>
+        <button onclick="testServiceWorker()">Test Service Worker</button>
+        <button onclick="updateServiceWorker()">Update Service Worker</button>
+    </div>
+
+    <div class="test-container">
+        <h2>Manifest Status</h2>
+        <div id="manifestStatus" class="status info">Checking...</div>
+        <button onclick="testManifest()">Test Manifest</button>
+    </div>
+
+    <div class="test-container">
+        <h2>Installation Status</h2>
+        <div id="installStatus" class="status info">Checking...</div>
+        <button id="installButton" onclick="installPWA()" style="display: none;">Install PWA</button>
+    </div>
+
+    <div class="test-container">
+        <h2>Cache Status</h2>
+        <div id="cacheStatus" class="status info">Checking...</div>
+        <button onclick="testCache()">Test Cache</button>
+        <button onclick="clearCache()">Clear Cache</button>
+    </div>
+
+    <div class="test-container">
+        <h2>Offline Test</h2>
+        <div id="offlineStatus" class="status info">Ready to test</div>
+        <button onclick="testOffline()">Test Offline Mode</button>
+        <p><small>Note: This will try to load the app in offline mode. Make sure you have a stable connection first.</small></p>
+    </div>
+
+    <div class="test-container">
+        <h2>Debug Information</h2>
+        <button onclick="showDebugInfo()">Show Debug Info</button>
+        <pre id="debugInfo" style="display: none;"></pre>
+    </div>
+
+    <a href="/home.php" class="home-link">← Back to POS System</a>
+
+    <script>
+        let deferredPrompt;
+        
+        // Check PWA capabilities on page load
+        window.addEventListener('load', () => {
+            testServiceWorker();
+            testManifest();
+            checkInstallability();
+            testCache();
+        });
+
+        // Service Worker Test
+        function testServiceWorker() {
+            const status = document.getElementById('serviceWorkerStatus');
+            
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(registrations => {
+                    if (registrations.length > 0) {
+                        status.className = 'status success';
+                        status.textContent = `✓ Service Worker active (${registrations.length} registered)`;
+                        
+                        // Check if service worker is controlling this page
+                        if (navigator.serviceWorker.controller) {
+                            status.textContent += ' - Controlling this page';
+                        } else {
+                            status.textContent += ' - Not controlling this page (refresh may be needed)';
+                        }
+                    } else {
+                        status.className = 'status warning';
+                        status.textContent = '⚠ No Service Worker registered';
+                    }
+                }).catch(error => {
+                    status.className = 'status error';
+                    status.textContent = `✗ Service Worker error: ${error.message}`;
+                });
+            } else {
+                status.className = 'status error';
+                status.textContent = '✗ Service Worker not supported';
+            }
+        }
+
+        // Manifest Test
+        function testManifest() {
+            const status = document.getElementById('manifestStatus');
+            
+            fetch('/manifest.json')
+                .then(response => response.json())
+                .then(manifest => {
+                    status.className = 'status success';
+                    status.textContent = `✓ Manifest loaded - ${manifest.name}`;
+                })
+                .catch(error => {
+                    status.className = 'status error';
+                    status.textContent = `✗ Manifest error: ${error.message}`;
+                });
+        }
+
+        // Installation Test
+        function checkInstallability() {
+            const status = document.getElementById('installStatus');
+            const installBtn = document.getElementById('installButton');
+            
+            if (window.matchMedia('(display-mode: standalone)').matches) {
+                status.className = 'status success';
+                status.textContent = '✓ PWA is already installed';
+                installBtn.style.display = 'none';
+            } else {
+                status.className = 'status info';
+                status.textContent = 'PWA not installed - waiting for install prompt';
+            }
+        }
+
+        // Handle install prompt
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            const status = document.getElementById('installStatus');
+            const installBtn = document.getElementById('installButton');
+            
+            status.className = 'status success';
+            status.textContent = '✓ PWA can be installed';
+            installBtn.style.display = 'inline-block';
+        });
+
+        // Install PWA
+        function installPWA() {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    const status = document.getElementById('installStatus');
+                    if (choiceResult.outcome === 'accepted') {
+                        status.className = 'status success';
+                        status.textContent = '✓ PWA installation accepted';
+                    } else {
+                        status.className = 'status warning';
+                        status.textContent = '⚠ PWA installation dismissed';
+                    }
+                    deferredPrompt = null;
+                    document.getElementById('installButton').style.display = 'none';
+                });
+            }
+        }
+
+        // Cache Test
+        function testCache() {
+            const status = document.getElementById('cacheStatus');
+            
+            if ('caches' in window) {
+                caches.keys().then(cacheNames => {
+                    if (cacheNames.length > 0) {
+                        status.className = 'status success';
+                        status.textContent = `✓ Cache active (${cacheNames.length} cache(s): ${cacheNames.join(', ')})`;
+                    } else {
+                        status.className = 'status warning';
+                        status.textContent = '⚠ No caches found';
+                    }
+                }).catch(error => {
+                    status.className = 'status error';
+                    status.textContent = `✗ Cache error: ${error.message}`;
+                });
+            } else {
+                status.className = 'status error';
+                status.textContent = '✗ Cache API not supported';
+            }
+        }
+
+        // Clear Cache
+        function clearCache() {
+            if ('caches' in window) {
+                caches.keys().then(cacheNames => {
+                    Promise.all(cacheNames.map(cacheName => caches.delete(cacheName)))
+                        .then(() => {
+                            const status = document.getElementById('cacheStatus');
+                            status.className = 'status info';
+                            status.textContent = 'Cache cleared successfully';
+                            setTimeout(() => testCache(), 1000);
+                        });
+                });
+            }
+        }
+
+        // Update Service Worker
+        function updateServiceWorker() {
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                navigator.serviceWorker.getRegistrations().then(registrations => {
+                    registrations.forEach(registration => {
+                        registration.update();
+                    });
+                    
+                    const status = document.getElementById('serviceWorkerStatus');
+                    status.className = 'status info';
+                    status.textContent = 'Service Worker update requested';
+                    setTimeout(() => testServiceWorker(), 2000);
+                });
+            }
+        }
+
+        // Test Offline Mode
+        function testOffline() {
+            const status = document.getElementById('offlineStatus');
+            
+            // Try to load the main page
+            fetch('/home.php', { cache: 'no-store' })
+                .then(response => {
+                    if (response.ok) {
+                        status.className = 'status success';
+                        status.textContent = '✓ Online - page loaded successfully';
+                    } else {
+                        status.className = 'status error';
+                        status.textContent = `✗ Server error: ${response.status}`;
+                    }
+                })
+                .catch(error => {
+                    status.className = 'status warning';
+                    status.textContent = '⚠ Network error - check if offline mode works by disconnecting internet';
+                });
+        }
+
+        // Show Debug Information
+        function showDebugInfo() {
+            const debugInfo = document.getElementById('debugInfo');
+            
+            const info = {
+                userAgent: navigator.userAgent,
+                serviceWorkerSupported: 'serviceWorker' in navigator,
+                cacheSupported: 'caches' in window,
+                pushSupported: 'PushManager' in window,
+                notificationSupported: 'Notification' in window,
+                displayMode: window.matchMedia('(display-mode: standalone)').matches ? 'standalone' : 'browser',
+                online: navigator.onLine,
+                url: window.location.href,
+                timestamp: new Date().toISOString()
+            };
+            
+            debugInfo.textContent = JSON.stringify(info, null, 2);
+            debugInfo.style.display = debugInfo.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Register service worker for this test page
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js')
+                .then(registration => {
+                    console.log('Service Worker registered for test page');
+                })
+                .catch(error => {
+                    console.error('Service Worker registration failed:', error);
+                });
+        }
+    </script>
+</body>
+</html> 

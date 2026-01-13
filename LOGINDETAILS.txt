@@ -1,0 +1,19 @@
+Cashier*
+
+Username Cashier
+
+password : Cashier@1
+
+
+Manager*
+
+username: Manager
+
+password: Manager@1
+
+
+Admin*
+
+username: Admin
+
+password: Admin@1

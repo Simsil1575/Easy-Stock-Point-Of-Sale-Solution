@@ -1,0 +1,27 @@
+RewriteEngine On
+# Prevent directory redirects with trailing slash
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)/$ /$1 [L,R=301]
+# Handle PHP files without extension
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}\.php -f
+RewriteRule ^(.*)$ $1.php [L]
+
+# PWA MIME Types
+<IfModule mod_mime.c>
+    AddType application/manifest+json .json
+    AddType application/javascript .js
+</IfModule>
+
+# Service Worker Cache Control
+<IfModule mod_headers.c>
+    <FilesMatch "\.(js|json)$">
+        Header set Cache-Control "public, max-age=3600"
+    </FilesMatch>
+    <FilesMatch "service-worker\.js$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </FilesMatch>
+    <FilesMatch "manifest\.json$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </FilesMatch>
+</IfModule>

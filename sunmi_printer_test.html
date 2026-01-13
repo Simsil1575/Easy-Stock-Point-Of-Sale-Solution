@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sunmi Bluetooth Printer Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @media print {
+            body { display: none; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen py-8 px-4">
+    <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-lg p-6">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">Sunmi Bluetooth Printer Test</h1>
+        
+        <div class="space-y-4">
+            <!-- Connection Status -->
+            <div class="bg-gray-50 p-4 rounded-lg">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-semibold text-gray-700">Connection Status:</span>
+                    <span id="status" class="px-3 py-1 rounded-full text-sm font-medium bg-gray-200 text-gray-700">
+                        Not Connected
+                    </span>
+                </div>
+                <div id="deviceInfo" class="text-sm text-gray-600 mt-2"></div>
+            </div>
+
+            <!-- Connect Button -->
+            <button id="connectBtn" 
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-md">
+                Connect to Printer
+            </button>
+
+            <!-- Disconnect Button -->
+            <button id="disconnectBtn" 
+                    class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-md hidden">
+                Disconnect
+            </button>
+
+            <!-- Test Print Buttons -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+                <button id="testPrintBtn" 
+                        class="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed"
+                        disabled>
+                    Print Test Receipt
+                </button>
+                
+                <button id="testTextBtn" 
+                        class="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed"
+                        disabled>
+                    Print Test Text
+                </button>
+            </div>
+
+            <!-- Custom Text Input -->
+            <div class="mt-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Custom Text to Print:</label>
+                <textarea id="customText" 
+                          rows="4" 
+                          class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="Enter text to print..."></textarea>
+                <button id="printCustomBtn" 
+                        class="mt-2 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-200 shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed"
+                        disabled>
+                    Print Custom Text
+                </button>
+            </div>
+
+            <!-- Log Area -->
+            <div class="mt-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Log Messages:</label>
+                <div id="logArea" class="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm h-48 overflow-y-auto">
+                    <div>Ready to connect...</div>
+                </div>
+                <button id="clearLogBtn" class="mt-2 text-sm text-gray-600 hover:text-gray-800">
+                    Clear Log
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let bluetoothDevice = null;
+        let characteristic = null;
+        let service = null;
+
+        // ESC/POS Commands
+        const ESC = '\x1B';
+        const GS = '\x1D';
+        const ESCPOS = {
+            INIT: ESC + '@',
+            LF: '\n',
+            CR: '\r',
+            CUT: GS + 'V' + '\x41' + '\x03',
+            BOLD_ON: ESC + 'E' + '\x01',
+            BOLD_OFF: ESC + 'E' + '\x00',
+            ALIGN_LEFT: ESC + 'a' + '\x00',
+            ALIGN_CENTER: ESC + 'a' + '\x01',
+            ALIGN_RIGHT: ESC + 'a' + '\x02',
+            FONT_A: ESC + 'M' + '\x00',
+            FONT_B: ESC + 'M' + '\x01',
+            DOUBLE_HEIGHT: ESC + 'd' + '\x01',
+            DOUBLE_WIDTH: ESC + 'W' + '\x01',
+            NORMAL_SIZE: ESC + 'd' + '\x00' + ESC + 'W' + '\x00'
+        };
+
+        // UI Elements
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const testPrintBtn = document.getElementById('testPrintBtn');
+        const testTextBtn = document.getElementById('testTextBtn');
+        const printCustomBtn = document.getElementById('printCustomBtn');
+        const statusEl = document.getElementById('status');
+        const deviceInfoEl = document.getElementById('deviceInfo');
+        const logArea = document.getElementById('logArea');
+        const customText = document.getElementById('customText');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+
+        // Logging function
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const colors = {
+                info: 'text-green-400',
+                error: 'text-red-400',
+                warning: 'text-yellow-400',
+                success: 'text-blue-400'
+            };
+            const logEntry = document.createElement('div');
+            logEntry.className = colors[type] || colors.info;
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logArea.appendChild(logEntry);
+            logArea.scrollTop = logArea.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        // Check Web Bluetooth support
+        if (!navigator.bluetooth) {
+            log('Web Bluetooth API is not supported in this browser. Please use Chrome/Edge on Android or Chrome on desktop.', 'error');
+            connectBtn.disabled = true;
+            connectBtn.textContent = 'Web Bluetooth Not Supported';
+        }
+
+        // Connect to Bluetooth printer
+        connectBtn.addEventListener('click', async () => {
+            try {
+                log('Requesting Bluetooth device...', 'info');
+                
+                // Request device with specific service UUID for printers
+                // Common printer service UUIDs:
+                // - Serial Port Profile: 00001101-0000-1000-8000-00805f9b34fb
+                // - Sunmi printers may use different UUIDs
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    filters: [
+                        { services: ['00001101-0000-1000-8000-00805f9b34fb'] }, // SPP
+                        { namePrefix: 'Sunmi' }, // Try to filter by name
+                    ],
+                    optionalServices: ['00001101-0000-1000-8000-00805f9b34fb']
+                });
+
+                log(`Connecting to device: ${bluetoothDevice.name || 'Unknown'}`, 'info');
+                
+                bluetoothDevice.addEventListener('gattserverdisconnected', () => {
+                    log('Device disconnected', 'warning');
+                    updateConnectionStatus(false);
+                });
+
+                const server = await bluetoothDevice.gatt.connect();
+                log('Connected to GATT server', 'success');
+
+                // Try to find the characteristic for printing
+                // Sunmi printers typically use the Serial Port Profile
+                service = await server.getPrimaryService('00001101-0000-1000-8000-00805f9b34fb');
+                
+                // Get characteristics - usually the first one is for data
+                const characteristics = await service.getCharacteristics();
+                log(`Found ${characteristics.length} characteristics`, 'info');
+                
+                if (characteristics.length > 0) {
+                    characteristic = characteristics[0];
+                    log('Found print characteristic', 'success');
+                    updateConnectionStatus(true);
+                } else {
+                    throw new Error('No characteristics found');
+                }
+
+            } catch (error) {
+                log(`Connection error: ${error.message}`, 'error');
+                if (error.name === 'NotFoundError') {
+                    log('No Bluetooth device found. Make sure your printer is powered on and in pairing mode.', 'error');
+                } else if (error.name === 'SecurityError') {
+                    log('Bluetooth permission denied. Please allow Bluetooth access.', 'error');
+                }
+            }
+        });
+
+        // Disconnect
+        disconnectBtn.addEventListener('click', async () => {
+            try {
+                if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                    await bluetoothDevice.gatt.disconnect();
+                    log('Disconnected from printer', 'info');
+                }
+                updateConnectionStatus(false);
+            } catch (error) {
+                log(`Disconnect error: ${error.message}`, 'error');
+            }
+        });
+
+        // Send data to printer
+        async function sendToPrinter(data) {
+            if (!characteristic) {
+                log('Not connected to printer', 'error');
+                return false;
+            }
+
+            try {
+                // Convert string to Uint8Array
+                const encoder = new TextEncoder();
+                const dataArray = encoder.encode(data);
+                
+                // Send data in chunks (some printers have MTU limits)
+                const chunkSize = 20; // Adjust based on your printer's MTU
+                for (let i = 0; i < dataArray.length; i += chunkSize) {
+                    const chunk = dataArray.slice(i, i + chunkSize);
+                    await characteristic.writeValue(chunk);
+                    await new Promise(resolve => setTimeout(resolve, 10)); // Small delay between chunks
+                }
+                
+                log('Data sent successfully', 'success');
+                return true;
+            } catch (error) {
+                log(`Print error: ${error.message}`, 'error');
+                return false;
+            }
+        }
+
+        // Test print receipt
+        testPrintBtn.addEventListener('click', async () => {
+            log('Printing test receipt...', 'info');
+            
+            let receipt = ESCPOS.INIT;
+            receipt += ESCPOS.ALIGN_CENTER;
+            receipt += ESCPOS.BOLD_ON;
+            receipt += ESCPOS.DOUBLE_HEIGHT;
+            receipt += 'SUNMI PRINTER TEST\n';
+            receipt += ESCPOS.BOLD_OFF;
+            receipt += ESCPOS.NORMAL_SIZE;
+            receipt += ESCPOS.ALIGN_LEFT;
+            receipt += '--------------------------------\n';
+            receipt += 'Test Receipt\n';
+            receipt += 'Date: ' + new Date().toLocaleString() + '\n';
+            receipt += '--------------------------------\n';
+            receipt += ESCPOS.ALIGN_CENTER;
+            receipt += 'Item 1          $10.00\n';
+            receipt += 'Item 2          $15.50\n';
+            receipt += 'Item 3          $5.25\n';
+            receipt += ESCPOS.ALIGN_LEFT;
+            receipt += '--------------------------------\n';
+            receipt += ESCPOS.ALIGN_RIGHT;
+            receipt += ESCPOS.BOLD_ON;
+            receipt += 'Total: $30.75\n';
+            receipt += ESCPOS.BOLD_OFF;
+            receipt += ESCPOS.ALIGN_CENTER;
+            receipt += '\n\n';
+            receipt += 'Thank you!\n';
+            receipt += '\n\n\n';
+            receipt += ESCPOS.CUT;
+            
+            await sendToPrinter(receipt);
+        });
+
+        // Test print simple text
+        testTextBtn.addEventListener('click', async () => {
+            log('Printing test text...', 'info');
+            
+            let text = ESCPOS.INIT;
+            text += ESCPOS.ALIGN_CENTER;
+            text += ESCPOS.BOLD_ON;
+            text += 'SUNMI PRINTER TEST\n';
+            text += ESCPOS.BOLD_OFF;
+            text += '\n';
+            text += 'This is a test print.\n';
+            text += 'If you can read this,\n';
+            text += 'the printer is working!\n';
+            text += '\n\n\n';
+            text += ESCPOS.CUT;
+            
+            await sendToPrinter(text);
+        });
+
+        // Print custom text
+        printCustomBtn.addEventListener('click', async () => {
+            const text = customText.value.trim();
+            if (!text) {
+                log('Please enter some text to print', 'warning');
+                return;
+            }
+            
+            log('Printing custom text...', 'info');
+            
+            let printData = ESCPOS.INIT;
+            printData += ESCPOS.ALIGN_LEFT;
+            printData += text;
+            printData += '\n\n\n';
+            printData += ESCPOS.CUT;
+            
+            await sendToPrinter(printData);
+        });
+
+        // Clear log
+        clearLogBtn.addEventListener('click', () => {
+            logArea.innerHTML = '';
+            log('Log cleared', 'info');
+        });
+
+        // Update connection status UI
+        function updateConnectionStatus(connected) {
+            if (connected) {
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium bg-green-200 text-green-800';
+                deviceInfoEl.textContent = `Device: ${bluetoothDevice?.name || 'Unknown'} (${bluetoothDevice?.id || 'N/A'})`;
+                connectBtn.classList.add('hidden');
+                disconnectBtn.classList.remove('hidden');
+                testPrintBtn.disabled = false;
+                testTextBtn.disabled = false;
+                printCustomBtn.disabled = false;
+            } else {
+                statusEl.textContent = 'Not Connected';
+                statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium bg-gray-200 text-gray-700';
+                deviceInfoEl.textContent = '';
+                connectBtn.classList.remove('hidden');
+                disconnectBtn.classList.add('hidden');
+                testPrintBtn.disabled = true;
+                testTextBtn.disabled = true;
+                printCustomBtn.disabled = true;
+                bluetoothDevice = null;
+                characteristic = null;
+                service = null;
+            }
+        }
+
+        // Initial log
+        log('Application loaded. Click "Connect to Printer" to begin.', 'info');
+    </script>
+</body>
+</html>
