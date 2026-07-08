@@ -13,15 +13,32 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     exit();
 }
 
+// Check if user has the correct role (waitress only)
+if (strtolower($_SESSION['role']) !== 'waitress') {
+    // Clear session and log out user with wrong role
+    session_unset();
+    session_destroy();
+    header("Location: ../");
+    exit();
+}
+
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 
+// Ensure use_qz_tray column exists for newer receipt printing mode
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists, continue
+}
+
 // Fetch the show_all_products setting
-$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity FROM product_settings LIMIT 1");
+$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity, use_qz_tray FROM product_settings LIMIT 1");
 $setting = $settingStmt->fetch(PDO::FETCH_ASSOC);
 $show_all_products = $setting['show_all_products'] ?? 0; // Default to 0 if not set
 $default_print_receipt = $setting['default_print_receipt'] ?? 0; // Default to 0 if not set
 $hide_available_quantity = $setting['hide_available_quantity'] ?? 0; // Default to 0 if not set
+$use_qz_tray = isset($setting['use_qz_tray']) ? (int)$setting['use_qz_tray'] : 0;
 
 // Fetch products from the database
 $query = '
@@ -55,12 +72,35 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
 // Add this after fetching products
 $creditors = $db->query("SELECT * FROM creditors WHERE active = 1")->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch unique categories from products
-$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category";
+// Fetch unique categories from products (custom order: Bar, Restaurant, Laundry, Rooms, then others alphabetically)
+$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' 
+ORDER BY 
+    CASE 
+        WHEN LOWER(category) = 'bar' THEN 1
+        WHEN LOWER(category) = 'restaurant' THEN 2
+        WHEN LOWER(category) = 'laundry' THEN 3
+        WHEN LOWER(category) = 'rooms' THEN 4
+        ELSE 5
+    END,
+    category";
 $categoriesStmt = $db->query($categoriesQuery);
 $categories = [];
 while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
     $categories[] = $catRow['category'];
+}
+
+// Fetch business info for printing (used by Android native printing)
+$dbInfo = new PDO('sqlite:../info.db');
+$businessInfo = $dbInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+if (!$businessInfo) {
+    $businessInfo = [
+        'name' => 'POS SOLUTION',
+        'location' => 'Your Business Address',
+        'phone' => 'Your Phone Number',
+        'footer_text' => 'Thank you for your purchase!',
+        'vat_inclusive' => 'exclusive',
+        'vat_rate' => 15.0
+    ];
 }
 ?>
 
@@ -82,6 +122,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
     <script src="../src/howler.min.js"></script>
     <script src="../src/chart.js"></script>
     <script src="../lucide.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="../receipt.php?js=true"></script>
     <meta name="google" content="notranslate">
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
@@ -259,13 +301,17 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
             transition: transform 0.3s ease-in-out;
         }
         
-        /* Ensure modals appear above cart on mobile */
+        /* Ensure modals appear above cart on mobile and sidebar */
         .swal2-container {
             z-index: 10000 !important;
         }
         
         .swal2-popup {
             z-index: 10001 !important;
+        }
+        
+        .swal2-backdrop-show {
+            z-index: 9999 !important;
         }
         
         #cart.mobile-open {
@@ -1034,7 +1080,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         #searchBar {
             font-size: 0.875rem !important;
             padding-left: 2.5rem !important;
-            padding-right: 2.5rem !important;
+            padding-right: 3rem !important; /* Space for camera button in right corner */
             padding-top: 0.5rem !important;
             padding-bottom: 0.5rem !important;
         }
@@ -1154,7 +1200,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         #searchBar {
             font-size: 0.75rem !important;
             padding-left: 2rem !important;
-            padding-right: 2rem !important;
+            padding-right: 2.75rem !important; /* Space for camera button in right corner */
             padding-top: 0.375rem !important;
             padding-bottom: 0.375rem !important;
         }
@@ -1165,6 +1211,11 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         
         /* Reduce icon sizes in search bar */
         #searchBar ~ div svg {
+            width: 0.875rem !important;
+            height: 0.875rem !important;
+        }
+        
+        #cameraScanBtn svg {
             width: 0.875rem !important;
             height: 0.875rem !important;
         }
@@ -1238,12 +1289,19 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                     </svg>
                 </div>
-                <!-- Clear button -->
-                <div class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                <!-- Clear button (appears when there's text) -->
+                <div class="absolute inset-y-0 right-10 pr-3 flex items-center">
                     <svg id="clearSearch" onclick="clearSearch()" class="h-5 w-5 text-gray-400 cursor-pointer opacity-0 transition-opacity duration-200 pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
                     </svg>
                 </div>
+                <!-- Camera/Scan button - Right corner -->
+                <button id="cameraScanBtn" onclick="toggleCameraScanner()" class="absolute inset-y-0 right-0 pr-3 flex items-center p-1.5 text-gray-400 hover:text-teal-500 transition-colors duration-200 focus:outline-none" title="Scan barcode with camera">
+                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                </button>
             </div>
             
             <!-- Category Filter Section -->
@@ -1532,6 +1590,74 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
             }
         }
 
+        // Camera scanner toggle function
+        let isCameraScanning = false;
+        function toggleCameraScanner() {
+            if (typeof AndroidBarcodeScanner === 'undefined') {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Scanner Not Available',
+                    text: 'Camera scanner is only available in the Android app',
+                    timer: 2000,
+                    timerProgressBar: true
+                });
+                return;
+            }
+
+            try {
+                if (isCameraScanning) {
+                    AndroidBarcodeScanner.stopScanning();
+                    isCameraScanning = false;
+                    updateCameraButton(false);
+                    Swal.fire({
+                        icon: 'info',
+                        title: 'Scanner Stopped',
+                        text: 'Camera scanner has been stopped',
+                        timer: 1500,
+                        timerProgressBar: true,
+                        showConfirmButton: false
+                    });
+                } else {
+                    AndroidBarcodeScanner.startScanning();
+                    isCameraScanning = true;
+                    updateCameraButton(true);
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Scanner Started',
+                        text: 'Camera scanner is now active. Point at a barcode to scan.',
+                        timer: 2000,
+                        timerProgressBar: true,
+                        showConfirmButton: false
+                    });
+                }
+            } catch (error) {
+                console.error('Error toggling camera scanner:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to toggle camera scanner: ' + error.message,
+                    timer: 2000,
+                    timerProgressBar: true
+                });
+            }
+        }
+
+        // Update camera button appearance
+        function updateCameraButton(isActive) {
+            const btn = document.getElementById('cameraScanBtn');
+            if (!btn) return;
+            
+            if (isActive) {
+                btn.classList.remove('text-gray-400', 'hover:text-teal-500');
+                btn.classList.add('text-teal-500', 'hover:text-teal-600');
+                btn.title = 'Stop camera scanner';
+            } else {
+                btn.classList.remove('text-teal-500', 'hover:text-teal-600');
+                btn.classList.add('text-gray-400', 'hover:text-teal-500');
+                btn.title = 'Scan barcode with camera';
+            }
+        }
+
         function filterProducts() {
             const searchTerm = document.getElementById('searchBar').value.toLowerCase();
             const clearButton = document.getElementById('clearSearch');
@@ -1801,70 +1927,14 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
 </script>
 
 <script>
-        <?php
-        // Fetch business info for Android printing
-        $dbInfo = new PDO('sqlite:../info.db');
-        $businessInfo = $dbInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        if (!$businessInfo) {
-            $businessInfo = [
-                'name' => 'POS SOLUTION',
-                'location' => '',
-                'phone' => '',
-                'footer_text' => 'Thank you!',
-                'vat_inclusive' => 'exclusive',
-                'vat_rate' => 15.0
-            ];
-        }
-        ?>
-
-        // Business info for Android printing
-        var businessInfo = {
-            business_name: <?= json_encode($businessInfo['name'] ?? 'POS SOLUTION') ?>,
-            location: <?= json_encode($businessInfo['location'] ?? '') ?>,
-            phone: <?= json_encode($businessInfo['phone'] ?? '') ?>,
-            footer_text: <?= json_encode($businessInfo['footer_text'] ?? 'Thank you!') ?>,
-            vat_inclusive: <?= json_encode($businessInfo['vat_inclusive'] ?? 'exclusive') ?>,
-            vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
-        };
-
-        // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
-            var dataWithBusiness = Object.assign({}, receiptData, {
-                business_name: receiptData.business_name || businessInfo.business_name,
-                location: receiptData.location || businessInfo.location,
-                phone: receiptData.phone || businessInfo.phone,
-                footer_text: receiptData.footer_text || businessInfo.footer_text,
-                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-            });
-            
-            var printer = window.AndroidPrinter || window.NativePrinter || null;
-            
-            if (printer && typeof printer.printReceipt === 'function') {
-                console.log('[sendToPrinter] Using Android native printing');
-                try {
-                    printer.printReceipt(JSON.stringify(dataWithBusiness));
-                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-                } catch (e) {
-                    console.error('[sendToPrinter] Android print error:', e.message);
-                }
-            }
-            
-            return fetch('../receipt.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataWithBusiness)
-            }).then(function(r) { return r.json(); });
-        }
-
         // Add this at the beginning of your script
         const sound = new Howl({
-            src: ['beep-29.mp3'],
+            src: ['../beep-29.mp3'],
             volume: 0.5
         });
 
         const cashSound = new Howl({
-        src: ['pay.mp3'],
+        src: ['../pay.mp3'],
         volume: 0.5
     });
 
@@ -1876,6 +1946,174 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         // Settings from PHP
         const hideAvailableQuantity = <?php echo $hide_available_quantity; ?>;
         const defaultPrintReceipt = <?php echo $default_print_receipt; ?>;
+        // receipt.php?js=true may already define `useQzTray` as a var.
+        if (typeof useQzTray === 'undefined') {
+            var useQzTray = <?php echo $use_qz_tray ? 'true' : 'false'; ?>;
+        }
+        
+        // Current user info for table ownership
+        const currentUserId = <?php echo json_encode($_SESSION['user_id'] ?? null); ?>;
+        const currentUserRole = <?php echo json_encode($_SESSION['role'] ?? 'cashier'); ?>;
+        
+        // Business info for Android native printing
+        // Make businessInfo global so sendToPrinter (from receipt.php?js=true) can access it
+        window.businessInfo = {
+            business_name: <?php echo json_encode($businessInfo['name'] ?? 'POS SOLUTION'); ?>,
+            location: <?php echo json_encode($businessInfo['location'] ?? ''); ?>,
+            phone: <?php echo json_encode($businessInfo['phone'] ?? ''); ?>,
+            footer_text: <?php echo json_encode($businessInfo['footer_text'] ?? 'Thank you for your purchase!'); ?>,
+            vat_inclusive: <?php echo json_encode($businessInfo['vat_inclusive'] ?? 'exclusive'); ?>,
+            vat_rate: <?php echo json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)); ?>
+        };
+        // Also keep local reference for backward compatibility
+        const businessInfo = window.businessInfo;
+        
+        // sendToPrinter function is now loaded from receipt.php?js=true
+        // The function is defined in receipt.php and automatically handles Android printing
+        // The Android interceptor in MainActivity.java only listens to receipt.php calls
+        if (typeof sendToPrinter === 'undefined') {
+            console.warn('[home.php] sendToPrinter not loaded from receipt.php, using fallback');
+            function sendToPrinter(receiptData) {
+                // Ensure print_only flag is set
+                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt) {
+                    receiptData.print_only = true;
+                }
+                
+                // Add business info to receipt data
+                var dataWithBusiness = Object.assign({}, receiptData, {
+                    business_name: receiptData.business_name || businessInfo.business_name,
+                    location: receiptData.location || businessInfo.location,
+                    phone: receiptData.phone || businessInfo.phone,
+                    footer_text: receiptData.footer_text || businessInfo.footer_text,
+                    vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                    vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+                });
+
+                var ua = (navigator.userAgent || '').toLowerCase();
+                var isAndroidLike = ua.indexOf('android') !== -1 || ua.indexOf('median') !== -1;
+
+                // QZ Tray printing (desktop/web)
+                if (useQzTray && !isAndroidLike) {
+                    window.__qzTrayPrintQueue = window.__qzTrayPrintQueue || Promise.resolve();
+                    window.__qzTrayPrintQueue = window.__qzTrayPrintQueue.then(function() {
+                        return new Promise(function(resolve) {
+                            var qzSupported = !!dataWithBusiness.is_cashup_report || !!dataWithBusiness.is_balance_receipt
+                                || (! (dataWithBusiness.tab_id || dataWithBusiness.table_id)
+                                    && !dataWithBusiness.is_tab_balance_receipt
+                                    && !dataWithBusiness.is_payment_receipt
+                                    && !dataWithBusiness.is_refund_receipt);
+
+                            if (!qzSupported) {
+                                return resolve({ success: false, message: 'Unsupported receipt type for QZ Tray' });
+                            }
+
+                            var iframe = document.createElement('iframe');
+                            iframe.style.display = 'none';
+                            iframe.width = '0';
+                            iframe.height = '0';
+
+                            var encoded = encodeURIComponent(JSON.stringify(dataWithBusiness));
+                            var timeoutId = null;
+
+                            function cleanup(handlerFn, result) {
+                                try {
+                                    if (handlerFn) window.removeEventListener('message', handlerFn);
+                                } catch (e) {}
+                                if (timeoutId) clearTimeout(timeoutId);
+                                try { iframe.remove(); } catch (e) {}
+                                resolve(result);
+                            }
+
+                            function onMessage(event) {
+                                if (!event || !event.data || event.data.type !== 'printComplete') return;
+                                cleanup(onMessage, {
+                                    success: !!event.data.success,
+                                    message: event.data.message || 'QZ Tray print completed'
+                                });
+                            }
+
+                            timeoutId = setTimeout(function() {
+                                cleanup(onMessage, { success: false, message: 'QZ Tray print timeout' });
+                            }, 60000);
+
+                            window.addEventListener('message', onMessage);
+
+                            iframe.src = '../qzreceipt.php?data=' + encoded;
+                            document.body.appendChild(iframe);
+                        });
+                    });
+
+                    return window.__qzTrayPrintQueue;
+                }
+
+                // Default: receipt.php (works for Android interceptor and ESC/POS server printing)
+                return fetch('../receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) {
+                    return r.json();
+                });
+            }
+        }
+        
+        // Debug function to check Android printer status
+        function checkAndroidPrinter() {
+            var status = {
+                userAgent: navigator.userAgent,
+                isMedian: navigator.userAgent.toLowerCase().indexOf('median') !== -1,
+                AndroidPrinter: typeof window.AndroidPrinter,
+                NativePrinter: typeof window.NativePrinter,
+                median: typeof window.median,
+                JSBridge: typeof window.JSBridge,
+                hasPrintReceipt: false,
+                pingResult: null
+            };
+            
+            // Check AndroidPrinter
+            if (window.AndroidPrinter) {
+                status.hasPrintReceipt = typeof window.AndroidPrinter.printReceipt === 'function';
+                if (typeof window.AndroidPrinter.ping === 'function') {
+                    try {
+                        status.pingResult = window.AndroidPrinter.ping();
+                    } catch (e) {
+                        status.pingResult = 'error: ' + e.message;
+                    }
+                }
+            }
+            
+            // Check NativePrinter
+            if (window.NativePrinter) {
+                status.NativePrinterHasPrint = typeof window.NativePrinter.printReceipt === 'function';
+            }
+            
+            // List all window properties that might be interfaces
+            var interfaces = [];
+            for (var key in window) {
+                if (typeof window[key] === 'object' && window[key] !== null) {
+                    if (typeof window[key].printReceipt === 'function') {
+                        interfaces.push(key);
+                    }
+                }
+            }
+            status.interfacesWithPrintReceipt = interfaces;
+            
+            console.log('[AndroidPrinter Status]', JSON.stringify(status, null, 2));
+            alert('Printer Status:\n' + JSON.stringify(status, null, 2));
+            return status;
+        }
+        
+        // Quick test print function
+        function testAndroidPrint() {
+            var printer = window.AndroidPrinter || window.NativePrinter;
+            if (printer && printer.testPrint) {
+                console.log('[TestPrint] Calling testPrint...');
+                printer.testPrint();
+                alert('Test print sent!');
+            } else {
+                alert('No printer interface with testPrint found.\nAndroidPrinter: ' + typeof window.AndroidPrinter + '\nNativePrinter: ' + typeof window.NativePrinter);
+            }
+        }
 
         let cart = [];
 
@@ -1984,8 +2222,6 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                     addToTabButtonMain.classList.add('opacity-50', 'cursor-not-allowed');
                 }
             }
-            
-            calculateChange();
         }
 
         function editQuantity(index) {
@@ -2212,7 +2448,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                     };
                     
                     // Process the cashback - exactly like cash.php
-                    fetch('../../process_cashback.php', {
+                    fetch('../process_cashback.php', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -2325,7 +2561,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 const formData = new FormData();
                 formData.append('date', selectedDate);
                 
-                fetch('../../fetch_report_data.php', {
+                fetch('../fetch_report_data.php', {
                     method: 'POST',
                     body: formData
                 })
@@ -2396,7 +2632,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                             cashupFormData.append('actual_cash_in_till', actualAmount);
                             cashupFormData.append('cash_difference', difference);
                         
-                        fetch('../../fetch_report_data.php', {
+                        fetch('../fetch_report_data.php', {
                             method: 'POST',
                             body: cashupFormData
                         })
@@ -2419,7 +2655,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                             // Create a form to submit for PDF generation
                             const form = document.createElement('form');
                             form.method = 'POST';
-                            form.action = '../cash-pdf.php';
+                            form.action = 'cash-pdf.php';
                             
                             // Add all data as hidden fields
                             const pdfData = {
@@ -2593,16 +2829,10 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         }
 
         function calculateChange() {
-            // This function is kept for compatibility but doesn't do anything for waitress interface
-            // since waitresses don't handle cash payments
-            const cashReceivedEl = document.getElementById('cashReceived');
-            const changeAmountEl = document.getElementById('changeAmount');
-            if (cashReceivedEl && changeAmountEl) {
-                const cartTotal = parseFloat(document.getElementById('cartTotal').innerText) || 0;
-                const cashReceived = parseFloat(cashReceivedEl.value) || 0;
-                const change = cashReceived - cartTotal;
-                changeAmountEl.innerText = change >= 0 ? change.toFixed(2) : '0.00';
-            }
+            const cartTotal = parseFloat(document.getElementById('cartTotal').innerText) || 0; // Ensure cartTotal is a number
+            const cashReceived = parseFloat(document.getElementById('cashReceived').value) || 0;
+            const change = cashReceived - cartTotal;
+            document.getElementById('changeAmount').innerText = change >= 0 ? change.toFixed(2) : '0.00';
         }
 
         function handleEWalletPurchase() {
@@ -2694,7 +2924,14 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         items: cart,
                         total: parseFloat(document.getElementById('cartTotal').innerText),
                         payment_method: 'e-wallet',
-                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                        // Always include business info from info.db
+                        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                        location: window.businessInfo?.location || businessInfo?.location,
+                        phone: window.businessInfo?.phone || businessInfo?.phone,
+                        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                     };
 
                     // Ask for final confirmation and optionally receipt printing
@@ -2717,7 +2954,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         if (!confirmRes.isConfirmed) return;
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
                         // Process the e-wallet payment AFTER confirmation
-                        fetch('../../process_order.php', {
+                        fetch('../process_order.php', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
@@ -2853,7 +3090,14 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                     eft_amount: eftAmount,
                     wallet_provider: provider,
                     transaction_ref: ref,
-                    cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                    cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                    // Always include business info from info.db
+                    business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                    location: window.businessInfo?.location || businessInfo?.location,
+                    phone: window.businessInfo?.phone || businessInfo?.phone,
+                    footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                    vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                    vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                 };
 
                 // Final confirmation before processing and optional print
@@ -2876,7 +3120,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                     if (!ok.isConfirmed) return;
                     const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
 
-                    fetch('../../process_order.php', {
+                    fetch('../process_order.php', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(saleData)
@@ -3394,7 +3638,14 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         items: cart,
                         total: parseFloat(document.getElementById('cartTotal').innerText),
                         cash_received: 0,
-                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                        // Always include business info from info.db
+                        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                        location: window.businessInfo?.location || businessInfo?.location,
+                        phone: window.businessInfo?.phone || businessInfo?.phone,
+                        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                     };
 
                     // Final confirmation and optional print before processing credit sale
@@ -3459,7 +3710,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
             };
 
-            // Return a promise - uses Android or server printing
+            // Use Android native or server
             return sendToPrinter(drawerData)
             .then(result => {
                 if (result.success) {
@@ -3569,7 +3820,15 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         items: cart,
         total: cartTotal,
         cash_received: cashReceived,
-        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+        payment_method: 'cash',  // Ensure payment_method is set for cash payments
+        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+        // Always include business info from info.db
+        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+        location: window.businessInfo?.location || businessInfo?.location,
+        phone: window.businessInfo?.phone || businessInfo?.phone,
+        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
     };
 
     // Ask for confirmation first; process only after OK
@@ -3774,6 +4033,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         }
 
         function displayTableSelectionModal(tables) {
+            // Check if user can select all tables (managers and admins can)
+            const canSelectAllTables = ['manager', 'admin'].includes(currentUserRole);
 
             // Create table list HTML with search
             let tablesListHTML = '';
@@ -3792,21 +4053,41 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                     const balanceClass = balance > 0 ? 'text-orange-500 font-bold' : 'text-teal-600 font-semibold';
                     const balanceText = balance > 0 ? `N$${balance.toFixed(2)}` : 'N$0.00';
                     
+                    // Check if this table belongs to the current user or if user can select all
+                    const tableCashierId = table.cashier_id;
+                    const isOwnTable = !tableCashierId || tableCashierId == currentUserId;
+                    const canSelect = canSelectAllTables || isOwnTable;
+                    
+                    // Styling for selectable vs non-selectable tables
+                    const containerClass = canSelect 
+                        ? 'table-item bg-white rounded-lg p-2 mb-1 cursor-pointer hover:bg-gray-200 transition-colors duration-200 relative'
+                        : 'table-item bg-gray-100 rounded-lg p-2 mb-1 cursor-not-allowed opacity-50 relative';
+                    const onClickAttr = canSelect ? `onclick="selectTable(${table.id})"` : '';
+                    const iconClass = canSelect ? 'text-gray-500' : 'text-gray-400';
+                    const nameClass = canSelect ? 'text-gray-700' : 'text-gray-400';
+                    const lockedIcon = !canSelect ? `
+                        <svg class="w-3 h-3 text-gray-400 flex-shrink-0 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                        </svg>
+                    ` : '';
+                    
                     tablesListHTML += `
-                        <div class="table-item bg-white rounded-lg p-2 mb-1 cursor-pointer hover:bg-gray-200 transition-colors duration-200 relative" 
+                        <div class="${containerClass}" 
                              data-id="${table.id}" 
                              data-name="${table.name.toLowerCase()}"
                              data-number="${table.number}"
-                             onclick="selectTable(${table.id})">
+                             data-selectable="${canSelect}"
+                             ${onClickAttr}>
                             <div class="flex items-center justify-between gap-2 text-xs">
                                 <div class="flex items-center gap-2 min-w-0" style="max-width: 50%;">
-                                    <svg class="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg class="w-4 h-4 ${iconClass} flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
                                     </svg>
-                                    <span class="font-medium text-gray-700 truncate">${table.name}</span>
+                                    <span class="font-medium ${nameClass} truncate">${table.name}</span>
+                                    ${lockedIcon}
                                 </div>
                                 <div class="flex items-center gap-2 ml-auto flex-shrink-0">
-                                    <span class="${balanceClass} font-medium whitespace-nowrap px-2 py-0.5 rounded-full text-xs bg-gray-100 border border-gray-200" style="min-width: 65px; text-align: center;">
+                                    <span class="${canSelect ? balanceClass : 'text-gray-400'} font-medium whitespace-nowrap px-2 py-0.5 rounded-full text-xs bg-gray-100 border border-gray-200" style="min-width: 65px; text-align: center;">
                                         ${balanceText}
                                     </span>
                                 </div>
@@ -4070,7 +4351,14 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 items: cart,
                 total: parseFloat(document.getElementById('cartTotal').innerText),
                 cash_received: 0,
-                cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                // Always include business info from info.db
+                business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                location: window.businessInfo?.location || businessInfo?.location,
+                phone: window.businessInfo?.phone || businessInfo?.phone,
+                footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
             };
 
             // Final confirmation before processing tab sale
@@ -4080,15 +4368,18 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 confirmButtonText: 'OK',
                 footer: `
                     <div style="display: flex; justify-content: center; align-items: center;">
-                        <a href='#' onclick='return reverseTransaction(event)' style='color: #a1a1a1; text-decoration: none; font-weight: 500; font-size: 1.05em;'>
+                        <a href='#' onclick='return reverseTransaction(event)' style='color: #a1a1a1; text-decoration: none; font-weight: 500; font-size: 1.05em; margin-right: 18px;'>
                             <i class='fas fa-undo' style='margin-right: 6px;'></i> Reverse transaction
                         </a>
+                        <input type='checkbox' id='printReceiptCheckbox' style='transform: scale(1.2); margin-right: 8px; vertical-align: middle;' ${defaultPrintReceipt ? 'checked' : ''}>
+                        <label for='printReceiptCheckbox' style='font-size: 1.05em; vertical-align: middle; cursor:pointer;'>Print with receipt</label>
                     </div>
                 `,
                 allowOutsideClick: false,
                 focusConfirm: false
             }).then(ok => {
                 if (!ok.isConfirmed) return;
+                const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
                 
                 // Process the tab sale using process_tab.php
                 fetch('../process_tab.php', {
@@ -4110,9 +4401,19 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         saleData.tab_id = result.tab_id;
                         saleData.table_name = tableName;
                         cashSound.play();
-                        // Always print kitchen ticket automatically
-                        saleData.print_only = true;
-                        sendToPrinter(saleData).catch(printError => console.error('Kitchen ticket printing error:', printError));
+                        
+                        // Only print if checkbox is checked
+                        if (printReceipt) {
+                            // Print kitchen ticket
+                            const kitchenTicketData = {
+                                ...saleData,
+                                print_only: true
+                            };
+                            delete kitchenTicketData.is_payment_receipt;
+                            
+                            sendToPrinter(kitchenTicketData).catch(printError => console.error('Kitchen ticket printing error:', printError));
+                        }
+                        
                         clearCart();
                         refreshProductQuantities();
                         closeMobileCart();
@@ -4328,6 +4629,27 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 this.classList.remove('processing');
                 this.innerHTML = originalText;
             }, 3000);
+        });
+        
+        // Show Android debug info on page load (only in Android WebView)
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(function() {
+                var status = {
+                    windowAndroidPrinter: typeof window.AndroidPrinter,
+                    hasInterface: !!(window.AndroidPrinter),
+                    hasPrintReceipt: !!(window.AndroidPrinter && window.AndroidPrinter.printReceipt),
+                    userAgent: navigator.userAgent
+                };
+                console.log('[AndroidPrinter Check on Load]', status);
+                
+                // If running in Android app (check user agent for 'median')
+                if (navigator.userAgent.toLowerCase().indexOf('median') !== -1) {
+                    console.log('[AndroidPrinter] Running in Median app');
+                    if (!window.AndroidPrinter) {
+                        console.warn('[AndroidPrinter] Interface NOT available!');
+                    }
+                }
+            }, 1000);
         });
 
     </script>

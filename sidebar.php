@@ -1,4 +1,4 @@
-<aside id="sidebar" class="bg-[#f3f4f6] text-black w-64 h-screen p-6 shadow-lg fixed top-0 left-0 flex flex-col transform -translate-x-full transition-transform duration-300 ease-in-out lg:translate-x-0" style="z-index: 9999; overflow: hidden;">
+<aside id="sidebar" class="bg-[#f3f4f6] text-black w-64 h-screen p-6 shadow-lg fixed top-0 left-0 flex flex-col transform -translate-x-full transition-transform duration-300 ease-in-out lg:translate-x-0" style="z-index: 50; overflow: hidden;">
     <style>
         .nav-link {
             -webkit-user-drag: none;
@@ -69,7 +69,7 @@
                 position: fixed !important;
                 top: 0;
                 left: 0;
-                z-index: 10000;
+                z-index: 50;
                 transform: translateX(-100%);
                 background-color: #f3f4f6 !important;
                 box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
@@ -189,8 +189,50 @@
             <a><img src="logo.png" style="width: 60px;" alt="POS System Icon"></a><br>
         </div>
     </div>
+    <?php
+    // Get user role and check permissions for cashiers
+    $userRole = isset($_SESSION['role']) ? strtolower($_SESSION['role']) : '';
+    $isAdmin = ($userRole === 'admin');
+    
+    // Default permissions (all enabled for admins)
+    $permissions = [
+        'allow_tabs' => true,
+        'allow_transactions' => true,
+        'allow_credit_book' => true,
+        'allow_cash_inout' => true,
+        'allow_settings' => true
+    ];
+    
+    // If cashier, check database permissions
+    if (!$isAdmin) {
+        try {
+            // Try to find info.db - check current directory first, then parent
+            $dbPath = 'info.db';
+            if (!file_exists($dbPath)) {
+                $dbPath = '../info.db';
+            }
+            $db = new PDO('sqlite:' . $dbPath);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            
+            // Get cashier permissions
+            $permResult = $db->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            if ($permResult) {
+                $permissions = [
+                    'allow_tabs' => (bool)($permResult['allow_tabs'] ?? 1),
+                    'allow_transactions' => (bool)($permResult['allow_transactions'] ?? 1),
+                    'allow_credit_book' => (bool)($permResult['allow_credit_book'] ?? 1),
+                    'allow_cash_inout' => (bool)($permResult['allow_cash_inout'] ?? 1),
+                    'allow_settings' => (bool)($permResult['allow_settings'] ?? 0)
+                ];
+            }
+        } catch (PDOException $e) {
+            // If error, use default permissions (all enabled)
+        }
+    }
+    ?>
     <nav>
         <ul class="space-y-3">
+            <!-- Home - Always visible -->
             <li>
                 <a href="home" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="./">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -200,17 +242,30 @@
                 </a>
             </li>
 
+
+
+         <!-- Cashier Operations - Conditional (includes Tabs, Credit Book, Cash In/Out) -->
+         <?php if ($isAdmin || $permissions['allow_tabs'] || $permissions['allow_credit_book'] || $permissions['allow_cash_inout']): ?>
             <li>
-                <a href="credit-tabs" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-tabs">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="2" y="5" width="20" height="14" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
-                        <rect x="2" y="9" width="20" height="2" fill="currentColor"/>
-                        <rect x="16" y="15" width="4" height="2" rx="1" fill="currentColor"/>
+                <a href="cashier-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cashier-center">
+                    <svg class="w-7 h-7 mr-4" fill="none" stroke="currentColor" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="7" y="7" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="27" y="7" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="7" y="27" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="27" y="27" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
                     </svg>
-                    <span class="text-lg text-gray-700">Tabs</span>
+                    <span class="text-lg text-gray-700">Menu</span>
                 </a>
             </li>
+            <?php endif; ?>
 
+
+                        <!-- Reports - Conditional -->
+                        <?php if ($isAdmin || $permissions['allow_transactions']): ?>
+    
+
+            <!-- Transactions - Conditional -->
+            <?php if ($isAdmin || $permissions['allow_transactions']): ?>
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -219,25 +274,24 @@
                     <span class="text-lg text-gray-700">Transactions</span>
                 </a>
             </li>
+            <?php endif; ?>
 
-            <li>
-                <a href="credit-book" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-book">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v5h.293l6 6V4H6v14h6V10h.293l6 6V4z"></path>
+        <li>
+                <a href="reports-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports-center">
+                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18 17V9"/>
+                        <path d="M13 17V5"/>
+                        <path d="M8 17v-3"/>
                     </svg>
-                    <span class="text-lg text-gray-700">Credit Book</span>
+                    <span class="text-lg text-gray-700">Reports</span>
                 </a>
             </li>
+            <?php endif; ?>
 
-            <li>
-                <a href="cash" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cash">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    <span class="text-lg text-gray-700">Cash In/Out</span>
-                </a>
-            </li>
 
+            <!-- Settings - Conditional -->
+            <?php if ($isAdmin || $permissions['allow_settings']): ?>
             <li>
                 <a href="settings" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="settings">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -247,7 +301,9 @@
                     <span class="text-lg text-gray-700">Settings</span>
                 </a>
             </li>
+            <?php endif; ?>
 
+            <!-- Logout - Always visible -->
             <li>
                 <a href="logout" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="logout">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -276,25 +332,48 @@
 
 </aside>
 
+<script src="cashier_inactivity.js"></script>
+
 <script>
     function updateActiveLink() {
         // Get current page from URL path
         const path = window.location.pathname;
         const currentPage = path.substring(path.lastIndexOf('/') + 1);
         
+        // Cashier-center subpages: Menu stays active when on any of these
+        const isCashierSubpage = (
+            currentPage === 'credit-tabs' || currentPage.startsWith('credit-tabs') ||
+            currentPage === 'credit-book' || currentPage.startsWith('credit-book') ||
+            currentPage.startsWith('credit-transactions') ||
+            currentPage.startsWith('view-tab') ||
+            currentPage === 'cash' || currentPage === 'cash.php' ||
+            currentPage === 'bale' || currentPage.startsWith('bale') ||
+            currentPage === 'cash-up' || currentPage.startsWith('cash-up') ||
+            currentPage.startsWith('damaged_goods') ||
+            currentPage.startsWith('create_creditor')
+        );
+        
         // Remove active class from all links
         const links = document.querySelectorAll('.nav-link');
         links.forEach(link => {
             link.classList.remove('bg-gray-300');
-            if (link.getAttribute('data-href') === currentPage || 
+            const href = link.getAttribute('data-href');
+            // When on a cashier subpage, only highlight Menu (cashier-center)
+            if (isCashierSubpage) {
+                if (href === 'cashier-center') {
+                    link.classList.add('bg-gray-300');
+                }
+            } else if (href === currentPage || 
                 currentPage === '' || 
                 currentPage === 'index.php' || 
-                (currentPage === 'home' && link.getAttribute('data-href') === './') ||
-                (currentPage.startsWith('credit-transactions.php') && link.getAttribute('data-href') === 'credit-book') ||
-                (currentPage.startsWith('damaged_goods') && link.getAttribute('data-href') === 'settings') ||
-                (currentPage.startsWith('credit-book.php') && link.getAttribute('data-href') === 'credit-book') ||
-                (currentPage.startsWith('view-tab.php') && link.getAttribute('data-href') === 'credit-tabs') ||
-                (currentPage.startsWith('credit-tabs') && link.getAttribute('data-href') === 'credit-tabs')) {
+                (currentPage === 'home' && href === './') ||
+                (currentPage.startsWith('credit-transactions.php') && href === 'credit-book') ||
+                (currentPage.startsWith('damaged_goods') && href === 'settings') ||
+                (currentPage.startsWith('credit-book') && href === 'credit-book') ||
+                (currentPage.startsWith('view-tab.php') && href === 'credit-tabs') ||
+                (currentPage.startsWith('credit-tabs') && href === 'credit-tabs') ||
+                (currentPage.startsWith('cashier-center') && href === 'cashier-center') ||
+                (currentPage.startsWith('reports-center') && href === 'reports-center')) {
                 link.classList.add('bg-gray-300');
             }
         });

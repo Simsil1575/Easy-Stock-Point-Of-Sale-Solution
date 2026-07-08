@@ -10,6 +10,9 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     header("Location: ../");
     exit();
 }
+
+// Include secure activation helper
+require_once '../activation_helper.php';
 ?>
 
 
@@ -29,10 +32,10 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
         .sidebar {
             position: fixed;
             height: 100%;
-            z-index: 9999 !important; /* Prevent overlay from overlapping sidebar */
+            z-index: 10000 !important; /* Prevent overlay from overlapping sidebar */
         }
         #sidebar {
-            z-index: 9999 !important; /* Ensure sidebar stays above overlay */
+            z-index: 10000 !important; /* Ensure sidebar stays above overlay */
         }
         .content {
             margin-left: 250px;
@@ -128,40 +131,6 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                 width: 100%;
                 max-width: 100%;
                 box-sizing: border-box;
-            }
-            
-            /* Prevent horizontal overflow */
-            body {
-                overflow-x: hidden;
-                max-width: 100vw;
-            }
-            
-            /* Ensure buttons don't overflow */
-            .flex.flex-wrap {
-                width: 100%;
-            }
-            
-            /* Make form containers responsive */
-            .bg-white.shadow-xl {
-                max-width: 100%;
-                overflow-x: hidden;
-            }
-        }
-        
-        /* Extra small screens */
-        @media (max-width: 640px) {
-            .container {
-                padding: 0.75rem;
-            }
-            
-            /* Stack buttons vertically on very small screens */
-            .flex.flex-col.sm\:flex-row {
-                flex-direction: column;
-            }
-            
-            /* Reduce padding on small screens */
-            .bg-white.shadow-xl {
-                padding: 1rem;
             }
         }
     </style>
@@ -308,7 +277,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-4 sm:p-6 max-w-full overflow-x-hidden">
+            <div class="container mx-auto p-6">
                 <!-- Header Row: Title + Controls -->
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
@@ -332,13 +301,32 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                     } catch (PDOException $e) {
                         // Column already exists, continue
                     }
-                    $stmt = $posDb->query("SELECT hide_available_quantity FROM product_settings LIMIT 1");
+                    try {
+                        $posDb->exec("ALTER TABLE product_settings ADD COLUMN skip_stock_checks BOOLEAN NOT NULL DEFAULT 0");
+                    } catch (PDOException $e) {
+                        // Column already exists, continue
+                    }
+                    try {
+                        $posDb->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+                    } catch (PDOException $e) {
+                        // Column already exists, continue
+                    }
+
+                    $stmt = $posDb->query("SELECT hide_available_quantity, skip_stock_checks, use_qz_tray FROM product_settings LIMIT 1");
                     $setting = $stmt->fetch(PDO::FETCH_ASSOC);
                     $hide_available_quantity = $setting['hide_available_quantity'] ?? 0;
                     $hide_available_quantity_checked = $hide_available_quantity ? 'checked' : '';
+                    $skip_stock_checks = $setting['skip_stock_checks'] ?? 0;
+                    $skip_stock_checks_checked = $skip_stock_checks ? 'checked' : '';
+                    $use_qz_tray = $setting['use_qz_tray'] ?? 0;
+                    $use_qz_tray_checked = $use_qz_tray ? 'checked' : '';
                 } catch (PDOException $e) {
                     $hide_available_quantity = 0;
                     $hide_available_quantity_checked = '';
+                    $skip_stock_checks = 0;
+                    $skip_stock_checks_checked = '';
+                    $use_qz_tray = 0;
+                    $use_qz_tray_checked = '';
                     error_log("Database error: " . $e->getMessage());
                 }
                 ?>
@@ -354,9 +342,37 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                     <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
                                     <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
                                 </svg>
-                                Hide available quantity from cashiers (skip stock checks)
+                                Hide available quantity from cashiers
                             </label>
-                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, cashiers won't see product quantities and stock validation will be skipped during checkout</p>
+                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, cashiers won't see product quantities on the POS. Stock checks during checkout are still enforced unless "Skip stock checks" is enabled.</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-3 mb-4 mt-6">
+                        <div class="flex items-center h-5">
+                            <input type="checkbox" name="skip_stock_checks" id="skip_stock_checks" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $skip_stock_checks_checked; ?>>
+                        </div>
+                        <div class="ml-2 text-sm">
+                            <label for="skip_stock_checks" class="font-medium text-gray-700 flex items-center cursor-pointer">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                                </svg>
+                                Skip stock checks during checkout
+                            </label>
+                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, checkout will not block sales for insufficient or zero stock. Use only if you manage stock elsewhere or allow overselling.</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-3 mb-4 mt-6">
+                        <div class="flex items-center h-5">
+                            <input type="checkbox" name="use_qz_tray" id="use_qz_tray" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $use_qz_tray_checked; ?>>
+                        </div>
+                        <div class="ml-2 text-sm">
+                            <label for="use_qz_tray" class="font-medium text-gray-700 flex items-center cursor-pointer">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                                </svg>
+                                Use QZ Tray printing for receipts
+                            </label>
+                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled (desktop/web), receipts will be printed via QZ Tray using <code>qzreceipt.php</code> instead of direct ESC/POS printing via <code>receipt.php</code>. Android will still use <code>receipt.php</code>.</p>
                         </div>
                     </div>
                 </div>
@@ -387,13 +403,64 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                 checkbox.checked = !checkbox.checked; // Revert on error
                             });
                         });
+                        const skipStockChecksCheckbox = document.getElementById('skip_stock_checks');
+                        skipStockChecksCheckbox.checked = <?php echo $skip_stock_checks; ?>;
+                        skipStockChecksCheckbox.addEventListener('change', function() {
+                            const skipStockChecks = this.checked ? 1 : 0;
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ skip_stock_checks: skipStockChecks })
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.success) {
+                                    showAlert('success', 'Success', 'Setting updated successfully');
+                                } else {
+                                    showAlert('error', 'Error', 'Failed to update setting');
+                                    skipStockChecksCheckbox.checked = !skipStockChecksCheckbox.checked;
+                                }
+                            })
+                            .catch(error => {
+                                showAlert('error', 'Error', 'Failed to update setting');
+                                skipStockChecksCheckbox.checked = !skipStockChecksCheckbox.checked;
+                            });
+                        });
+
+                        const useQzTrayCheckbox = document.getElementById('use_qz_tray');
+                        useQzTrayCheckbox.checked = <?php echo $use_qz_tray ? 1 : 0; ?>;
+                        useQzTrayCheckbox.addEventListener('change', function() {
+                            const useQzTray = this.checked ? 1 : 0;
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ use_qz_tray: useQzTray })
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.success) {
+                                    showAlert('success', 'Success', 'Setting updated successfully');
+                                } else {
+                                    showAlert('error', 'Error', 'Failed to update setting');
+                                    useQzTrayCheckbox.checked = !useQzTrayCheckbox.checked;
+                                }
+                            })
+                            .catch(error => {
+                                showAlert('error', 'Error', 'Failed to update setting');
+                                useQzTrayCheckbox.checked = !useQzTrayCheckbox.checked;
+                            });
+                        });
                     });
                 </script>
 
-                <div class="bg-white shadow-xl rounded-xl p-4 sm:p-6 md:p-8 mb-8 overflow-hidden">
-                        <h2 class="text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Update Account Details</h2>
+                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
+                        <h2 class="text-2xl font-bold mb-6">Update Account Details</h2>
                         
-                        <form action="" method="POST" class="space-y-4 sm:space-y-6">
+                        <form action="" method="POST" class="space-y-6">
                             <?php
                             try {
                                 $pdo = new PDO('sqlite:../user.db');
@@ -409,7 +476,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                             }
                             ?>
                             <!-- Username and Email in one row -->
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div class="relative">
                                     <label for="new_username" class="block text-sm font-medium text-gray-700 mb-2">New Username</label>
                                     <div class="relative rounded-md shadow-sm">
@@ -419,7 +486,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                             </svg>
                                         </div>
                                         <input type="text" name="new_username" id="new_username" value="<?php echo htmlspecialchars($username); ?>"
-                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm sm:text-base">
+                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
 
@@ -433,13 +500,13 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                             </svg>
                                         </div>
                                         <input type="email" name="email" id="email" value="<?php echo htmlspecialchars($email); ?>"
-                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm sm:text-base">
+                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
                             </div>
 
                             <!-- Password fields in one row -->
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div class="relative">
                                     <label for="current_password" class="block text-sm font-medium text-gray-700 mb-2">Current Password</label>
                                     <div class="relative rounded-md shadow-sm">
@@ -449,7 +516,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                             </svg>
                                         </div>
                                         <input type="password" name="current_password" id="current_password" required
-                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm sm:text-base">
+                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
 
@@ -462,43 +529,43 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                             </svg>
                                         </div>
                                         <input type="password" name="new_password" id="new_password" 
-                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm sm:text-base">
+                                            class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
                             </div>
 
-                            <!-- Buttons Container - Responsive -->
-                            <div class="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 md:gap-6 pt-2">
-                                <button type="submit" name="update_account" class="w-full sm:w-auto inline-flex items-center justify-center px-4 sm:px-6 py-2.5 sm:py-3 border border-transparent text-sm sm:text-base font-medium rounded-lg shadow-sm text-white bg-gray-600 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5 mr-2 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                            <div class="flex gap-8">
+                                <button type="submit" name="update_account" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-gray-600 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
                                         <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
                                         <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
                                     </svg>
-                                    <span>Update</span>
+                                    Update
                                 </button>
-                                <a href="users" class="w-full sm:w-auto inline-flex items-center justify-center px-4 sm:px-6 py-2.5 sm:py-3 border border-gray-300 text-sm sm:text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <a href="users" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path>
                                     </svg>
-                                    <span class="truncate">Manage Users</span>
+                                    Manage Users
                                 </a>
-                                <a href="logs" class="w-full sm:w-auto inline-flex items-center justify-center px-4 sm:px-6 py-2.5 sm:py-3 border border-gray-300 text-sm sm:text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <a href="logs" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                     </svg>
-                                    <span class="truncate">View Logs</span>
+                                    View Logs
                                 </a>
-                                <a href="damaged_goods" class="w-full sm:w-auto inline-flex items-center justify-center px-4 sm:px-6 py-2.5 sm:py-3 border border-gray-300 text-sm sm:text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+
+                                <a href="damaged_goods" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                     </svg>
-                                    <span class="truncate">Damaged Stock</span>
+                                    Damaged Stock
                                 </a>
-                                <a href="business_settings" class="w-full sm:w-auto inline-flex items-center justify-center px-4 sm:px-6 py-2.5 sm:py-3 border border-gray-300 text-sm sm:text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <a href="business_settings" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
                                     </svg>
-                                    <span class="truncate">Info</span>
+                                  info
                                 </a>
                             </div>
                         </form>
@@ -561,6 +628,10 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                 <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
                     <h2 class="text-2xl font-bold mb-6">Software Activation</h2>
                     <form action="" method="POST" class="space-y-4">
+                        <!-- CSRF Token for security -->
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(generateActivationCSRFToken()) ?>">
+                        <input type="hidden" name="activate_software" value="1">
+                        
                         <div class="relative">
                             <label for="key" class="block text-sm font-medium text-gray-700 mb-2">Activation Key</label>
                             <div class="relative rounded-md shadow-sm">
@@ -570,6 +641,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                     </svg>
                                 </div>
                                 <input type="text" name="key" id="key" placeholder="Enter Your Activation Key" required
+                                    maxlength="64" autocomplete="off"
                                     class="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm placeholder-gray-400">
                             </div>
                         </div>
@@ -582,50 +654,57 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                     </form>
 
                     <?php
-                    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['key'])) {
-                        $submittedKey = $_POST['key'];
-                        $pdo = new PDO('sqlite:../active.db');
-
-                        function decryptKey($encryptedKey) {
-                            $encryptionKey = getenv('ENCRYPTION_KEY');
-                            $data = base64_decode($encryptedKey);
-                            $ivLength = openssl_cipher_iv_length('aes-256-cbc');
-                            $iv = substr($data, 0, $ivLength);
-                            $ciphertext = substr($data, $ivLength);
-                            return openssl_decrypt($ciphertext, 'aes-256-cbc', $encryptionKey, 0, $iv);
-                        }
-
-                        // Check if key exists and is not used
-                        $stmt = $pdo->prepare("SELECT * FROM software_keys WHERE key = ? AND is_used = 0");
-                        $stmt->execute([$submittedKey]);
-                        $key = $stmt->fetch(PDO::FETCH_ASSOC);
-
-                        if ($key) {
-                            // Mark key as used
-                            $updateStmt = $pdo->prepare("UPDATE software_keys SET is_used = 1 WHERE id = ?");
-                            $updateStmt->execute([$key['id']]);
-                            
+                    // Process activation with secure validation
+                    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['activate_software']) && isset($_POST['key'])) {
+                        $submittedKey = trim($_POST['key']);
+                        $csrfToken = $_POST['csrf_token'] ?? '';
+                        
+                        // Use secure activation function with CSRF validation
+                        $result = activateKey($submittedKey, $csrfToken);
+                        
+                        if ($result['success']) {
                             echo "<script>
-                                showAlert('success', 'Success', 'Premium activated successfully! You now have access to all premium features.');
+                                showAlert('success', 'Success', '" . addslashes($result['message']) . "');
                             </script>";
                         } else {
                             echo "<script>
-                                showAlert('error', 'Error', 'Invalid or already used key. Please try again.');
+                                showAlert('error', 'Error', '" . addslashes($result['message']) . "');
                             </script>";
                         }
                     }
 
-                    // Check activation status
-                    $pdo = new PDO('sqlite:../active.db'); // Re-establish the database connection
-                    $activationStatus = $pdo->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();
-                    if ($activationStatus > 0) {
+                    // Check activation status with expiration
+                    $activationCheck = checkActivationStatus();
+                    
+                    if ($activationCheck['status'] === 'active') {
+                        $expiryMessage = '';
+                        if (isset($activationCheck['days_remaining'])) {
+                            $days = $activationCheck['days_remaining'];
+                            $expiryDate = date('M d, Y', strtotime($activationCheck['expires_at']));
+                            
+                            if ($days <= 7) {
+                                $expiryMessage = "<div class='mt-2 p-3 bg-yellow-50 text-yellow-800 rounded border border-yellow-200'>
+                                    <strong>Warning:</strong> Your activation will expire in {$days} day(s) on {$expiryDate}. Please prepare a new activation key.
+                                </div>";
+                            } else {
+                                $expiryMessage = "<div class='mt-2 text-sm text-gray-600'>
+                                    Valid until: {$expiryDate} ({$days} days remaining)
+                                </div>";
+                            }
+                        }
+                        
                         echo "<div class='mt-4 p-4 bg-blue-100 text-blue-700 rounded fade-in'>
-                            Your account is activated.
+                            <strong>✓ Your account is activated.</strong>
+                            {$expiryMessage}
+                        </div>";
+                    } elseif ($activationCheck['status'] === 'expired') {
+                        echo "<div class='mt-4 p-4 bg-red-100 text-red-700 rounded fade-in'>
+                            <strong>Activation Expired!</strong> Your activation key has expired on " . date('M d, Y', strtotime($activationCheck['expired_date'])) . ". Please enter a new activation key to continue using the system.
                         </div>";
                     } else {
                         echo "<div class='mt-4 p-4 bg-yellow-100 text-yellow-700 rounded fade-in'>
                             <h2 class='font-bold'>Payment Methods</h2>
-                            <p>Your account is not activated. Please contact <a href='mailto:simsiltechsolutions@gmail.com' class='text-blue-600 underline'>simsiltechsolutions@gmail.com</a> or call 0814759498 to purchase a key.</p><br>
+                            <p>Your account is not activated. Please contact <a href='mailto:info.easystockna@gmail.com' class='text-blue-600 underline'>info.easystockna@gmail.com</a> or call 0814759498 to purchase a key.</p><br>
                             <div class='mt-2 flex space-x-4'>
                                 <div class='flex items-center'>
                                     <img src='../props/FNB_Color.png' alt='FNB eWallet' class='h-12 w-12'>
@@ -654,12 +733,12 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                     <p class="text-gray-600 mb-4">Perform end-of-month cashout operation. This will automatically generate a monthly report and then clear all transactions while preserving any unpaid credit balances.</p>
                     <div class="flex space-x-2 mb-4">
                         <?php
-                        // Check activation status
-                        $activationPdo = new PDO('sqlite:../active.db');
-                        $activationStatus = $activationPdo->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();
+                        // Check activation status using secure helper
+                        $cashoutActivationCheck = checkActivationStatus();
+                        $isCashoutActivated = ($cashoutActivationCheck['status'] === 'active');
                         ?>
                         
-                        <button type="button" id="perform_cashout_btn" class="bg-teal-500 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200" <?php echo $activationStatus == 0 ? 'disabled title="Please activate the software to use this feature"' : ''; ?>>
+                        <button type="button" id="perform_cashout_btn" class="bg-teal-500 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200" <?php echo !$isCashoutActivated ? 'disabled title="Please activate the software to use this feature"' : ''; ?>>
                             <svg class="w-5 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
                             </svg>
@@ -845,6 +924,11 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                     $db->exec("DELETE FROM tab_items");
                     $db->exec("DELETE FROM tab_payments");
                     $db->exec("DELETE FROM tabs");
+                    
+                    // Delete refund and void transaction tables
+                    $db->exec("DELETE FROM refund_items");
+                    $db->exec("DELETE FROM refunds");
+                    $db->exec("DELETE FROM void_transactions");
 
                     
                     // Re-enable foreign key support
@@ -913,13 +997,15 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
             // Handler for performing cashout
             if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['perform_cashout'])) {
                 try {
-                    // Check activation status
-                    $activationPdo = new PDO('sqlite:../active.db');
-                    $activationStatus = $activationPdo->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();
+                    // Check activation status using secure helper
+                    $cashoutActivation = checkActivationStatus();
                     
-                    if ($activationStatus == 0) {
+                    if ($cashoutActivation['status'] !== 'active') {
+                        $message = $cashoutActivation['status'] === 'expired' 
+                            ? 'Your activation has expired. Please enter a new activation key.'
+                            : 'You need to activate the software to use the cashout feature. Please enter your activation key above.';
                         echo "<script>
-                            showAlert('warning', 'Activation Required', 'You need to activate the software to use the cashout feature. Please enter your activation key above.');
+                            showAlert('warning', 'Activation Required', '" . addslashes($message) . "');
                         </script>";
                         return;
                     }
@@ -1038,6 +1124,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                             cs.total_amount,
                             cs.paid_amount,
                             cs.created_at,
+                            cs.cashier_id,
                             csi.product_name,
                             csi.quantity,
                             csi.price,
@@ -1069,7 +1156,8 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                 'creditor_id' => $data['creditor_id'],
                                 'total_amount' => $data['total_amount'],
                                 'paid_amount' => $data['paid_amount'],
-                                'created_at' => $data['created_at']
+                                'created_at' => $data['created_at'],
+                                'cashier_id' => $data['cashier_id'] ?? 'Unknown'
                             ];
                         }
                         
@@ -1115,13 +1203,18 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                         $db->exec("DELETE FROM tab_payments");
                         $db->exec("DELETE FROM tabs");
                         
+                        // Delete refund and void transaction tables
+                        $db->exec("DELETE FROM refund_items");
+                        $db->exec("DELETE FROM refunds");
+                        $db->exec("DELETE FROM void_transactions");
+                        
                         // Execute preserve creditors statement
                         $preserveCreditorStmt->execute($unpaidCreditorIds);
                         
                         // Prepare statements once and reuse for better performance
                         $insertSaleStmt = $db->prepare("
-                            INSERT INTO credit_sales (id, creditor_id, total_amount, paid_amount, payment_status, created_at)
-                            VALUES (?, ?, ?, ?, 'unpaid', ?)
+                            INSERT INTO credit_sales (id, creditor_id, total_amount, paid_amount, payment_status, created_at, cashier_id)
+                            VALUES (?, ?, ?, ?, 'unpaid', ?, ?)
                         ");
                         
                         $insertItemStmt = $db->prepare("
@@ -1136,7 +1229,8 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                                 $sale['creditor_id'],
                                 $sale['total_amount'],
                                 $sale['paid_amount'],
-                                $sale['created_at']
+                                $sale['created_at'],
+                                $sale['cashier_id']
                             ]);
                         }
                         
@@ -1157,7 +1251,8 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                             "credit_returns", "stock_changes", "damaged_goods", "creditors", 
                             "eft_payments", "mixed_payments", "opening_stock", "closing_stock", 
                             "daily_stock_summary", "cash_up_summary", "user_log",
-                            "tab_item_payments", "tab_items", "tab_payments", "tabs"
+                            "tab_item_payments", "tab_items", "tab_payments", "tabs",
+                            "refund_items", "refunds", "void_transactions"
                         ];
                         
                         foreach ($tables as $table) {

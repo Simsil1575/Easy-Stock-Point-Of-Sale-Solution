@@ -1,6 +1,8 @@
 <?php
-
-session_start();
+// Start session if not already started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 // Set timezone to Central Africa Time (CAT)
 date_default_timezone_set('Africa/Harare');
@@ -11,6 +13,8 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     header("Location: ../");
     exit();
 }
+
+
 
 // Optimized database connections with connection pooling
 class DatabaseManager {
@@ -37,9 +41,34 @@ try {
     $db = DatabaseManager::getConnection('../pos.db');
     $activationDb = DatabaseManager::getConnection('../active.db');
     $infoDb = DatabaseManager::getConnection('../info.db');
+    $userDb = DatabaseManager::getConnection('../user.db');
 } catch (PDOException $e) {
     echo "Connection failed: " . $e->getMessage();
     exit;
+}
+
+// Receipt printing mode (receipt.php vs qzreceipt.php)
+$use_qz_tray = 0;
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists, continue
+}
+try {
+    $settingStmt = $db->query("SELECT use_qz_tray FROM product_settings LIMIT 1");
+    $setting = $settingStmt->fetch(PDO::FETCH_ASSOC);
+    $use_qz_tray = (int)($setting['use_qz_tray'] ?? 0);
+} catch (PDOException $e) {
+    $use_qz_tray = 0;
+}
+
+// Get all cashiers and waitresses for cash modal dropdown
+$allCashUpEmployees = [];
+try {
+    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress') ORDER BY username");
+    $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // If query fails, leave empty
 }
 
 // Check activation status
@@ -233,16 +262,14 @@ function getCostOfGoodsSold($db, $startDate, $endDate, $closingTime, $isAfterMid
         
         $stmt = $db->prepare("
             SELECT 
-                (SELECT COALESCE(SUM(oi.quantity * p.buying_price), 0)
+                (SELECT COALESCE(SUM(oi.quantity * COALESCE(oi.buying_price, 0)), 0)
                  FROM order_items oi
                  JOIN orders o ON oi.order_id = o.id
-                 JOIN products p ON oi.product_name = p.name
                  WHERE ($orderWhereClause))
                 +
-                (SELECT COALESCE(SUM(csi.quantity * p.buying_price), 0)
+                (SELECT COALESCE(SUM(csi.quantity * COALESCE(csi.buying_price, 0)), 0)
                  FROM credit_sale_items csi
                  JOIN credit_sales cs ON csi.sale_id = cs.id
-                 JOIN products p ON csi.product_name = p.name
                  WHERE ($creditWhereClause))
         ");
         $stmt->execute();
@@ -510,6 +537,10 @@ $outOfStock = [];
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/chart.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+        <?php if (empty($use_qz_tray)) { ?>
+            <script src="../receipt.php?js=true"></script>
+        <?php } ?>
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <style>
@@ -556,19 +587,92 @@ $outOfStock = [];
             box-sizing: border-box !important;
         }
         
+        /* Mobile hamburger menu styles - matches credit-tabs.php */
+        .hamburger {
+            position: relative;
+            width: 30px;
+            height: 24px;
+            cursor: pointer;
+            z-index: 10000; /* Highest - always accessible, matches credit-tabs.php */
+        }
+        
+        .hamburger span {
+            display: block;
+            position: absolute;
+            height: 3px;
+            width: 100%;
+            background: rgb(0, 0, 0);
+            border-radius: 2px;
+            opacity: 1;
+            left: 0;
+            transform: rotate(0deg);
+            transition: .25s ease-in-out;
+        }
+        
+        .hamburger span:nth-child(1) {
+            top: 0px;
+        }
+        
+        .hamburger span:nth-child(2) {
+            top: 10px;
+        }
+        
+        .hamburger span:nth-child(3) {
+            top: 20px;
+        }
+        
+        .hamburger.open span:nth-child(1) {
+            top: 10px;
+            transform: rotate(135deg);
+        }
+        
+        .hamburger.open span:nth-child(2) {
+            opacity: 0;
+            left: -60px;
+        }
+        
+        .hamburger.open span:nth-child(3) {
+            top: 10px;
+            transform: rotate(-135deg);
+        }
+        
+        /* Mobile sidebar overlay - matches credit-tabs.php */
+        .mobile-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 80; /* Below sidebar (10000) and hamburger (10000) - matches credit-tabs.php */
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .mobile-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        /* Mobile responsive adjustments */
+        @media (max-width: 1023px) {
+            /* Hide sidebar on mobile by default - sidebar.php handles its own styling */
+            /* Remove left margin on mobile */
+            .ml-64 {
+                margin-left: 0 !important;
+            }
+            
+            /* Ensure content takes full width on mobile */
+            .flex-1 {
+                width: 100%;
+                max-width: 100vw;
+                overflow-x: hidden;
+            }
+        }
+        
         /* Responsive adjustments for very small screens */
         @media (max-width: 640px) {
-            .ml-64 {
-                margin-left: 0;
-                padding-left: 0;
-            }
-            
-            .fixed.top-0.left-0 {
-                position: relative;
-                width: 100%;
-                height: 100%;
-            }
-            
             /* Ensure charts don't get too small on mobile */
             .chart-container {
                 min-height: 400px !important;
@@ -622,56 +726,88 @@ $outOfStock = [];
 
 <body class="bg-gray-100 overflow-x-hidden">
     <div class="flex min-h-screen">
-        <div class="fixed top-0 left-0 h-full z-10">
-            <?php include 'sidebar.php'; ?>
-        </div>
-        
-        <div class="flex-1 ml-64 p-4 lg:p-8 w-full min-w-0">
-            <div class="flex flex-col gap-4 mb-6 lg:mb-8">
-                <div class="flex items-center gap-4">
-                    <h1 class="text-2xl lg:text-3xl font-bold text-gray-800">Manager Dashboard</h1>
-                    <button type="button" onclick="window.location.href='chat'" class="p-2 bg-gradient-to-br from-teal-200 to-teal-50 rounded-full hover:shadow-md transition-all duration-200">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                </svg>
-            </button>
-                    <div class="relative cursor-pointer">
-                    <svg onclick="toggleNotifications()" class="h-8 w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                    </svg>
-                    <span id="notificationCount" class="absolute top-1 right-0 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center pointer-events-none transform -translate-y-1/4 translate-x-1/4 hidden">
-                        0
-                        </span>
-                    <!-- Notifications Dropdown -->
-                    <div id="notificationsDropdown" class="hidden absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl z-50 transform transition-all duration-300 opacity-0 scale-95 border border-gray-100 max-h-[80vh] overflow-y-auto custom-scrollbar max-w-[90vw]">
-                        <div id="notificationsContent">
-                            <div class="p-6 text-center">
-                                <div class="mx-auto w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
-                                    <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                                    </svg>
-                                </div>
-                                <p class="text-gray-500 font-medium">Loading notifications...</p>
-                                <p class="text-gray-400 text-sm mt-1">Please wait</p>
+        <?php include 'sidebar.php'; ?>
+        <div class="flex-1 content lg:ml-0 ml-0">
+            <!-- Mobile Sidebar Overlay -->
+            <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
+            
+            <div class="p-4 lg:p-8 w-full min-w-0">
+                <!-- Fixed Header Row -->
+                <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-4 flex items-center gap-4 px-4 lg:px-8 shadow-sm">
+                    <div class="w-full max-w-full mx-auto flex items-center gap-4 px-4 lg:px-8">
+                        <!-- Mobile Controls Row -->
+                        <div class="flex items-center gap-3">
+                            <!-- Mobile Hamburger Menu Button -->
+                            <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
+                                <span></span>
+                                <span></span>
+                                <span></span>
                             </div>
+                            <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold">Manager Overview</h1>
+                            
+                            <!-- Action Buttons next to title -->
+                            <div class="flex items-center gap-3 ml-2">
+                                <button type="button" onclick="window.location.href='chat'" class="p-2 bg-gradient-to-br from-teal-200 to-teal-50 rounded-full hover:shadow-md transition-all duration-200">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                                    </svg>
+                                </button>
+                                <div class="relative cursor-pointer">
+                                    <svg onclick="toggleNotifications()" class="h-8 w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                                    </svg>
+                                    <span id="notificationCount" class="absolute top-1 right-0 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center pointer-events-none transform -translate-y-1/4 translate-x-1/4 hidden">
+                                        0
+                                    </span>
+                                    <!-- Notifications Dropdown -->
+                                    <div id="notificationsDropdown" class="hidden absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl z-50 transform transition-all duration-300 opacity-0 scale-95 border border-gray-100 max-h-[80vh] overflow-y-auto custom-scrollbar max-w-[90vw]">
+                                        <div id="notificationsContent">
+                                            <div class="p-6 text-center">
+                                                <div class="mx-auto w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
+                                                    <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                                    </svg>
+                                                </div>
+                                                <p class="text-gray-500 font-medium">Loading notifications...</p>
+                                                <p class="text-gray-400 text-sm mt-1">Please wait</p>
                                             </div>
                                         </div>
+                                    </div>
+                                </div>
+                                <!-- Stock Report Download Button -->
+                                <div class="relative">
+                                    <button onclick="downloadStockReport()" class="p-2 bg-gradient-to-br from-orange-200 to-orange-50 rounded-full hover:shadow-md transition-all duration-200 group stock-report-btn" title="Download Stock Alert Report">
+                                        <svg class="w-6 h-6 text-orange-600 group-hover:text-orange-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                    </button>
+                                    <span id="stockReportCount" class="absolute top-1 right-0 bg-orange-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center pointer-events-none transform -translate-y-1/4 translate-x-1/4 <?php echo (count($lowStock) + count($outOfStock)) > 0 ? '' : 'hidden'; ?>">
+                                        <?php echo count($lowStock) + count($outOfStock); ?>
+                                    </span>
+                                </div>
+                                <!-- Cash Up Button -->
+                                <div class="relative">
+                                    <button onclick="openCashUpModal()" class="p-2 bg-gradient-to-br from-teal-200 to-teal-50 rounded-full hover:shadow-md transition-all duration-200 group" title="Cash Up">
+                                        <svg class="w-6 h-6 text-teal-600 group-hover:text-teal-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <!-- Cash-Up Records Button -->
+                                <div class="relative">
+                                    <a href="cashups" class="p-2 bg-gradient-to-br from-teal-100 to-cyan-50 rounded-full hover:shadow-md transition-all duration-200 group flex items-center justify-center" title="Cash-Up Records">
+                                        <svg class="w-6 h-6 text-teal-600 group-hover:text-teal-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                
-                <!-- Stock Report Download Button -->
-                <div class="relative">
-                    <button onclick="downloadStockReport()" class="p-2 bg-gradient-to-br from-orange-200 to-orange-50 rounded-full hover:shadow-md transition-all duration-200 group stock-report-btn" title="Download Stock Alert Report">
-                        <svg class="w-6 h-6 text-orange-600 group-hover:text-orange-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                    </button>
-                    <span id="stockReportCount" class="absolute top-1 right-0 bg-orange-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center pointer-events-none transform -translate-y-1/4 translate-x-1/4 <?php echo (count($lowStock) + count($outOfStock)) > 0 ? '' : 'hidden'; ?>">
-                        <?php echo count($lowStock) + count($outOfStock); ?>
-                    </span>
-                </div>
-                </div>
-                <p class="text-sm text-gray-500 period-indicator">Today</p>
-            </div>
+                <!-- Spacer for fixed header -->
+                <div class="h-20 mb-4"></div>
+                <p class="text-sm text-gray-500 period-indicator mb-4">Today</p>
 
 
             <!-- Cash Transaction Cards -->
@@ -724,10 +860,11 @@ $outOfStock = [];
                                 
                                 if ($eftTableExists) {
                                     $cashSalesQuery = $db->prepare("
-                                        SELECT COALESCE(SUM(o.total), 0) 
+                                        SELECT COALESCE(SUM(
+                                            o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
+                                        ), 0)
                                         FROM orders o
-                                        LEFT JOIN eft_payments e ON o.id = e.order_id
-                                        WHERE e.order_id IS NULL AND (
+                                        WHERE (
                                             (DATE(o.created_at) = :today AND strftime('%H:%M', o.created_at) >= :closingTime) OR
                                             (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
                                         )
@@ -771,6 +908,40 @@ $outOfStock = [];
                                 $creditPaymentsQuery->execute();
                                 $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
                                 
+                                // 3b. Today's EFT direct sales from orders (EFT portion of mixed + full EFT)
+                                $eftDirectQuery = $db->prepare("
+                                    SELECT COALESCE(SUM(e.amount), 0)
+                                    FROM eft_payments e
+                                    JOIN orders o ON e.order_id = o.id
+                                    WHERE (
+                                        (DATE(o.created_at) = :today AND strftime('%H:%M', o.created_at) >= :closingTime) OR
+                                        (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
+                                    )
+                                ");
+                                $eftDirectQuery->bindParam(':today', $today);
+                                $eftDirectQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+                                $eftDirectQuery->bindParam(':closingTime', $closingTime);
+                                $eftDirectQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                $eftDirectQuery->execute();
+                                $eftDirectTotal = $eftDirectQuery->fetchColumn();
+
+                                // 3c. Today's EFT credit payments (payments table where status is EFT)
+                                $eftCreditQuery = $db->prepare("
+                                    SELECT COALESCE(SUM(p.amount), 0)
+                                    FROM payments p
+                                    JOIN credit_sales cs ON p.sale_id = cs.id
+                                    WHERE cs.payment_status = 'eft' AND (
+                                        (DATE(p.payment_date) = :today AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
+                                        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
+                                    )
+                                ");
+                                $eftCreditQuery->bindParam(':today', $today);
+                                $eftCreditQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+                                $eftCreditQuery->bindParam(':closingTime', $closingTime);
+                                $eftCreditQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                $eftCreditQuery->execute();
+                                $eftCreditTotal = $eftCreditQuery->fetchColumn();
+
                                 // 4. Today's cash out (withdrawals)
                                 $cashOutQuery = $db->prepare("
                                     SELECT COALESCE(SUM(amount), 0) 
@@ -787,7 +958,11 @@ $outOfStock = [];
                                 $cashOutQuery->execute();
                                 $totalCashOut = $cashOutQuery->fetchColumn();
                                 
-                                // Calculate cash in till for today's business day
+                                // Total EFT payments (direct + credit EFT)
+                                $totalEftPayments = ($eftDirectTotal ?: 0) + ($eftCreditTotal ?: 0);
+
+                                // Calculate cash in till for today's business day using businessClosingTime (matching cash.php)
+                                // All components use business day WHERE clauses with closingTime and isAfterMidnight
                                 $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
                                 echo $cashInTill >= 0 ? 'text-blue-600' : 'text-red-600'; 
                             ?>">
@@ -814,8 +989,8 @@ $outOfStock = [];
                             <p class="text-sm font-medium text-gray-600">Total Cash Received</p>
                             <h3 class="text-2xl font-bold text-teal-600">
                                 N$<?php 
-                                // Calculate total cash deposits including cash sales and credit payments
-                                $totalDeposits = $totalCashIn + $totalCashSales + $totalCreditPayments;
+                                // Calculate total receipts including cash and EFT portions
+                                $totalDeposits = $totalCashIn + $totalCashSales + $totalCreditPayments ;
                                 echo number_format($totalDeposits, 2); 
                                 ?>
                             </h3>
@@ -983,9 +1158,9 @@ $outOfStock = [];
             </div>
 
             <!-- Graphs Section -->
-            <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 w-full mb-8">
+            <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 w-full mb-8 hidden" id="revenueGraphsSection">
                 <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-4">
-                    <h2 class="text-xl lg:text-2xl font-bold text-gray-800">Stock Movement</h2>
+                    <h2 class="text-xl lg:text-2xl font-bold text-gray-800">Revenue Overview (Sales + Cash-ins)</h2>
                     <div class="flex flex-wrap gap-2">
                         <button type="button" onclick="updateChart('daily', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" id="dailyBtn">Daily</button>
                         <button type="button" onclick="updateChart('weekly', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="weeklyBtn">Weekly</button>
@@ -997,110 +1172,223 @@ $outOfStock = [];
                 </div>
             </div>
 
-            <!-- Employee Statistics Section -->
-            <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 w-full mb-8">
-                <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 gap-4">
-                    <h2 class="text-xl lg:text-2xl font-bold text-gray-800">Employee Statistics</h2>
-                    <div class="flex flex-wrap gap-2">
-                        <button type="button" onclick="updateEmployeePeriod('today', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" id="employeeTodayBtn">Today</button>
-                        <button type="button" onclick="updateEmployeePeriod('week', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="employeeWeekBtn">This Week</button>
-                        <button type="button" onclick="updateEmployeePeriod('month', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="employeeMonthBtn">This Month</button>
-                        <button type="button" onclick="updateEmployeePeriod('year', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="employeeYearBtn">This Year</button>
+            <!-- Employee Statistics and Creditor Analytics Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6 mb-8">
+                <!-- Employee Statistics Section -->
+                <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 w-full">
+                    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 gap-2">
+                        <h2 class="text-lg lg:text-xl font-bold text-gray-800">Employee Statistics</h2>
+                        <div class="flex flex-wrap gap-1">
+                            <button type="button" onclick="updateEmployeePeriod('all', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-1 focus:ring-teal-500" id="employeeAllBtn">Total</button>
+                            <button type="button" onclick="updateEmployeePeriod('today', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="employeeTodayBtn">Today</button>
+                            <button type="button" onclick="updateEmployeePeriod('week', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="employeeWeekBtn">Week</button>
+                            <button type="button" onclick="updateEmployeePeriod('month', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="employeeMonthBtn">Month</button>
+                            <button type="button" onclick="updateEmployeePeriod('year', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="employeeYearBtn">Year</button>
+                        </div>
                     </div>
-                </div>
-                
-                <!-- Employee Performance Cards -->
-            
-                
-                <!-- Employee Performance Chart -->
-                <div class="mb-6">
-                    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-4">
-                        <h3 class="text-lg font-semibold text-gray-800">Employee Sales Performance</h3>
-                                            <div class="flex flex-wrap gap-2">
-                        <button type="button" onclick="updateEmployeeChartView('sales'); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" id="salesBtn">Total Sales</button>
-                        <button type="button" onclick="updateEmployeeChartView('credit'); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="creditBtn">Credit Sales</button>
-                        <button type="button" onclick="updateEmployeeChartView('eft'); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="eftBtn">EFT Sales</button>
-                        <button type="button" onclick="updateEmployeeChartView('cash'); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="cashBtn">Cash Sales</button>
-                        <button type="button" onclick="updateEmployeeChartView('orders'); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="ordersBtn">Orders</button>
-                        <button type="button" onclick="updateEmployeeChartView('avg'); return false;" class="px-3 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="avgBtn">Avg. Order</button>
+                    
+                    <!-- Employee Performance Chart -->
+                    <div class="mb-6">
+                        <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-2">
+                            <h3 class="text-base font-semibold text-gray-800">Employee Sales Performance</h3>
+                            <div class="flex flex-wrap gap-1">
+                                <button type="button" onclick="updateEmployeeChartView('sales'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-1 focus:ring-teal-500" id="salesBtn">Sales</button>
+                                <button type="button" onclick="updateEmployeeChartView('credit'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditBtn">Credit</button>
+                                <button type="button" onclick="updateEmployeeChartView('eft'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="eftBtn">EFT</button>
+                                <button type="button" onclick="updateEmployeeChartView('cash'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="cashBtn">Cash</button>
+                                <button type="button" onclick="updateEmployeeChartView('orders'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="ordersBtn">Orders</button>
+                                <button type="button" onclick="updateEmployeeChartView('avg'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="avgBtn">Avg</button>
+                            </div>
+                        </div>
+                        <div class="w-full overflow-hidden chart-container" style="height: 400px;">
+                            <canvas id="employeeChart" class="w-full h-full max-w-full"></canvas>
+                        </div>
                     </div>
-                    </div>
-                    <div class="w-full overflow-hidden chart-container" style="height: 500px;">
-                        <canvas id="employeeChart" class="w-full h-full max-w-full"></canvas>
+
+                    <!-- Employee Performance Table -->
+                    <div>
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Sales</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Orders</th>
+                                </tr>
+                            </thead>
+                            <tbody id="employeeTableBody" class="bg-white divide-y divide-gray-200">
+                                <tr>
+                                    <td colspan="3" class="px-4 py-4 text-center text-gray-500">
+                                        <i class="fas fa-spinner fa-spin mr-2"></i>Loading employee data...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <!-- Pagination Controls -->
+                        <div id="employeePagination" class="mt-4 flex items-center justify-between border-t border-gray-200 px-4 py-3 sm:px-6">
+                            <div class="flex flex-1 justify-between sm:hidden">
+                                <button id="employeePrevBtn" onclick="changeEmployeePage(-1)" class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
+                                <button id="employeeNextBtn" onclick="changeEmployeePage(1)" class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
+                            </div>
+                            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                                <div>
+                                    <p class="text-sm text-gray-700">
+                                        Showing <span id="employeePageInfo" class="font-medium">0-0</span> of <span id="employeeTotalItems" class="font-medium">0</span> results
+                                    </p>
+                                </div>
+                                <div>
+                                    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                                        <button id="employeePrevBtnDesktop" onclick="changeEmployeePage(-1)" class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed">
+                                            <span class="sr-only">Previous</span>
+                                            <i class="fas fa-chevron-left"></i>
+                                        </button>
+                                        <button id="employeeNextBtnDesktop" onclick="changeEmployeePage(1)" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed">
+                                            <span class="sr-only">Next</span>
+                                            <i class="fas fa-chevron-right"></i>
+                                        </button>
+                                    </nav>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Employee Performance Table -->
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Sales</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Orders</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg. Order Value</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="employeeTableBody" class="bg-white divide-y divide-gray-200">
-                            <tr>
-                                <td colspan="6" class="px-6 py-4 text-center text-gray-500">
-                                    <i class="fas fa-spinner fa-spin mr-2"></i>Loading employee data...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+                <!-- Creditor Analytics Section -->
+                <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 w-full">
+                    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 gap-2">
+                        <h2 class="text-lg lg:text-xl font-bold text-gray-800">Creditor Analytics</h2>
+                        <div class="flex flex-wrap gap-1">
+                            <button type="button" onclick="updateCreditorPeriod('all', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-1 focus:ring-teal-500" id="creditorAllBtn">Total</button>
+                            <button type="button" onclick="updateCreditorPeriod('today', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorTodayBtn">Today</button>
+                            <button type="button" onclick="updateCreditorPeriod('week', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorWeekBtn">Week</button>
+                            <button type="button" onclick="updateCreditorPeriod('month', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorMonthBtn">Month</button>
+                            <button type="button" onclick="updateCreditorPeriod('year', event); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorYearBtn">Year</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Creditor Analytics Chart -->
+                    <div class="mb-6">
+                        <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-2">
+                            <h3 class="text-base font-semibold text-gray-800">Creditor Performance</h3>
+                            <div class="flex flex-wrap gap-1">
+                                <button type="button" onclick="updateCreditorChartView('sales'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-teal-100 text-teal-700 hover:bg-teal-200 focus:outline-none focus:ring-1 focus:ring-teal-500" id="creditorSalesBtn">Sales</button>
+                                <button type="button" onclick="updateCreditorChartView('outstanding'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorOutstandingBtn">Outstanding</button>
+                                <button type="button" onclick="updateCreditorChartView('paid'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorPaidBtn">Paid</button>
+                                <button type="button" onclick="updateCreditorChartView('transactions'); return false;" class="px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500" id="creditorTransactionsBtn">Txns</button>
+                            </div>
+                        </div>
+                        <div class="w-full overflow-hidden chart-container" style="height: 400px;">
+                            <canvas id="creditorChart" class="w-full h-full max-w-full"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Creditor Summary Table -->
+                    <div>
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Creditor</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Paid</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Outstanding</th>
+                                </tr>
+                            </thead>
+                            <tbody id="creditorTableBody" class="bg-white divide-y divide-gray-200">
+                                <tr>
+                                    <td colspan="3" class="px-4 py-4 text-center text-gray-500">
+                                        <i class="fas fa-spinner fa-spin mr-2"></i>Loading creditor data...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <!-- Pagination Controls -->
+                        <div id="creditorPagination" class="mt-4 flex items-center justify-between border-t border-gray-200 px-4 py-3 sm:px-6">
+                            <div class="flex flex-1 justify-between sm:hidden">
+                                <button id="creditorPrevBtn" onclick="changeCreditorPage(-1)" class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
+                                <button id="creditorNextBtn" onclick="changeCreditorPage(1)" class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
+                            </div>
+                            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                                <div>
+                                    <p class="text-sm text-gray-700">
+                                        Showing <span id="creditorPageInfo" class="font-medium">0-0</span> of <span id="creditorTotalItems" class="font-medium">0</span> results
+                                    </p>
+                                </div>
+                                <div>
+                                    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                                        <button id="creditorPrevBtnDesktop" onclick="changeCreditorPage(-1)" class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed">
+                                            <span class="sr-only">Previous</span>
+                                            <i class="fas fa-chevron-left"></i>
+                                        </button>
+                                        <button id="creditorNextBtnDesktop" onclick="changeCreditorPage(1)" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed">
+                                            <span class="sr-only">Next</span>
+                                            <i class="fas fa-chevron-right"></i>
+                                        </button>
+                                    </nav>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <script>
                 let salesChart;
                 let employeeChart;
+                let creditorChart;
                 let requestCache = new Map();
                 let debounceTimer;
+                let creditorChartData = [];
                 
-                // Optimized chart setup with loading state (Stock Movement - Yellow Line Only)
+                // Pagination state
+                let employeePage = 1;
+                let employeeData = [];
+                let creditorPage = 1;
+                let creditorData = [];
+                const itemsPerPage = 4;
+                
+                // Optimized chart setup with loading state
                 const ctx = document.getElementById('salesChart').getContext('2d');
                 salesChart = new Chart(ctx, {
                     type: 'line',
                     data: {
                         labels: ['Loading...'],
-                        datasets: [
-                            {
-                                type: 'line',
-                                label: 'Stock Movement',
-                                data: [0],
-                                borderColor: 'rgba(234, 179, 8, 1)',
-                                backgroundColor: 'rgba(234, 179, 8, 0.15)',
-                                borderWidth: 3,
-                                fill: true,
-                                tension: 0.4,
-                                pointRadius: 5,
-                                pointHoverRadius: 7,
-                                pointBackgroundColor: 'rgba(234, 179, 8, 1)',
-                                pointBorderColor: '#ffffff',
-                                pointBorderWidth: 2
-                            }
-                        ]
+                        datasets: [{
+                            label: 'Total Revenue (Sales + Cash-ins) (N$)',
+                            data: [0],
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.1
+                        }]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        animation: { duration: 800, easing: 'easeOutQuart' },
+                        animation: {
+                            duration: 800,
+                            easing: 'easeOutQuart'
+                        },
                         scales: {
                             x: {
                                 display: true,
-                                title: { display: true, text: 'Period' }
+                                title: {
+                                    display: true,
+                                    text: 'Day'
+                                }
                             },
                             y: {
                                 display: true,
-                                title: { display: true, text: 'Net Stock Movement' },
-                                beginAtZero: false
+                                title: {
+                                    display: true,
+                                    text: 'Revenue Amount (N$)'
+                                },
+                                beginAtZero: true
                             }
                         },
                         plugins: {
-                            legend: { display: true, position: 'top' }
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            }
                         }
                     }
                 });
@@ -1109,9 +1397,12 @@ $outOfStock = [];
                 document.addEventListener('DOMContentLoaded', function() {
                     // Load data asynchronously to avoid blocking page load
                     setTimeout(() => {
-                    loadTodaysData();
+                        loadTodaysData();
                         loadNotifications();
                         loadInitialChartData();
+                        initializeCreditorChart();
+                        // Initialize creditor analytics with 'all' period (Total view - all creditors)
+                        updateCreditorPeriod('all');
                     }, 100);
                 });
                 
@@ -1122,6 +1413,9 @@ $outOfStock = [];
                     }
                     if (employeeChart) {
                         employeeChart.resize();
+                    }
+                    if (creditorChart) {
+                        creditorChart.resize();
                     }
                 }, 250));
 
@@ -1210,7 +1504,7 @@ $outOfStock = [];
                 document.addEventListener('visibilitychange', cleanupMemory);
 
                 // Employee Statistics Functions
-                async function loadEmployeeStatistics(period = 'today') {
+                async function loadEmployeeStatistics(period = 'all') {
                     try {
                         const response = await fetch(`get_employee_stats.php?period=${period}`);
                         const data = await response.json();
@@ -1276,61 +1570,88 @@ $outOfStock = [];
                     const tableBody = document.getElementById('employeeTableBody');
                     if (!tableBody) return;
 
-                    if (!employees || employees.length === 0) {
+                    // Store full data for pagination
+                    employeeData = employees || [];
+                    employeePage = 1; // Reset to first page when data changes
+
+                    if (!employeeData || employeeData.length === 0) {
                         tableBody.innerHTML = `
                             <tr>
-                                <td colspan="6" class="px-6 py-4 text-center text-gray-500">
+                                <td colspan="3" class="px-4 py-4 text-center text-gray-500">
                                     No employee data available
                                 </td>
                             </tr>
                         `;
+                        updateEmployeePagination();
                         return;
                     }
 
-                    const rows = employees.map(employee => `
+                    renderEmployeePage();
+                }
+
+                function renderEmployeePage() {
+                    const tableBody = document.getElementById('employeeTableBody');
+                    if (!tableBody) return;
+
+                    const startIndex = (employeePage - 1) * itemsPerPage;
+                    const endIndex = startIndex + itemsPerPage;
+                    const pageData = employeeData.slice(startIndex, endIndex);
+
+                    const rows = pageData.map(employee => `
                         <tr class="hover:bg-gray-50 transition-colors duration-200">
-                            <td class="px-6 py-4 whitespace-nowrap">
+                            <td class="px-4 py-3 whitespace-nowrap">
                                 <div class="flex items-center">
-                                    <div class="flex-shrink-0 h-10 w-10">
-                                        <div class="h-10 w-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center">
-                                            <span class="text-sm font-medium text-white">${employee.name.charAt(0).toUpperCase()}</span>
+                                    <div class="flex-shrink-0 h-8 w-8">
+                                        <div class="h-8 w-8 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center">
+                                            <span class="text-xs font-medium text-white">${employee.name.charAt(0).toUpperCase()}</span>
                                         </div>
                                     </div>
-                                    <div class="ml-4">
+                                    <div class="ml-3">
                                         <div class="text-sm font-medium text-gray-900">${employee.name}</div>
-                                        <div class="text-sm text-gray-500">${employee.email || ''}</div>
                                     </div>
                                 </div>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                    employee.role === 'admin' ? 'bg-purple-100 text-purple-800' :
-                                    employee.role === 'manager' ? 'bg-blue-100 text-blue-800' :
-                                    'bg-teal-100 text-teal-800'
-                                }">
-                                    ${employee.role.charAt(0).toUpperCase() + employee.role.slice(1)}
-                                </span>
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
                                 N$${parseFloat(employee.totalSales || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
                                 ${employee.totalOrders || 0}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                N$${parseFloat(employee.avgOrderValue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                    employee.status === 'active' ? 'bg-teal-100 text-teal-800' : 'bg-red-100 text-red-800'
-                                }">
-                                    ${employee.status === 'active' ? 'Active' : 'Inactive'}
-                                </span>
                             </td>
                         </tr>
                     `).join('');
 
                     tableBody.innerHTML = rows;
+                    updateEmployeePagination();
+                }
+
+                function updateEmployeePagination() {
+                    const totalItems = employeeData.length;
+                    const totalPages = Math.ceil(totalItems / itemsPerPage);
+                    const startItem = totalItems === 0 ? 0 : (employeePage - 1) * itemsPerPage + 1;
+                    const endItem = Math.min(employeePage * itemsPerPage, totalItems);
+
+                    // Update page info
+                    document.getElementById('employeePageInfo').textContent = `${startItem}-${endItem}`;
+                    document.getElementById('employeeTotalItems').textContent = totalItems;
+
+                    // Update button states
+                    const prevDisabled = employeePage === 1;
+                    const nextDisabled = employeePage >= totalPages;
+
+                    document.getElementById('employeePrevBtn').disabled = prevDisabled;
+                    document.getElementById('employeeNextBtn').disabled = nextDisabled;
+                    document.getElementById('employeePrevBtnDesktop').disabled = prevDisabled;
+                    document.getElementById('employeeNextBtnDesktop').disabled = nextDisabled;
+                }
+
+                function changeEmployeePage(direction) {
+                    const totalPages = Math.ceil(employeeData.length / itemsPerPage);
+                    const newPage = employeePage + direction;
+                    
+                    if (newPage >= 1 && newPage <= totalPages) {
+                        employeePage = newPage;
+                        renderEmployeePage();
+                    }
                 }
 
                 function showEmployeeError() {
@@ -1338,11 +1659,12 @@ $outOfStock = [];
                     if (tableBody) {
                         tableBody.innerHTML = `
                             <tr>
-                                <td colspan="6" class="px-6 py-4 text-center text-red-500">
+                                <td colspan="3" class="px-4 py-4 text-center text-red-500">
                                     <i class="fas fa-exclamation-triangle mr-2"></i>Error loading employee data
                                 </td>
                             </tr>
                         `;
+                        updateEmployeePagination();
                     }
                 }
 
@@ -1537,9 +1859,9 @@ $outOfStock = [];
                     // Initialize employee chart
                     initializeEmployeeChart();
                     
-                    // Load initial employee data
+                    // Load initial employee data with 'all' period (Total view - all employees)
                     setTimeout(() => {
-                        loadEmployeeStatistics('today');
+                        updateEmployeePeriod('all');
                     }, 200);
                     
                     // Handle chart view change - now using buttons instead of select
@@ -1554,15 +1876,341 @@ $outOfStock = [];
                     }
                     
                     // Update button styles
-                    document.querySelectorAll('#employeeTodayBtn, #employeeWeekBtn, #employeeMonthBtn, #employeeYearBtn').forEach(btn => {
+                    document.querySelectorAll('#employeeAllBtn, #employeeTodayBtn, #employeeWeekBtn, #employeeMonthBtn, #employeeYearBtn').forEach(btn => {
                         btn.classList.remove('bg-teal-100', 'text-teal-700');
                         btn.classList.add('bg-gray-100', 'text-gray-700');
                     });
-                    document.getElementById('employee' + period.charAt(0).toUpperCase() + period.slice(1) + 'Btn').classList.remove('bg-gray-100', 'text-gray-700');
-                    document.getElementById('employee' + period.charAt(0).toUpperCase() + period.slice(1) + 'Btn').classList.add('bg-teal-100', 'text-teal-700');
+                    
+                    // Handle 'all' period button ID
+                    const buttonId = period === 'all' ? 'employeeAllBtn' : 'employee' + period.charAt(0).toUpperCase() + period.slice(1) + 'Btn';
+                    const button = document.getElementById(buttonId);
+                    if (button) {
+                        button.classList.remove('bg-gray-100', 'text-gray-700');
+                        button.classList.add('bg-teal-100', 'text-teal-700');
+                    }
                     
                     // Load employee statistics for the selected period
                     loadEmployeeStatistics(period);
+                }
+
+                // Creditor Analytics Functions
+                function initializeCreditorChart() {
+                    const ctx = document.getElementById('creditorChart');
+                    if (!ctx) return;
+                    
+                    creditorChart = new Chart(ctx, {
+                        type: 'pie',
+                        data: {
+                            labels: ['Loading...'],
+                            datasets: [{
+                                label: 'Creditor Performance',
+                                data: [0],
+                                backgroundColor: [
+                                    'rgba(153, 102, 255, 0.8)',
+                                    'rgba(255, 99, 132, 0.8)',
+                                    'rgba(54, 162, 235, 0.8)',
+                                    'rgba(255, 205, 86, 0.8)',
+                                    'rgba(75, 192, 192, 0.8)',
+                                    'rgba(255, 159, 64, 0.8)',
+                                    'rgba(199, 199, 199, 0.8)',
+                                    'rgba(83, 102, 255, 0.8)',
+                                    'rgba(34, 197, 94, 0.8)',
+                                    'rgba(239, 68, 68, 0.8)'
+                                ],
+                                borderColor: [
+                                    'rgba(153, 102, 255, 1)',
+                                    'rgba(255, 99, 132, 1)',
+                                    'rgba(54, 162, 235, 1)',
+                                    'rgba(255, 205, 86, 1)',
+                                    'rgba(75, 192, 192, 1)',
+                                    'rgba(255, 159, 64, 1)',
+                                    'rgba(199, 199, 199, 1)',
+                                    'rgba(83, 102, 255, 1)',
+                                    'rgba(34, 197, 94, 1)',
+                                    'rgba(239, 68, 68, 1)'
+                                ],
+                                borderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: {
+                                duration: 800,
+                                easing: 'easeOutQuart'
+                            },
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    position: 'right'
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const label = context.label || '';
+                                            const value = context.parsed || 0;
+                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                                            return `${label}: N$${parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percentage}%)`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                // Creditor color palette
+                const creditorColors = [
+                    { bg: 'rgba(153, 102, 255, 0.3)', border: 'rgba(153, 102, 255, 0.8)' }, // Purple
+                    { bg: 'rgba(255, 99, 132, 0.3)', border: 'rgba(255, 99, 132, 0.8)' }, // Red
+                    { bg: 'rgba(54, 162, 235, 0.3)', border: 'rgba(54, 162, 235, 0.8)' }, // Blue
+                    { bg: 'rgba(255, 205, 86, 0.3)', border: 'rgba(255, 205, 86, 0.8)' }, // Yellow
+                    { bg: 'rgba(75, 192, 192, 0.3)', border: 'rgba(75, 192, 192, 0.8)' }, // Teal
+                    { bg: 'rgba(255, 159, 64, 0.3)', border: 'rgba(255, 159, 64, 0.8)' }, // Orange
+                    { bg: 'rgba(199, 199, 199, 0.3)', border: 'rgba(199, 199, 199, 0.8)' }, // Gray
+                    { bg: 'rgba(83, 102, 255, 0.3)', border: 'rgba(83, 102, 255, 0.8)' }, // teal
+                    { bg: 'rgba(34, 197, 94, 0.3)', border: 'rgba(34, 197, 94, 0.8)' }, // teal
+                    { bg: 'rgba(239, 68, 68, 0.3)', border: 'rgba(239, 68, 68, 0.8)' }  // Red
+                ];
+
+                async function loadCreditorAnalytics(period = 'all') {
+                    try {
+                        const response = await fetch(`get_creditor_analytics.php?period=${period}`);
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            creditorChartData = data.creditors || [];
+                            updateCreditorTable(data.creditors);
+                            updateCreditorChart('sales');
+                        } else {
+                            console.error('Error loading creditor analytics:', data.error);
+                            showCreditorError();
+                        }
+                    } catch (error) {
+                        console.error('Error loading creditor analytics:', error);
+                        showCreditorError();
+                    }
+                }
+
+                function updateCreditorTable(creditors) {
+                    const tableBody = document.getElementById('creditorTableBody');
+                    if (!tableBody) return;
+
+                    // Store full data for pagination
+                    creditorData = creditors || [];
+                    creditorPage = 1; // Reset to first page when data changes
+
+                    if (!creditorData || creditorData.length === 0) {
+                        tableBody.innerHTML = `
+                            <tr>
+                                <td colspan="3" class="px-4 py-4 text-center text-gray-500">
+                                    No creditor data available
+                                </td>
+                            </tr>
+                        `;
+                        updateCreditorPagination();
+                        return;
+                    }
+
+                    renderCreditorPage();
+                }
+
+                function renderCreditorPage() {
+                    const tableBody = document.getElementById('creditorTableBody');
+                    if (!tableBody) return;
+
+                    const startIndex = (creditorPage - 1) * itemsPerPage;
+                    const endIndex = startIndex + itemsPerPage;
+                    const pageData = creditorData.slice(startIndex, endIndex);
+
+                    const rows = pageData.map(creditor => `
+                        <tr class="hover:bg-gray-50 transition-colors duration-200">
+                            <td class="px-4 py-3 whitespace-nowrap">
+                                <div class="text-sm font-medium text-gray-900">${creditor.name}</div>
+                            </td>
+                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                                N$${parseFloat(creditor.total_paid || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td class="px-4 py-3 whitespace-nowrap text-sm ${parseFloat(creditor.outstanding_balance || 0) > 0 ? 'text-red-600 font-semibold' : 'text-gray-900'}">
+                                N$${parseFloat(creditor.outstanding_balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                        </tr>
+                    `).join('');
+
+                    tableBody.innerHTML = rows;
+                    updateCreditorPagination();
+                }
+
+                function updateCreditorPagination() {
+                    const totalItems = creditorData.length;
+                    const totalPages = Math.ceil(totalItems / itemsPerPage);
+                    const startItem = totalItems === 0 ? 0 : (creditorPage - 1) * itemsPerPage + 1;
+                    const endItem = Math.min(creditorPage * itemsPerPage, totalItems);
+
+                    // Update page info
+                    document.getElementById('creditorPageInfo').textContent = `${startItem}-${endItem}`;
+                    document.getElementById('creditorTotalItems').textContent = totalItems;
+
+                    // Update button states
+                    const prevDisabled = creditorPage === 1;
+                    const nextDisabled = creditorPage >= totalPages;
+
+                    document.getElementById('creditorPrevBtn').disabled = prevDisabled;
+                    document.getElementById('creditorNextBtn').disabled = nextDisabled;
+                    document.getElementById('creditorPrevBtnDesktop').disabled = prevDisabled;
+                    document.getElementById('creditorNextBtnDesktop').disabled = nextDisabled;
+                }
+
+                function changeCreditorPage(direction) {
+                    const totalPages = Math.ceil(creditorData.length / itemsPerPage);
+                    const newPage = creditorPage + direction;
+                    
+                    if (newPage >= 1 && newPage <= totalPages) {
+                        creditorPage = newPage;
+                        renderCreditorPage();
+                    }
+                }
+
+                function showCreditorError() {
+                    const tableBody = document.getElementById('creditorTableBody');
+                    if (tableBody) {
+                        tableBody.innerHTML = `
+                            <tr>
+                                <td colspan="3" class="px-4 py-4 text-center text-red-500">
+                                    <i class="fas fa-exclamation-triangle mr-2"></i>Error loading creditor data
+                                </td>
+                            </tr>
+                        `;
+                        updateCreditorPagination();
+                    }
+                }
+
+                function updateCreditorChartView(view) {
+                    // Update button styles
+                    document.querySelectorAll('#creditorSalesBtn, #creditorOutstandingBtn, #creditorPaidBtn, #creditorTransactionsBtn').forEach(btn => {
+                        btn.classList.remove('bg-teal-100', 'text-teal-700');
+                        btn.classList.add('bg-gray-100', 'text-gray-700');
+                    });
+                    document.getElementById('creditor' + view.charAt(0).toUpperCase() + view.slice(1) + 'Btn').classList.remove('bg-gray-100', 'text-gray-700');
+                    document.getElementById('creditor' + view.charAt(0).toUpperCase() + view.slice(1) + 'Btn').classList.add('bg-teal-100', 'text-teal-700');
+                    
+                    // Update chart with new view
+                    updateCreditorChart(view);
+                }
+
+                function updateCreditorChart(chartView = 'sales') {
+                    if (!creditorChart || !creditorChartData.length) return;
+                    
+                    let labels = [];
+                    let data = [];
+                    let chartLabel = '';
+                    
+                    // Sort creditors by the selected metric
+                    const sortedCreditors = [...creditorChartData].sort((a, b) => {
+                        if (chartView === 'sales') {
+                            return b.total_sales - a.total_sales;
+                        } else if (chartView === 'outstanding') {
+                            return b.outstanding_balance - a.outstanding_balance;
+                        } else if (chartView === 'paid') {
+                            return b.total_paid - a.total_paid;
+                        } else {
+                            return b.total_transactions - a.total_transactions;
+                        }
+                    });
+                    
+                    // Take top 10 creditors for better visualization
+                    const topCreditors = sortedCreditors.slice(0, 10);
+                    
+                    topCreditors.forEach(creditor => {
+                        labels.push(creditor.name);
+                        
+                        if (chartView === 'sales') {
+                            data.push(creditor.total_sales);
+                            chartLabel = 'Total Sales';
+                        } else if (chartView === 'outstanding') {
+                            data.push(creditor.outstanding_balance);
+                            chartLabel = 'Outstanding Balance';
+                        } else if (chartView === 'paid') {
+                            data.push(creditor.total_paid);
+                            chartLabel = 'Paid Amount';
+                        } else {
+                            data.push(creditor.total_transactions);
+                            chartLabel = 'Number of Transactions';
+                        }
+                    });
+                    
+                    // Pie chart color arrays
+                    const pieColors = [
+                        'rgba(153, 102, 255, 0.8)',  // Purple
+                        'rgba(255, 99, 132, 0.8)',   // Red
+                        'rgba(54, 162, 235, 0.8)',   // Blue
+                        'rgba(255, 205, 86, 0.8)',   // Yellow
+                        'rgba(75, 192, 192, 0.8)',   // Teal
+                        'rgba(255, 159, 64, 0.8)',   // Orange
+                        'rgba(199, 199, 199, 0.8)',  // Gray
+                        'rgba(83, 102, 255, 0.8)',   // teal
+                        'rgba(34, 197, 94, 0.8)',    // teal
+                        'rgba(239, 68, 68, 0.8)'     // Red
+                    ];
+                    
+                    const pieBorderColors = [
+                        'rgba(153, 102, 255, 1)',
+                        'rgba(255, 99, 132, 1)',
+                        'rgba(54, 162, 235, 1)',
+                        'rgba(255, 205, 86, 1)',
+                        'rgba(75, 192, 192, 1)',
+                        'rgba(255, 159, 64, 1)',
+                        'rgba(199, 199, 199, 1)',
+                        'rgba(83, 102, 255, 1)',
+                        'rgba(34, 197, 94, 1)',
+                        'rgba(239, 68, 68, 1)'
+                    ];
+                    
+                    // Assign colors to each creditor
+                    const backgroundColors = [];
+                    const borderColors = [];
+                    
+                    topCreditors.forEach((creditor, index) => {
+                        const colorIndex = index % pieColors.length;
+                        backgroundColors.push(pieColors[colorIndex]);
+                        borderColors.push(pieBorderColors[colorIndex]);
+                    });
+                    
+                    // Update chart
+                    creditorChart.data.labels = labels;
+                    creditorChart.data.datasets[0].data = data;
+                    creditorChart.data.datasets[0].label = chartLabel;
+                    creditorChart.data.datasets[0].backgroundColor = backgroundColors;
+                    creditorChart.data.datasets[0].borderColor = borderColors;
+                    creditorChart.data.datasets[0].borderWidth = 2;
+                    
+                    creditorChart.update();
+                }
+
+                // Function to update creditor period (button click handler)
+                function updateCreditorPeriod(period, event) {
+                    // Prevent page scroll
+                    if (event) {
+                        event.preventDefault();
+                    }
+                    
+                    // Update button styles
+                    document.querySelectorAll('#creditorAllBtn, #creditorTodayBtn, #creditorWeekBtn, #creditorMonthBtn, #creditorYearBtn').forEach(btn => {
+                        btn.classList.remove('bg-teal-100', 'text-teal-700');
+                        btn.classList.add('bg-gray-100', 'text-gray-700');
+                    });
+                    
+                    // Handle 'all' period button ID
+                    const buttonId = period === 'all' ? 'creditorAllBtn' : 'creditor' + period.charAt(0).toUpperCase() + period.slice(1) + 'Btn';
+                    const button = document.getElementById(buttonId);
+                    if (button) {
+                        button.classList.remove('bg-gray-100', 'text-gray-700');
+                        button.classList.add('bg-teal-100', 'text-teal-700');
+                    }
+                    
+                    // Load creditor analytics for the selected period
+                    loadCreditorAnalytics(period);
                 }
 
                 // Load notifications asynchronously
@@ -1685,40 +2333,59 @@ $outOfStock = [];
                 // Load initial chart data
                 async function loadInitialChartData() {
                     try {
-                        const chartData = await cachedFetch(`get_stock_movement_data.php?view=daily`);
+                        const chartData = await cachedFetch(`get_sales_data.php?view=daily`);
+                        
                         if (chartData.success) {
-                            if (salesChart) salesChart.destroy();
+                            // Destroy existing chart to prevent animation glitches
+                            if (salesChart) {
+                                salesChart.destroy();
+                            }
+                            
+                            // Create a new chart instance with real data
                             salesChart = new Chart(ctx, {
                                 type: 'line',
                                 data: {
                                     labels: chartData.labels,
-                                    datasets: [
-                                        {
-                                            type: 'line',
-                                            label: 'Stock Movement',
-                                            data: chartData.netMovement,
-                                            borderColor: 'rgba(234, 179, 8, 1)',
-                                            backgroundColor: 'rgba(234, 179, 8, 0.15)',
-                                            borderWidth: 3,
-                                            fill: true,
-                                            tension: 0.4,
-                                            pointRadius: 5,
-                                            pointHoverRadius: 7,
-                                            pointBackgroundColor: 'rgba(234, 179, 8, 1)',
-                                            pointBorderColor: '#ffffff',
-                                            pointBorderWidth: 2
-                                        }
-                                    ]
+                                    datasets: [{
+                                        label: 'Daily Sales (N$)',
+                                        data: chartData.sales,
+                                        borderColor: 'rgba(75, 192, 192, 1)',
+                                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                        borderWidth: 2,
+                                        fill: true,
+                                        tension: 0.1
+                                    }]
                                 },
                                 options: {
                                     responsive: true,
                                     maintainAspectRatio: false,
-                                    animation: { duration: 800, easing: 'easeOutQuart' },
-                                    scales: {
-                                        x: { display: true, title: { display: true, text: 'Days' } },
-                                        y: { display: true, title: { display: true, text: 'Net Stock Movement' }, beginAtZero: false }
+                                    animation: {
+                                        duration: 800,
+                                        easing: 'easeOutQuart'
                                     },
-                                    plugins: { legend: { display: true, position: 'top' } }
+                                    scales: {
+                                        x: {
+                                            display: true,
+                                            title: {
+                                                display: true,
+                                                text: 'Day'
+                                            }
+                                        },
+                                        y: {
+                                            display: true,
+                                            title: {
+                                                display: true,
+                                                text: 'Sales Amount (N$)'
+                                            },
+                                            beginAtZero: true
+                                        }
+                                    },
+                                    plugins: {
+                                        legend: {
+                                            display: true,
+                                            position: 'top'
+                                        }
+                                    }
                                 }
                             });
                         }
@@ -1751,7 +2418,7 @@ $outOfStock = [];
                     try {
                         // Fetch chart data and card data simultaneously with caching
                         const [chartData, cardData] = await Promise.all([
-                            cachedFetch(`get_stock_movement_data.php?view=${viewParam}`),
+                            cachedFetch(`get_sales_data.php?view=${viewParam}`),
                             cachedFetch(`get_card_data.php?view=${viewParam}`)
                         ]);
                         
@@ -1771,45 +2438,51 @@ $outOfStock = [];
                         // Use the labels from the response (no need to override for weekly)
                         let labels = chartData.labels;
                         
-                        // Create a new chart instance (Yellow Line Only)
+                        // Create a new chart instance
                         salesChart = new Chart(ctx, {
                             type: 'line',
                             data: {
                                 labels: labels,
-                                datasets: [
-                                    {
-                                        type: 'line',
-                                        label: 'Stock Movement',
-                                        data: chartData.netMovement,
-                                        borderColor: 'rgba(234, 179, 8, 1)',
-                                        backgroundColor: 'rgba(234, 179, 8, 0.15)',
-                                        borderWidth: 3,
-                                        fill: true,
-                                        tension: 0.4,
-                                        pointRadius: 5,
-                                        pointHoverRadius: 7,
-                                        pointBackgroundColor: 'rgba(234, 179, 8, 1)',
-                                        pointBorderColor: '#ffffff',
-                                        pointBorderWidth: 2
-                                    }
-                                ]
+                                datasets: [{
+                                    label: `${view.charAt(0).toUpperCase() + view.slice(1)} Sales (N$)`,
+                                    data: chartData.sales,
+                                    borderColor: 'rgba(75, 192, 192, 1)',
+                                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                    borderWidth: 2,
+                                    fill: true,
+                                    tension: 0.1
+                                }]
                             },
                             options: {
                                 responsive: true,
                                 maintainAspectRatio: false,
-                                animation: { duration: 800, easing: 'easeOutQuart' },
+                                animation: {
+                                    duration: 800,
+                                    easing: 'easeOutQuart'
+                                },
                                 scales: {
                                     x: {
                                         display: true,
-                                        title: { display: true, text: view === 'weekly' ? 'Weeks' : (view === 'monthly' ? 'Months' : 'Days') }
+                                        title: {
+                                            display: true,
+                                            text: view === 'weekly' ? 'Weeks' : (view === 'monthly' ? 'Months' : 'Days')
+                                        }
                                     },
                                     y: {
                                         display: true,
-                                        title: { display: true, text: 'Net Stock Movement' },
-                                        beginAtZero: false
+                                        title: {
+                                            display: true,
+                                            text: 'Sales Amount (N$)'
+                                        },
+                                        beginAtZero: true
                                     }
                                 },
-                                plugins: { legend: { display: true, position: 'top' } }
+                                plugins: {
+                                    legend: {
+                                        display: true,
+                                        position: 'top'
+                                    }
+                                }
                             }
                         });
 
@@ -2058,12 +2731,131 @@ $outOfStock = [];
                     });
                 });
             </script>
+            </div>
         </div>
     </div>
 </body>
 </html>
 
+<?php
+// Fetch business info for Android printing
+$dbInfo = new PDO('sqlite:../info.db');
+$businessInfo = $dbInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+if (!$businessInfo) {
+    $businessInfo = [
+        'name' => 'POS SOLUTION',
+        'location' => '',
+        'phone' => '',
+        'footer_text' => 'Thank you!',
+        'vat_inclusive' => 'exclusive',
+        'vat_rate' => 15.0
+    ];
+}
+?>
+
 <script>
+    // Business info for Android printing
+    if (typeof useQzTray === 'undefined') {
+        var useQzTray = <?php echo $use_qz_tray ? 'true' : 'false'; ?>;
+    }
+    var businessInfo = {
+        business_name: <?= json_encode($businessInfo['name'] ?? 'POS SOLUTION') ?>,
+        location: <?= json_encode($businessInfo['location'] ?? '') ?>,
+        phone: <?= json_encode($businessInfo['phone'] ?? '') ?>,
+        footer_text: <?= json_encode($businessInfo['footer_text'] ?? 'Thank you!') ?>,
+        vat_inclusive: <?= json_encode($businessInfo['vat_inclusive'] ?? 'exclusive') ?>,
+        vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
+    };
+
+    // sendToPrinter function is now loaded from ../receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[Manager/home.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
+            }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+                var ua = (navigator.userAgent || '').toLowerCase();
+                var isAndroidLike = ua.indexOf('android') !== -1 || ua.indexOf('median') !== -1;
+
+                // QZ Tray printing (desktop/web)
+                if (useQzTray && !isAndroidLike) {
+                    window.__qzTrayPrintQueue = window.__qzTrayPrintQueue || Promise.resolve();
+                    window.__qzTrayPrintQueue = window.__qzTrayPrintQueue.then(function() {
+                        return new Promise(function(resolve) {
+                            var qzSupported = !!dataWithBusiness.is_cashup_report || !!dataWithBusiness.is_balance_receipt
+                                || (! (dataWithBusiness.tab_id || dataWithBusiness.table_id)
+                                    && !dataWithBusiness.is_tab_balance_receipt
+                                    && !dataWithBusiness.is_payment_receipt
+                                    && !dataWithBusiness.is_refund_receipt);
+
+                            if (!qzSupported) {
+                                return resolve({ success: false, message: 'Unsupported receipt type for QZ Tray' });
+                            }
+
+                            var iframe = document.createElement('iframe');
+                            iframe.style.display = 'none';
+                            iframe.width = '0';
+                            iframe.height = '0';
+
+                            var encoded = encodeURIComponent(JSON.stringify(dataWithBusiness));
+                            var timeoutId = null;
+
+                            function cleanup(handlerFn, result) {
+                                try {
+                                    if (handlerFn) window.removeEventListener('message', handlerFn);
+                                } catch (e) {}
+                                if (timeoutId) clearTimeout(timeoutId);
+                                try { iframe.remove(); } catch (e) {}
+                                resolve(result);
+                            }
+
+                            function onMessage(event) {
+                                if (!event || !event.data || event.data.type !== 'printComplete') return;
+                                cleanup(onMessage, {
+                                    success: !!event.data.success,
+                                    message: event.data.message || 'QZ Tray print completed'
+                                });
+                            }
+
+                            timeoutId = setTimeout(function() {
+                                cleanup(onMessage, { success: false, message: 'QZ Tray print timeout' });
+                            }, 60000);
+
+                            window.addEventListener('message', onMessage);
+
+                            iframe.src = '../qzreceipt.php?data=' + encoded;
+                            document.body.appendChild(iframe);
+                        });
+                    });
+
+                    return window.__qzTrayPrintQueue;
+                }
+
+                // Default: receipt.php (works for Android interceptor and ESC/POS server printing)
+                return fetch('../receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) { 
+                    return r.json();
+                });
+        }
+    }
+
     function toggleNotifications() {
         const dropdown = document.getElementById('notificationsDropdown');
         dropdown.classList.toggle('hidden');
@@ -2085,5 +2877,1107 @@ $outOfStock = [];
             dropdown.classList.remove('opacity-100', 'scale-100');
         }
     });
+
+    // Mobile sidebar functions
+    function toggleSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('mobileOverlay');
+        const hamburger = document.querySelector('.hamburger');
+        
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('active');
+        hamburger.classList.toggle('open');
+    }
+    
+    function closeSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('mobileOverlay');
+        const hamburger = document.querySelector('.hamburger');
+        
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+        hamburger.classList.remove('open');
+    }
+
+    // Function to show order details in a modal with print option
+    function showOrderDetails(orderId) {
+        // Fetch order details
+        fetch('fetch_order_details.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `order_id=${orderId}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error loading order details: ' + data.error);
+                return;
+            }
+            
+            // Create modal
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[10000]';
+            modal.id = 'orderDetailsModal';
+            modal.onclick = function(e) {
+                if (e.target === modal) {
+                    modal.remove();
+                }
+            };
+            
+            // Determine payment method
+            let paymentMethod = 'cash';
+            let paymentInfo = '';
+            if (data.eft_payment) {
+                paymentMethod = 'e-wallet';
+                paymentInfo = `<p class="text-sm text-gray-600"><strong>Provider:</strong> ${data.eft_payment.wallet_provider || 'N/A'}</p>
+                               <p class="text-sm text-gray-600"><strong>Transaction Ref:</strong> ${data.eft_payment.transaction_ref || 'N/A'}</p>`;
+            } else if (data.mixed_payment) {
+                paymentMethod = 'mixed';
+                paymentInfo = `<p class="text-sm text-gray-600"><strong>Cash:</strong> N$${parseFloat(data.mixed_payment.cash_amount || 0).toFixed(2)}</p>
+                               <p class="text-sm text-gray-600"><strong>EFT:</strong> N$${parseFloat(data.mixed_payment.eft_amount || 0).toFixed(2)}</p>
+                               <p class="text-sm text-gray-600"><strong>Provider:</strong> ${data.mixed_payment.eft_wallet_provider || 'N/A'}</p>`;
+            } else {
+                paymentInfo = `<p class="text-sm text-gray-600"><strong>Cash Received:</strong> N$${parseFloat(data.order.cash_received || 0).toFixed(2)}</p>`;
+            }
+            
+            modal.innerHTML = `
+                <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden" onclick="event.stopPropagation()">
+                    <div class="flex items-center justify-between p-6 bg-gradient-to-r from-teal-600 to-teal-500 rounded-t-2xl">
+                        <div class="flex items-center gap-3">
+                            <div class="p-2 bg-white/20 rounded-xl">
+                                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-bold text-white">Order Details</h3>
+                                <p class="text-teal-100 text-sm">Order #${orderId}</p>
+                            </div>
+                        </div>
+                        <button onclick="document.getElementById('orderDetailsModal').remove()" class="p-2 hover:bg-white/20 rounded-lg transition-colors">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="p-6 overflow-y-auto max-h-[calc(90vh-12rem)]">
+                        <div class="mb-6">
+                            <h4 class="text-lg font-semibold text-teal-700 mb-4">Order Information</h4>
+                            <div class="grid grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <p class="text-sm text-gray-500">Order ID</p>
+                                    <p class="text-base font-medium text-gray-800">#${orderId}</p>
+                                </div>
+                                <div>
+                                    <p class="text-sm text-gray-500">Date</p>
+                                    <p class="text-base font-medium text-gray-800">${new Date(data.order.created_at).toLocaleString()}</p>
+                                </div>
+                                <div>
+                                    <p class="text-sm text-gray-500">Cashier</p>
+                                    <p class="text-base font-medium text-gray-800">${data.order.cashier_id || 'Unknown'}</p>
+                                </div>
+                                <div>
+                                    <p class="text-sm text-gray-500">Total</p>
+                                    <p class="text-base font-bold text-teal-600">N$${parseFloat(data.order.total || 0).toFixed(2)}</p>
+                                </div>
+                            </div>
+                            <div class="border-t border-gray-200 pt-4">
+                                <h5 class="text-sm font-semibold text-gray-700 mb-2">Payment Method</h5>
+                                <p class="text-sm font-medium text-gray-800 capitalize">${paymentMethod}</p>
+                                ${paymentInfo}
+                            </div>
+                        </div>
+                        
+                        <div class="mb-6">
+                            <h4 class="text-lg font-semibold text-teal-700 mb-4">Items</h4>
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-teal-50">
+                                        <tr>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-teal-700 uppercase">Product</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-teal-700 uppercase">Quantity</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-teal-700 uppercase">Price</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-teal-700 uppercase">Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-200">
+                                        ${data.items.map(item => `
+                                            <tr>
+                                                <td class="px-4 py-3 text-sm text-gray-800">${item.name}</td>
+                                                <td class="px-4 py-3 text-sm text-gray-600 text-right">${item.quantity}</td>
+                                                <td class="px-4 py-3 text-sm text-gray-600 text-right">N$${parseFloat(item.price / item.quantity).toFixed(2)}</td>
+                                                <td class="px-4 py-3 text-sm font-semibold text-gray-800 text-right">N$${parseFloat(item.price).toFixed(2)}</td>
+                                            </tr>
+                                        `).join('')}
+                                        <tr class="bg-teal-50">
+                                            <td colspan="3" class="px-4 py-3 text-right text-sm font-bold text-teal-700">Total:</td>
+                                            <td class="px-4 py-3 text-right text-sm font-bold text-teal-700">N$${parseFloat(data.order.total || 0).toFixed(2)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50 rounded-b-2xl">
+                        <button onclick="document.getElementById('orderDetailsModal').remove()" class="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 transition-colors font-medium">
+                            Close
+                        </button>
+                        <button onclick="printOrderReceipt(${orderId})" class="px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
+                            <i class="fas fa-print"></i>
+                            Print Receipt
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+        })
+        .catch(error => {
+            console.error('Error fetching order details:', error);
+            alert('Error loading order details: ' + error.message);
+        });
+    }
+
+    // Function to print order receipt
+    function printOrderReceipt(orderId) {
+        // Show loading state
+        const printBtn = event.target;
+        const originalText = printBtn.innerHTML;
+        printBtn.disabled = true;
+        printBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Printing...';
+
+        // First fetch order details
+        fetch('fetch_order_details.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `order_id=${orderId}`
+        })
+        .then(response => response.json())
+        .then(orderData => {
+            if (orderData.error) {
+                throw new Error(orderData.error);
+            }
+
+            // Prepare receipt data
+            const receiptData = {
+                order_id: orderId,
+                items: orderData.items.map(item => ({
+                    name: item.name,
+                    quantity: parseInt(item.quantity),
+                    price: parseFloat(item.price)
+                })),
+                cashier_username: orderData.order.cashier_id || '<?php echo htmlspecialchars($_SESSION['username'] ?? 'Manager', ENT_QUOTES); ?>',
+                total: parseFloat(orderData.order.total || 0),
+                cash_received: parseFloat(orderData.order.cash_received || 0),
+                created_at: orderData.order.created_at,
+                print_only: true
+            };
+
+            // Determine payment method and add relevant data
+            if (orderData.eft_payment) {
+                receiptData.payment_method = 'e-wallet';
+                receiptData.transaction_ref = orderData.eft_payment.transaction_ref || '';
+                receiptData.wallet_provider = orderData.eft_payment.wallet_provider || '';
+            } else if (orderData.mixed_payment) {
+                receiptData.payment_method = 'mixed';
+                receiptData.cash_amount = parseFloat(orderData.mixed_payment.cash_amount || 0);
+                receiptData.eft_amount = parseFloat(orderData.mixed_payment.eft_amount || 0);
+                receiptData.eft_transaction_ref = orderData.mixed_payment.eft_transaction_ref || '';
+                receiptData.eft_wallet_provider = orderData.mixed_payment.eft_wallet_provider || '';
+            } else {
+                receiptData.payment_method = 'cash';
+            }
+
+            // Send to printer (Android native or server)
+            return sendToPrinter(receiptData);
+        })
+        .then(result => {
+            if (result.success) {
+                alert('Receipt printed successfully!');
+            } else {
+                alert('Error printing receipt: ' + (result.message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Print error:', error);
+            alert('Error printing receipt: ' + error.message);
+        })
+        .finally(() => {
+            printBtn.disabled = false;
+            printBtn.innerHTML = originalText;
+        });
+    }
+
+    // ==========================================
+    // CASH UP MULTI-STEP MODAL
+    // ==========================================
+    
+    // Global variables for cash up modal
+    let cashUpCurrentStep = 1;
+    let cashUpTotalSteps = 6;
+    let cashUpSystemData = null;
+    
+    // 24-hour time from hour-only dropdowns (minutes fixed: start 00, end 59)
+    function getCashUpStartTime() {
+        const h = document.getElementById('cashup_start_hour');
+        return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':00' : '00:00';
+    }
+    function getCashUpEndTime() {
+        const h = document.getElementById('cashup_end_hour');
+        return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':59' : '23:59';
+    }
+    
+    // Open the cash up modal
+    function openCashUpModal() {
+        cashUpCurrentStep = 1;
+        cashUpSystemData = null;
+        
+        // Reset form values
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('cashup_start_date').value = today;
+        document.getElementById('cashup_start_hour').value = '0';
+        document.getElementById('cashup_end_date').value = today;
+        document.getElementById('cashup_end_hour').value = '23';
+        document.getElementById('cashup_cashier').value = 'all';
+        document.getElementById('cashup_cash_on_hand').value = '';
+        document.getElementById('cashup_eft_on_hand').value = '';
+        document.getElementById('cashup_cash_back').value = '';
+        document.getElementById('cashup_tips').value = '';
+        document.getElementById('cashup_hubbly').value = '';
+        document.getElementById('cashup_beerhouse').value = '';
+        document.getElementById('cashup_unpaid_credit').value = '';
+        document.getElementById('cashup_credit_returns').value = '';
+        document.getElementById('cashup_expenses').value = '';
+        
+        // Show modal
+        document.getElementById('cashUpModal').classList.remove('hidden');
+        document.body.classList.add('overflow-hidden');
+        
+        // Update step display
+        updateCashUpStepDisplay();
+    }
+    
+    // Close the cash up modal
+    function closeCashUpModal() {
+        document.getElementById('cashUpModal').classList.add('hidden');
+        document.body.classList.remove('overflow-hidden');
+    }
+    
+    // Populate step 2 summary from system data
+    function updateCashUpStep2Summary() {
+        if (!cashUpSystemData) return;
+        const fmt = (n) => (n ?? 0).toFixed(2);
+        const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        el('step2_cashback_beerhouse', fmt(cashUpSystemData.cash_back_beerhouse));
+        el('step2_cashback_hubbly', fmt(cashUpSystemData.cash_back_hubbly));
+        el('step2_cashback_customer', fmt(cashUpSystemData.cash_back_customer));
+        el('step2_credit_unpaid', fmt(cashUpSystemData.unpaid_credit_sales));
+        el('step2_credit_returns', fmt(cashUpSystemData.credit_returns));
+        el('step2_hansa_cash', 'N$ ' + fmt(cashUpSystemData.hansa_cash));
+        el('step2_hansa_eft', 'N$ ' + fmt(cashUpSystemData.hansa_eft));
+        el('step2_tips', 'N$ ' + fmt(cashUpSystemData.tips_system));
+        el('step2_expenses', 'N$ ' + fmt(cashUpSystemData.expenses));
+        el('step2_damages', 'N$ ' + fmt(cashUpSystemData.damages));
+    }
+    
+    // Update step display
+    function updateCashUpStepDisplay() {
+        // Hide all steps
+        for (let i = 1; i <= cashUpTotalSteps; i++) {
+            const stepContent = document.getElementById(`cashup_step_${i}`);
+            if (stepContent) stepContent.classList.add('hidden');
+        }
+        
+        // Show current step
+        const currentStepContent = document.getElementById(`cashup_step_${cashUpCurrentStep}`);
+        if (currentStepContent) currentStepContent.classList.remove('hidden');
+        
+        // Update step indicators
+        for (let i = 1; i <= cashUpTotalSteps; i++) {
+            const indicator = document.getElementById(`step_indicator_${i}`);
+            if (indicator) {
+                if (i < cashUpCurrentStep) {
+                    indicator.classList.remove('bg-gray-200', 'text-gray-600', 'bg-teal-400', 'ring-2', 'ring-teal-300');
+                    indicator.classList.add('bg-teal-500', 'text-white');
+                    indicator.innerHTML = '<i class="fas fa-check"></i>';
+                } else if (i === cashUpCurrentStep) {
+                    indicator.classList.remove('bg-gray-200', 'text-gray-600', 'bg-teal-500');
+                    indicator.classList.add('bg-teal-400', 'text-white', 'ring-2', 'ring-teal-300');
+                    indicator.textContent = i;
+                } else {
+                    indicator.classList.remove('bg-teal-400', 'bg-teal-500', 'text-white', 'ring-2', 'ring-teal-300');
+                    indicator.classList.add('bg-gray-200', 'text-gray-600');
+                    indicator.textContent = i;
+                }
+            }
+        }
+        
+        // Update buttons
+        document.getElementById('cashup_prev_btn').classList.toggle('invisible', cashUpCurrentStep === 1);
+        document.getElementById('cashup_next_btn').classList.toggle('hidden', cashUpCurrentStep === cashUpTotalSteps);
+        document.getElementById('cashup_submit_btn').classList.toggle('hidden', cashUpCurrentStep !== cashUpTotalSteps);
+        document.getElementById('cashup_view_btn').classList.toggle('hidden', cashUpCurrentStep !== cashUpTotalSteps);
+    }
+    
+    // View full cash up report in new page
+    function viewFullCashUpReport() {
+        const startDate = document.getElementById('cashup_start_date').value;
+        const startTime = getCashUpStartTime();
+        const endDate = document.getElementById('cashup_end_date').value;
+        const endTime = getCashUpEndTime();
+        const cashierId = document.getElementById('cashup_cashier').value;
+        const url = `cashupmaster.php?date=${encodeURIComponent(endDate)}&cashier_id=${encodeURIComponent(cashierId)}`;
+        window.open(url, '_blank');
+    }
+    
+    // Go to next step
+    async function cashUpNextStep() {
+        // Validate current step
+        if (cashUpCurrentStep === 1) {
+            const startDate = document.getElementById('cashup_start_date').value;
+            const startTime = getCashUpStartTime();
+            const endDate = document.getElementById('cashup_end_date').value;
+            const endTime = getCashUpEndTime();
+            if (!startDate || !endDate) {
+                showCashUpNotification('Please select starting and ending date and time', 'error');
+                return;
+            }
+            const startDt = new Date(startDate + 'T' + startTime);
+            const endDt = new Date(endDate + 'T' + endTime);
+            if (endDt <= startDt) {
+                showCashUpNotification('Ending date & time must be after starting date & time', 'error');
+                return;
+            }
+            
+            // Fetch system data for selected date range/cashier
+            const cashierId = document.getElementById('cashup_cashier').value;
+            const today = new Date().toISOString().split('T')[0];
+            
+            console.log('[CashUpModal] Fetching data for date range:', {
+                start: startDate + ' ' + startTime,
+                end: endDate + ' ' + endTime,
+                cashier: cashierId,
+                isToday: startDate === today && endDate === today
+            });
+            
+            // Inform user if using today's date
+            if (startDate === today && endDate === today) {
+                console.log('[CashUpModal] Using today\'s date (' + today + '). If you need a different date, go back and change it.');
+            }
+            try {
+                document.getElementById('cashup_loading').classList.remove('hidden');
+                const response = await fetch('get_cashup_data.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        start_date: startDate,
+                        start_time: startTime,
+                        end_date: endDate,
+                        end_time: endTime,
+                        cashier_id: cashierId
+                    })
+                });
+                cashUpSystemData = await response.json();
+                console.log('[CashUpModal] Received data:', cashUpSystemData);
+                document.getElementById('cashup_loading').classList.add('hidden');
+                
+                if (!cashUpSystemData.success) {
+                    showCashUpNotification('Error loading data: ' + (cashUpSystemData.error || 'Unknown error'), 'error');
+                    return;
+                }
+                
+                // Pre-fill system values (hidden inputs for step 2 / submit)
+                document.getElementById('cashup_cash_back').value = cashUpSystemData.cash_back_system?.toFixed(2) || '0.00';
+                document.getElementById('cashup_tips').value = cashUpSystemData.tips_system?.toFixed(2) || '0.00';
+                document.getElementById('cashup_unpaid_credit').value = cashUpSystemData.unpaid_credit_sales?.toFixed(2) ?? '';
+                document.getElementById('cashup_credit_returns').value = cashUpSystemData.credit_returns?.toFixed(2) ?? '';
+                document.getElementById('cashup_expenses').value = cashUpSystemData.expenses?.toFixed(2) ?? '';
+                document.getElementById('cashup_hubbly').value = (cashUpSystemData.cash_back_hubbly ?? 0).toFixed(2);
+                document.getElementById('cashup_beerhouse').value = (cashUpSystemData.cash_back_beerhouse ?? 0).toFixed(2);
+                updateCashUpStep2Summary();
+                
+                // Update Step 4 expected cash display and pre-fill cash on hand with cash in till
+                document.getElementById('step4_expected').textContent = 'N$ ' + (cashUpSystemData.cash_sales_expected || 0).toFixed(2);
+                // Pre-fill cash on hand with the calculated cash in till value to ensure balance
+                document.getElementById('cashup_cash_on_hand').value = (cashUpSystemData.cash_sales_expected ?? cashUpSystemData.cash_in_till ?? 0).toFixed(2);
+                // Trigger the input event to update the over/short display
+                document.getElementById('cashup_cash_on_hand').dispatchEvent(new Event('input'));
+                
+                // Update Step 5 expected EFT display
+                document.getElementById('step5_eft_expected').textContent = 'N$ ' + (cashUpSystemData.card_sales_expected || 0).toFixed(2);
+                
+                // Update date range display across all steps
+                const dateRangeText = `Data for: ${startDate} ${startTime} — ${endDate} ${endTime}`;
+                document.getElementById('cashup_date_range_text').textContent = dateRangeText;
+                document.getElementById('cashup_date_range_text_step3').textContent = dateRangeText;
+                document.getElementById('cashup_date_range_text_step4').textContent = dateRangeText;
+                document.getElementById('cashup_date_range_text_step5').textContent = dateRangeText;
+                
+            } catch (error) {
+                document.getElementById('cashup_loading').classList.add('hidden');
+                showCashUpNotification('Error loading data: ' + error.message, 'error');
+                return;
+            }
+        }
+        
+        if (cashUpCurrentStep === 4) {
+            const cashOnHand = document.getElementById('cashup_cash_on_hand').value;
+            if (!cashOnHand || isNaN(parseFloat(cashOnHand))) {
+                showCashUpNotification('Please enter a valid cash on hand amount', 'error');
+                return;
+            }
+        }
+        
+        if (cashUpCurrentStep === 5) {
+            const eftOnHand = document.getElementById('cashup_eft_on_hand').value;
+            if (!eftOnHand || isNaN(parseFloat(eftOnHand))) {
+                showCashUpNotification('Please enter a valid EFT on hand amount', 'error');
+                return;
+            }
+            // Update review summary before showing step 6
+            updateCashUpReview();
+        }
+        
+        if (cashUpCurrentStep < cashUpTotalSteps) {
+            cashUpCurrentStep++;
+            updateCashUpStepDisplay();
+        }
+    }
+    
+    // Go to previous step
+    function cashUpPrevStep() {
+        if (cashUpCurrentStep > 1) {
+            cashUpCurrentStep--;
+            // Clear cached data when going back to step 1 to force fresh data fetch
+            if (cashUpCurrentStep === 1) {
+                cashUpSystemData = null;
+            }
+            updateCashUpStepDisplay();
+        }
+    }
+    
+    // Update review summary
+    function updateCashUpReview() {
+        if (!cashUpSystemData) return;
+        
+        const cashOnHand = parseFloat(document.getElementById('cashup_cash_on_hand').value) || 0;
+        const eftOnHand = parseFloat(document.getElementById('cashup_eft_on_hand').value) || 0;
+        const cashBack = parseFloat(document.getElementById('cashup_cash_back').value) || 0;
+        const tips = parseFloat(document.getElementById('cashup_tips').value) || 0;
+        const hubbly = parseFloat(document.getElementById('cashup_hubbly').value) || 0;
+        const beerhouse = parseFloat(document.getElementById('cashup_beerhouse').value) || 0;
+        const unpaidCredit = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
+        const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
+        const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
+        
+        const cashSalesExpected = cashUpSystemData.cash_sales_expected || 0;
+        const eftSalesExpected = cashUpSystemData.card_sales_expected || 0;
+        const overShort = cashOnHand - cashSalesExpected;
+        const eftOverShort = eftOnHand - eftSalesExpected;
+        
+        // Update summary display
+        const startDate = document.getElementById('cashup_start_date').value;
+        const startTime = getCashUpStartTime();
+        const endDate = document.getElementById('cashup_end_date').value;
+        const endTime = getCashUpEndTime();
+        document.getElementById('review_date').textContent = startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime;
+        document.getElementById('review_cashier').textContent = document.getElementById('cashup_cashier').selectedOptions[0].text;
+        
+        document.getElementById('review_cash_expected').textContent = 'N$ ' + cashSalesExpected.toFixed(2);
+        document.getElementById('review_cash_on_hand').textContent = 'N$ ' + cashOnHand.toFixed(2);
+        document.getElementById('review_over_short').textContent = 'N$ ' + overShort.toFixed(2);
+        document.getElementById('review_over_short').className = overShort >= 0 ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
+        
+        document.getElementById('review_eft_expected').textContent = 'N$ ' + eftSalesExpected.toFixed(2);
+        document.getElementById('review_eft_on_hand').textContent = 'N$ ' + eftOnHand.toFixed(2);
+        document.getElementById('review_eft_over_short').textContent = 'N$ ' + eftOverShort.toFixed(2);
+        document.getElementById('review_eft_over_short').className = eftOverShort >= 0 ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
+        
+        document.getElementById('review_unpaid_credit').textContent = 'N$ ' + unpaidCredit.toFixed(2);
+        document.getElementById('review_credit_returns').textContent = 'N$ ' + creditReturns.toFixed(2);
+        document.getElementById('review_open_tabs').textContent = 'N$ ' + (cashUpSystemData.open_tabs_balance || 0).toFixed(2);
+        
+        document.getElementById('review_expenses').textContent = 'N$ ' + expenses.toFixed(2);
+        document.getElementById('review_cash_back').textContent = 'N$ ' + cashBack.toFixed(2);
+        document.getElementById('review_tips').textContent = 'N$ ' + tips.toFixed(2);
+        
+        const hansaCash = cashUpSystemData.hansa_cash ?? 0;
+        const hansaEft = cashUpSystemData.hansa_eft ?? 0;
+        const reviewHansaCashEl = document.getElementById('review_hansa_cash');
+        const reviewHansaEftEl = document.getElementById('review_hansa_eft');
+        if (reviewHansaCashEl) reviewHansaCashEl.textContent = 'N$ ' + Number(hansaCash).toFixed(2);
+        if (reviewHansaEftEl) reviewHansaEftEl.textContent = 'N$ ' + Number(hansaEft).toFixed(2);
+        document.getElementById('review_hubbly').textContent = 'N$ ' + hubbly.toFixed(2);
+        document.getElementById('review_beerhouse').textContent = 'N$ ' + beerhouse.toFixed(2);
+        
+        document.getElementById('review_voids').textContent = 'N$ ' + (cashUpSystemData.voids || 0).toFixed(2);
+        document.getElementById('review_refunds').textContent = 'N$ ' + (cashUpSystemData.refunds || 0).toFixed(2);
+        document.getElementById('review_total_sold').textContent = 'N$ ' + (cashUpSystemData.total_items_sold || 0).toFixed(2);
+    }
+    
+    // Submit cash up and print receipt
+    async function submitCashUp() {
+        if (!cashUpSystemData) {
+            showCashUpNotification('No data loaded. Please start over.', 'error');
+            return;
+        }
+        
+        const startDate = document.getElementById('cashup_start_date').value;
+        const startTime = getCashUpStartTime();
+        const endDate = document.getElementById('cashup_end_date').value;
+        const endTime = getCashUpEndTime();
+        const cashierId = document.getElementById('cashup_cashier').value;
+        const cashierName = document.getElementById('cashup_cashier').selectedOptions[0].text;
+        const cashOnHand = parseFloat(document.getElementById('cashup_cash_on_hand').value) || 0;
+        const eftOnHand = parseFloat(document.getElementById('cashup_eft_on_hand').value) || 0;
+        const cashBack = parseFloat(document.getElementById('cashup_cash_back').value) || 0;
+        const tips = parseFloat(document.getElementById('cashup_tips').value) || 0;
+        const hubbly = parseFloat(document.getElementById('cashup_hubbly').value) || 0;
+        const beerhouse = parseFloat(document.getElementById('cashup_beerhouse').value) || 0;
+        const unpaidCreditSales = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
+        const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
+        const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
+        
+        const overShort = cashOnHand - (cashUpSystemData.cash_sales_expected || 0);
+        const eftOverShort = eftOnHand - (cashUpSystemData.card_sales_expected || 0);
+        
+        // Prepare receipt data for printing
+        const receiptData = {
+            is_cashup_master_report: true,
+            print_only: true,
+            start_date: startDate,
+            start_time: startTime,
+            end_date: endDate,
+            end_time: endTime,
+            date: endDate,
+            cashier_username: '<?php echo htmlspecialchars($_SESSION['username'] ?? 'Manager'); ?>',
+            filter_cashier_id: cashierId,
+            filter_cashier_name: cashierName,
+            is_individual_cashout: cashierId !== 'all',
+            // CASH section
+            cash_sales_expected: cashUpSystemData.cash_sales_expected || 0,
+            cash_on_hand: cashOnHand,
+            over_short: overShort,
+            // EFT section
+            card_sales_expected: cashUpSystemData.card_sales_expected || 0,
+            eft_on_hand: eftOnHand,
+            eft_over_short: eftOverShort,
+            // CARD & CREDIT section (unpaid credit & credit returns from user input)
+            unpaid_credit_sales: unpaidCreditSales,
+            open_tabs_balance: cashUpSystemData.open_tabs_balance || 0,
+            unpaid_tabs: cashUpSystemData.unpaid_tabs || 0,
+            credit_returns: creditReturns,
+            // DEDUCTIONS section (expenses from modal input)
+            expenses: expenses,
+            cash_back: cashBack,
+            tips: tips,
+            // SALES SOURCES (INFO) section
+            hansa_cash: cashUpSystemData.hansa_cash ?? 0,
+            hansa_eft: cashUpSystemData.hansa_eft ?? 0,
+            hubbly: hubbly,
+            beerhouse: beerhouse,
+            // ADJUSTMENTS section
+            voids: cashUpSystemData.voids || 0,
+            refunds: cashUpSystemData.refunds || 0,
+            // TOTAL VALUE OF ITEMS SOLD section
+            total_items_sold: cashUpSystemData.total_items_sold || 0
+        };
+        
+        console.log('[CashUpModal] Printing receipt:', receiptData);
+        
+        // Show loading
+        const submitBtn = document.getElementById('cashup_submit_btn');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Printing...';
+        
+        try {
+            // Use sendToPrinter (routes to QZ Tray when enabled) or fallback to direct fetch
+            const printFn = (typeof window.sendToPrinter === 'function')
+                ? (data) => window.sendToPrinter(data)
+                : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+            const result = await printFn(receiptData);
+            
+            console.log('[CashUpModal] Print result:', result);
+            
+            if (result && result.success) {
+                // Save to database after successful print
+                const saveData = {
+                    start_date: startDate,
+                    start_time: startTime,
+                    end_date: endDate,
+                    end_time: endTime,
+                    date: endDate,
+                    cashier_id: cashierId,
+                    cashier_name: cashierName,
+                    cash_sales_expected: cashUpSystemData.cash_sales_expected || 0,
+                    cash_on_hand: cashOnHand,
+                    over_short: overShort,
+                    card_sales_expected: cashUpSystemData.card_sales_expected || 0,
+                    eft_on_hand: eftOnHand,
+                    eft_over_short: eftOverShort,
+                    unpaid_credit_sales: unpaidCreditSales,
+                    open_tabs_balance: cashUpSystemData.open_tabs_balance || 0,
+                    unpaid_tabs: cashUpSystemData.unpaid_tabs || 0,
+                    credit_returns: creditReturns,
+                    expenses: expenses,
+                    cash_back: cashBack,
+                    tips: tips,
+                    hubbly: hubbly,
+                    beerhouse: beerhouse,
+                    voids: cashUpSystemData.voids || 0,
+                    refunds: cashUpSystemData.refunds || 0,
+                    total_items_sold: cashUpSystemData.total_items_sold || 0
+                };
+                
+                try {
+                    const saveResponse = await fetch('save_cashup.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(saveData)
+                    });
+                    const saveResult = await saveResponse.json();
+                    console.log('[CashUpModal] Save result:', saveResult);
+                    
+                    if (saveResult.success) {
+                        showCashUpNotification('Cash-up printed and saved successfully!', 'success');
+                    } else {
+                        showCashUpNotification('Printed but failed to save: ' + (saveResult.error || 'Unknown error'), 'error');
+                    }
+                } catch (saveError) {
+                    console.error('[CashUpModal] Save error:', saveError);
+                    showCashUpNotification('Printed but failed to save to database', 'error');
+                }
+                
+                setTimeout(() => {
+                    closeCashUpModal();
+                }, 1500);
+            } else {
+                showCashUpNotification('Print failed: ' + (result?.message || result?.error || 'Unknown error'), 'error');
+            }
+        } catch (error) {
+            console.error('[CashUpModal] Print error:', error);
+            showCashUpNotification('Print error: ' + error.message, 'error');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
+    }
+    
+    // Show notification
+    function showCashUpNotification(message, type) {
+        const notification = document.createElement('div');
+        notification.className = `fixed top-4 right-4 px-6 py-4 rounded-xl shadow-2xl z-[10001] transform transition-all duration-300 ${type === 'success' ? 'bg-teal-500 text-white' : 'bg-red-500 text-white'}`;
+        notification.innerHTML = `
+            <div class="flex items-center gap-3">
+                <i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'} text-xl"></i>
+                <span class="font-medium">${message}</span>
+            </div>
+        `;
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.classList.add('opacity-0', 'translate-y-[-10px]');
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    }
+    
+    // Calculate over/short in real-time
+    document.addEventListener('DOMContentLoaded', function() {
+        const cashOnHandInput = document.getElementById('cashup_cash_on_hand');
+        if (cashOnHandInput) {
+            cashOnHandInput.addEventListener('input', function() {
+                if (cashUpSystemData) {
+                    const cashOnHand = parseFloat(this.value) || 0;
+                    const expected = cashUpSystemData.cash_sales_expected || 0;
+                    const overShort = cashOnHand - expected;
+                    const display = document.getElementById('step4_over_short');
+                    if (display) {
+                        display.textContent = 'N$ ' + overShort.toFixed(2);
+                        display.className = overShort >= 0 ? 'text-2xl font-bold text-green-600' : 'text-2xl font-bold text-red-600';
+                    }
+                }
+            });
+        }
+        
+        const eftOnHandInput = document.getElementById('cashup_eft_on_hand');
+        if (eftOnHandInput) {
+            eftOnHandInput.addEventListener('input', function() {
+                if (cashUpSystemData) {
+                    const eftOnHand = parseFloat(this.value) || 0;
+                    const expected = cashUpSystemData.card_sales_expected || 0;
+                    const overShort = eftOnHand - expected;
+                    const display = document.getElementById('step5_eft_over_short');
+                    if (display) {
+                        display.textContent = 'N$ ' + overShort.toFixed(2);
+                        display.className = overShort >= 0 ? 'text-2xl font-bold text-blue-600' : 'text-2xl font-bold text-red-600';
+                    }
+                }
+            });
+        }
+    });
 </script>
+
+<!-- Cash Up Multi-Step Modal -->
+<div id="cashUpModal" class="hidden fixed inset-0 z-[10000] overflow-y-auto">
+    <!-- Backdrop -->
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onclick="closeCashUpModal()"></div>
+    
+    <!-- Modal Content -->
+    <div class="flex min-h-full items-center justify-center p-4">
+        <div class="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl transform transition-all">
+            <!-- Header -->
+            <div class="bg-gradient-to-r from-teal-600 to-teal-500 rounded-t-2xl px-6 py-5">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2 bg-white/20 rounded-xl">
+                            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-xl font-bold text-white">Cash Up</h2>
+                            <p class="text-teal-100 text-sm">Complete the daily cash reconciliation</p>
+                        </div>
+                    </div>
+                    <button onclick="closeCashUpModal()" class="p-2 hover:bg-white/20 rounded-lg transition-colors">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <!-- Step Indicators -->
+                <div class="flex items-center justify-center gap-2 mt-6">
+                    <div id="step_indicator_1" class="w-8 h-8 rounded-full bg-teal-400 text-white flex items-center justify-center text-sm font-semibold ring-2 ring-teal-300">1</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_2" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">2</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_3" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">3</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_4" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">4</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_5" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">5</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_6" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">6</div>
+                </div>
+            </div>
+            
+            <!-- Loading Overlay -->
+            <div id="cashup_loading" class="hidden absolute inset-0 bg-white/80 rounded-2xl flex items-center justify-center z-10">
+                <div class="text-center">
+                    <div class="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                    <p class="text-gray-600 font-medium">Loading data...</p>
+                </div>
+            </div>
+            
+            <!-- Body -->
+            <div class="p-6">
+                <!-- Step 1: Select Date Range & Cashier -->
+                <div id="cashup_step_1">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Select Date Range & Staff Member</h3>
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-4">
+                        <p class="text-sm text-blue-800">
+                            <i class="fas fa-info-circle mr-2"></i>
+                            <strong>Important:</strong> All amounts in the following steps will be calculated based on the date range you select below. Make sure to choose the correct dates before proceeding.
+                        </p>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Starting Date & Hour (24h)</label>
+                                <div class="flex gap-2 items-center">
+                                    <input type="date" id="cashup_start_date" class="flex-1 min-w-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100" value="<?php echo date('Y-m-d'); ?>">
+                                    <select id="cashup_start_hour" class="w-20 shrink-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Hour (24h)"><?php for ($h = 0; $h < 24; $h++) { echo '<option value="'.$h.'"'.($h===0?' selected':'').'>'.str_pad($h,2,'0',STR_PAD_LEFT).':00</option>'; } ?></select>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Ending Date & Hour (24h)</label>
+                                <div class="flex gap-2 items-center">
+                                    <input type="date" id="cashup_end_date" class="flex-1 min-w-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100" value="<?php echo date('Y-m-d'); ?>">
+                                    <select id="cashup_end_hour" class="w-20 shrink-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Hour (24h)"><?php for ($h = 0; $h < 24; $h++) { echo '<option value="'.$h.'"'.($h===23?' selected':'').'>'.str_pad($h,2,'0',STR_PAD_LEFT).':00</option>'; } ?></select>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Cashier / Waitress (Optional)</label>
+                            <select id="cashup_cashier" class="w-full px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100">
+                                <option value="all">All Staff</option>
+                                <?php foreach ($allCashUpEmployees as $employee): ?>
+                                <option value="<?php echo htmlspecialchars($employee['username']); ?>">
+                                    <?php echo htmlspecialchars($employee['username']); ?> (<?php echo ucfirst($employee['role']); ?>)
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="text-sm text-gray-500 mt-2">Select a specific staff member or "All Staff" for combined totals</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 2: Summary (read-only) -->
+                <div id="cashup_step_2" class="hidden">
+                    <div class="bg-teal-50 border border-teal-200 rounded-lg px-4 py-2 mb-4 hidden" id="cashup_date_range_display">
+                        <p class="text-sm text-teal-800" id="cashup_date_range_display">
+                            <i class="fas fa-calendar-alt mr-2"></i>
+                            <span id="cashup_date_range_text"></span>
+                        </p>
+                    </div>
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Summary</h3>
+                    <!-- Hidden inputs for submit (pre-filled from step 1 data) -->
+                    <input type="hidden" id="cashup_cash_back" value="0">
+                    <input type="hidden" id="cashup_tips" value="0">
+                    <input type="hidden" id="cashup_hubbly" value="0">
+                    <input type="hidden" id="cashup_beerhouse" value="0">
+                    <input type="hidden" id="cashup_unpaid_credit" value="0">
+                    <input type="hidden" id="cashup_credit_returns" value="0">
+                    <div class="space-y-6 font-mono text-sm">
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="bg-gray-100 px-4 py-2 border-b border-gray-200">
+                                
+                                <span class="font-semibold text-gray-800">Cash Back</span><br>
+                                
+                            </div>
+                            <div class="px-4 py-3 space-y-1.5 bg-white">
+                                <div class="flex justify-between"><span class="text-gray-700">- Beerhaus (N$)</span><span id="step2_cashback_beerhouse" class="font-medium text-right">0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-700">- Hubbly (N$)</span><span id="step2_cashback_hubbly" class="font-medium text-right">0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-700">- Customer (Cashback) (N$)</span><span id="step2_cashback_customer" class="font-medium text-right">0.00</span></div>
+                            </div>
+                        </div>
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="bg-gray-100 px-4 py-2 border-b border-gray-200">
+                                
+                                <span class="font-semibold text-gray-800">Credit</span><br>
+                                
+                            </div>
+                            <div class="px-4 py-3 space-y-1.5 bg-white">
+                                <div class="flex justify-between"><span class="text-gray-700">- Credit (Unpaid) (N$)</span><span id="step2_credit_unpaid" class="font-medium text-right">0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-700">- Credit Return (Payments) (N$)</span><span id="step2_credit_returns" class="font-medium text-right">0.00</span></div>
+                            </div>
+                        </div>
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 bg-white space-y-2">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-700">Hansa (Cash)</span>
+                                    <span id="step2_hansa_cash" class="font-medium text-right">N$ 0.00</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-700">Hansa (EFT)</span>
+                                    <span id="step2_hansa_eft" class="font-medium text-right">N$ 0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 bg-white">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-700 font-medium">Tips</span>
+                                    <span id="step2_tips" class="font-medium text-right">N$ 0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 bg-white">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-700 font-medium">Expenses</span>
+                                    <span id="step2_expenses" class="font-medium text-right">N$ 0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 bg-white">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-700 font-medium">Damages</span>
+                                    <span id="step2_damages" class="font-medium text-right">N$ 0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 3: Expenses -->
+                <div id="cashup_step_3" class="hidden">
+                    <div class="bg-teal-50 border border-teal-200 rounded-lg px-4 py-2 mb-4">
+                        <p class="text-sm text-teal-800" id="cashup_date_range_display_step3">
+                            <i class="fas fa-calendar-alt mr-2"></i>
+                            <span id="cashup_date_range_text_step3"></span>
+                        </p>
+                    </div>
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Expenses</h3>
+                    <div class="bg-red-50 rounded-xl p-5">
+                        <p class="text-sm text-gray-600 mb-4">Enter total expenses (cash-outs) for this period. System value is pre-filled when data is loaded; you can adjust from your count.</p>
+                        <div>
+                            <label for="cashup_expenses" class="block text-sm font-medium text-gray-700 mb-2">Total Expenses (N$)</label>
+                            <div class="relative">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">N$</span>
+                                <input type="number" id="cashup_expenses" step="0.01" min="0" placeholder="0.00" class="w-full pl-12 pr-4 py-4 border-2 border-red-200 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-xl font-semibold text-right transition-all bg-white">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 4: Enter Cash On Hand -->
+                <div id="cashup_step_4" class="hidden">
+                    <div class="bg-teal-50 border border-teal-200 rounded-lg px-4 py-2 mb-4">
+                        <p class="text-sm text-teal-800" id="cashup_date_range_display_step4">
+                            <i class="fas fa-calendar-alt mr-2"></i>
+                            <span id="cashup_date_range_text_step4"></span>
+                        </p>
+                    </div>
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Enter Cash On Hand</h3>
+                    <div class="bg-gradient-to-br from-teal-50 to-cyan-50 rounded-xl p-5 mb-5">
+                        <div class="flex justify-between items-center mb-3">
+                            <span class="text-gray-600 font-medium">Cash Sales (Expected)</span>
+                            <span id="step4_expected" class="text-xl font-bold text-teal-700">N$ 0.00</span>
+                        </div>
+                        <div class="border-t border-teal-200 pt-3">
+                            <label for="cashup_cash_on_hand" class="block text-sm font-medium text-gray-700 mb-2">Actual Cash On Hand</label>
+                            <div class="relative">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">N$</span>
+                                <input type="number" id="cashup_cash_on_hand" step="0.01" min="0" placeholder="0.00" class="w-full pl-12 pr-4 py-4 border-2 border-teal-300 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-xl font-semibold text-right transition-all">
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center mt-4 pt-3 border-t border-teal-200">
+                            <span class="text-gray-600 font-medium">Over / Short</span>
+                            <span id="step4_over_short" class="text-2xl font-bold text-teal-700">N$ 0.00</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 5: Enter EFT On Hand -->
+                <div id="cashup_step_5" class="hidden">
+                    <div class="bg-teal-50 border border-teal-200 rounded-lg px-4 py-2 mb-4">
+                        <p class="text-sm text-teal-800" id="cashup_date_range_display_step5">
+                            <i class="fas fa-calendar-alt mr-2"></i>
+                            <span id="cashup_date_range_text_step5"></span>
+                        </p>
+                    </div>
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Enter EFT On Hand</h3>
+                    <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 mb-5">
+                        <div class="flex justify-between items-center mb-3">
+                            <span class="text-gray-600 font-medium">EFT Sales (Expected)</span>
+                            <span id="step5_eft_expected" class="text-xl font-bold text-blue-700">N$ 0.00</span>
+                        </div>
+                        <div class="border-t border-blue-200 pt-3">
+                            <label for="cashup_eft_on_hand" class="block text-sm font-medium text-gray-700 mb-2">Actual EFT On Hand</label>
+                            <div class="relative">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">N$</span>
+                                <input type="number" id="cashup_eft_on_hand" step="0.01" min="0" placeholder="0.00" class="w-full pl-12 pr-4 py-4 border-2 border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-200 focus:border-blue-500 text-xl font-semibold text-right transition-all">
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center mt-4 pt-3 border-t border-blue-200">
+                            <span class="text-gray-600 font-medium">Over / Short</span>
+                            <span id="step5_eft_over_short" class="text-2xl font-bold text-blue-700">N$ 0.00</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 6: Review & Print -->
+                <div id="cashup_step_6" class="hidden">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Review & Print Receipt</h3>
+                    
+                    <div class="bg-gray-50 rounded-xl p-4 mb-4">
+                        <div class="flex justify-between text-sm mb-2">
+                            <span class="text-gray-600">Date:</span>
+                            <span id="review_date" class="font-semibold">-</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-gray-600">Staff:</span>
+                            <span id="review_cashier" class="font-semibold">-</span>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-3 max-h-64 overflow-y-auto pr-2">
+                        <!-- CASH Section -->
+                        <div class="border-l-4 border-teal-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">CASH</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Expected:</span><span id="review_cash_expected" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">On Hand:</span><span id="review_cash_on_hand" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Over/Short:</span><span id="review_over_short" class="font-semibold">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- EFT Section -->
+                        <div class="border-l-4 border-blue-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">EFT</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Expected:</span><span id="review_eft_expected" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">On Hand:</span><span id="review_eft_on_hand" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Over/Short:</span><span id="review_eft_over_short" class="font-semibold">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- CARD & CREDIT Section -->
+                        <div class="border-l-4 border-indigo-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">CREDIT</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Unpaid Credit Sales:</span><span id="review_unpaid_credit" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Credit Returns:</span><span id="review_credit_returns" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Open Tabs:</span><span id="review_open_tabs" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- DEDUCTIONS Section -->
+                        <div class="border-l-4 border-red-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">DEDUCTIONS</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Expenses:</span><span id="review_expenses" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Cash Back:</span><span id="review_cash_back" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Tips:</span><span id="review_tips" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- SALES SOURCES Section -->
+                        <div class="border-l-4 border-purple-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">SALES SOURCES</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Hansa (Cash):</span><span id="review_hansa_cash" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Hansa (EFT):</span><span id="review_hansa_eft" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Hubbly:</span><span id="review_hubbly" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Beerhouse:</span><span id="review_beerhouse" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- ADJUSTMENTS Section -->
+                        <div class="border-l-4 border-orange-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">ADJUSTMENTS</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Voids:</span><span id="review_voids" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Refunds:</span><span id="review_refunds" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- TOTAL Section -->
+                        <div class="border-l-4 border-teal-700 pl-3 bg-teal-50 rounded-r-lg py-2">
+                            <div class="flex justify-between text-sm">
+                                <span class="font-semibold text-teal-700">Total Items Sold:</span>
+                                <span id="review_total_sold" class="font-bold text-teal-700">N$ 0.00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="px-6 py-4 bg-gray-50 rounded-b-2xl flex justify-between">
+                <button id="cashup_prev_btn" onclick="cashUpPrevStep()" class="invisible px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 transition-colors font-medium flex items-center gap-2">
+                    <i class="fas fa-arrow-left"></i> Previous
+                </button>
+                <div class="flex gap-3">
+                    <button onclick="closeCashUpModal()" class="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 transition-colors font-medium">
+                        Cancel
+                    </button>
+                    <button id="cashup_next_btn" onclick="cashUpNextStep()" class="px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
+                        Next <i class="fas fa-arrow-right"></i>
+                    </button>
+                    <button id="cashup_submit_btn" onclick="submitCashUp()" class="hidden px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
+                        <i class="fas fa-print"></i> Print Receipt
+                    </button>
+                    <button id="cashup_view_btn" onclick="viewFullCashUpReport()" class="hidden px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium flex items-center gap-2" title="View Full Report">
+                        <i class="fas fa-external-link-alt"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 

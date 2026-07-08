@@ -23,9 +23,14 @@ if ($activationStatus == 0) {
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-// Helper function to get username from user_id with caching
+// Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
     if (empty($userId)) return 'Unknown';
+    
+    // If it's already a username (not numeric), return it as is
+    if (!is_numeric($userId)) {
+        return $userId;
+    }
     
     // Check cache first
     if (isset($usernameCache[$userId])) {
@@ -231,9 +236,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: credit-tabs');
         exit();
     } elseif (isset($_POST['close_id'])) {
-        // Close tab
+        // Close tab - store username for consistent tracking
+        $closedByUsername = $_SESSION['username'] ?? 'Unknown';
         $stmt = $db->prepare("UPDATE tabs SET status = 'closed', closed_at = CURRENT_TIMESTAMP, closed_by = ? WHERE id = ?");
-        $stmt->execute([$_SESSION['user_id'] ?? null, $_POST['close_id']]);
+        $stmt->execute([$closedByUsername, $_POST['close_id']]);
         $_SESSION['success'] = 'Tab closed successfully';
         header('Location: credit-tabs');
         exit();
@@ -250,12 +256,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tab_name = $_POST['tab_name'];
         $opening_balance = isset($_POST['opening_balance']) ? floatval($_POST['opening_balance']) : 0.00;
         $notes = $_POST['notes'] ?? '';
-        $cashier_id = $_SESSION['user_id'] ?? null;
+        $cashierUsername = $_SESSION['username'] ?? 'Unknown';
 
         if (empty($_POST['id'])) {
-            // Add new tab
+            // Add new tab - store username for consistent tracking
             $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashier_id]);
+            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername]);
             $newTabId = $db->lastInsertId();
             // Recalculate balance to ensure accuracy (will be same as opening_balance for new tab, but ensures consistency)
             recalculateTabBalance($db, $newTabId);
@@ -276,7 +282,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Get view parameter from URL
 $currentView = isset($_GET['view']) ? $_GET['view'] : '';
 
-// Fetch all tabs - manager version shows only tabs pending manager approval
+// Fetch all tabs - admin version shows all tabs
 $tabsStmt = $db->prepare("
     SELECT 
         t.id,
@@ -295,7 +301,6 @@ $tabsStmt = $db->prepare("
         c.phone as creditor_phone
     FROM tabs t
     LEFT JOIN creditors c ON t.creditor_id = c.id
-    WHERE t.pending_manager_approval = 1
     ORDER BY t.opened_at DESC
 ");
 $tabsStmt->execute();
@@ -323,6 +328,7 @@ $totalOpenBalance = array_sum(array_column($openTabs, 'current_balance'));
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tab Management</title>
+    <script src="../receipt.php?js=true"></script>
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/jquery-3.6.0.min.js"></script>
@@ -810,6 +816,12 @@ th[onclick]:hover {
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
+                        <a href="manager-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm flex-shrink-0">
+                            <svg class="w-5 h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">back</span>
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>

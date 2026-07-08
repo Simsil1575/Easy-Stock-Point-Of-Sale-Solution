@@ -19,7 +19,21 @@ if ($activationStatus == 0) {
 }
 
 $db = new PDO('sqlite:pos.db');
-$creditorId = $_GET['creditor_id'] ?? 0;
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$creditorId = (int)($_GET['creditor_id'] ?? 0);
+
+// Date filter: 'all' = all days, else specific date (default today)
+$dateParam = isset($_GET['date']) ? trim($_GET['date']) : '';
+if (strtolower($dateParam) === 'all') {
+    $filterDate = 'all';
+    $isAllDays = true;
+} elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateParam)) {
+    $filterDate = $dateParam;
+    $isAllDays = false;
+} else {
+    $filterDate = date('Y-m-d');
+    $isAllDays = false;
+}
 
 // Handle "Pay All" functionality
 if (isset($_GET['pay_all']) && $_GET['pay_all'] == 1) {
@@ -52,18 +66,18 @@ if (isset($_GET['pay_all']) && $_GET['pay_all'] == 1) {
                 
                 // Record payment with timezone-aware timestamp
                 $paymentStmt = $db->prepare("
-                    INSERT INTO payments (sale_id, amount, payment_date) 
-                    VALUES (?, ?, ?)
+                    INSERT INTO payments (sale_id, amount, payment_date, cashier_id) 
+                    VALUES (?, ?, ?, ?)
                 ");
-                $paymentStmt->execute([$txn['id'], $txn['remaining_amount'], date('Y-m-d H:i:s')]);
+                $paymentStmt->execute([$txn['id'], $txn['remaining_amount'], date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
                 
                 // If EFT payment, also record in eft_payments table
                 if ($isEft && !empty($transactionRef) && !empty($walletProvider)) {
                     $eftStmt = $db->prepare("
-                        INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, payment_date) 
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) 
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ");
-                    $eftStmt->execute([$txn['id'], $transactionRef, $walletProvider, $txn['remaining_amount'], date('Y-m-d H:i:s')]);
+                    $eftStmt->execute([$txn['id'], $transactionRef, $walletProvider, $txn['remaining_amount'], $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
                 }
             }
         }
@@ -83,8 +97,8 @@ if (isset($_GET['pay_all']) && $_GET['pay_all'] == 1) {
         $_SESSION['auto_print'] = true;
     }
     
-    // Redirect to remove the pay_all parameter
-    header("Location: credit-transactions.php?creditor_id=" . $creditorId);
+    // Redirect to remove the pay_all parameter, keep date (including 'all')
+    header("Location: credit-transactions.php?creditor_id=" . $creditorId . "&date=" . urlencode($filterDate));
     exit();
 }
 
@@ -129,8 +143,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$paymentAmount, $paymentAmount, $saleId]);
         
         // Record payment with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date) VALUES (?, ?, ?)");
-        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s')]);
+        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
 
         // Prepare receipt data
         $receiptData = [
@@ -182,12 +196,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$paymentAmount, $paymentAmount, $saleId]);
         
         // Record payment with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date) VALUES (?, ?, ?)");
-        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s')]);
+        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
         
         // Record EFT payment details with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, payment_date) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, date('Y-m-d H:i:s')]);
+        $stmt = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
 
         // Prepare items array
         $items = [];
@@ -237,51 +251,109 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Get creditor details
 $creditor = $db->query("SELECT * FROM creditors WHERE id = $creditorId")->fetch(PDO::FETCH_ASSOC);
 if (!$creditor) {
-    header('Location: credit-book.php');
+    header('Location: credit-book.php?date=' . urlencode($filterDate));
     exit();
 }
 
-// Get all transactions for this creditor
-$transactions = $db->query("
-    SELECT cs.*, 
-           (cs.total_amount - cs.paid_amount) AS balance,
-           GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') AS items,
-           (SELECT SUM(amount) FROM payments WHERE sale_id = cs.id) AS total_paid
-    FROM credit_sales cs
-    LEFT JOIN credit_sale_items csi ON cs.id = csi.sale_id
-    WHERE cs.creditor_id = $creditorId
-    GROUP BY cs.id
-    ORDER BY cs.created_at DESC
-")->fetchAll(PDO::FETCH_ASSOC);
+// Get transactions for this creditor (by date or all days)
+if ($isAllDays) {
+    $transactionsStmt = $db->prepare("
+        SELECT cs.*, 
+               (cs.total_amount - cs.paid_amount) AS balance,
+               GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') AS items,
+               (SELECT SUM(amount) FROM payments WHERE sale_id = cs.id) AS total_paid
+        FROM credit_sales cs
+        LEFT JOIN credit_sale_items csi ON cs.id = csi.sale_id
+        WHERE cs.creditor_id = ?
+        GROUP BY cs.id
+        ORDER BY cs.created_at DESC
+    ");
+    $transactionsStmt->execute([$creditorId]);
+} else {
+    $transactionsStmt = $db->prepare("
+        SELECT cs.*, 
+               (cs.total_amount - cs.paid_amount) AS balance,
+               GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') AS items,
+               (SELECT SUM(amount) FROM payments WHERE sale_id = cs.id) AS total_paid
+        FROM credit_sales cs
+        LEFT JOIN credit_sale_items csi ON cs.id = csi.sale_id
+        WHERE cs.creditor_id = ? AND DATE(cs.created_at) = ?
+        GROUP BY cs.id
+        ORDER BY cs.created_at DESC
+    ");
+    $transactionsStmt->execute([$creditorId, $filterDate]);
+}
+$transactions = $transactionsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get all partial payments for this creditor
-$partialPayments = $db->query("
-    SELECT p.*, cs.creditor_id, cs.total_amount, cs.paid_amount, cs.payment_status, 
-           (SELECT GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') 
-            FROM credit_sale_items csi WHERE csi.sale_id = cs.id) AS items
-    FROM payments p
-    JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE cs.creditor_id = $creditorId AND cs.payment_status = 'partial'
-    ORDER BY p.payment_date DESC
-")->fetchAll(PDO::FETCH_ASSOC);
+// Partial payments for this creditor (by date or all days)
+if ($isAllDays) {
+    $partialPaymentsStmt = $db->prepare("
+        SELECT p.*, cs.creditor_id, cs.total_amount, cs.paid_amount, cs.payment_status, 
+               (SELECT GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') 
+                FROM credit_sale_items csi WHERE csi.sale_id = cs.id) AS items
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE cs.creditor_id = ? AND cs.payment_status = 'partial'
+        ORDER BY p.payment_date DESC
+    ");
+    $partialPaymentsStmt->execute([$creditorId]);
+} else {
+    $partialPaymentsStmt = $db->prepare("
+        SELECT p.*, cs.creditor_id, cs.total_amount, cs.paid_amount, cs.payment_status, 
+               (SELECT GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') 
+                FROM credit_sale_items csi WHERE csi.sale_id = cs.id) AS items
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE cs.creditor_id = ? AND cs.payment_status = 'partial' AND DATE(p.payment_date) = ?
+        ORDER BY p.payment_date DESC
+    ");
+    $partialPaymentsStmt->execute([$creditorId, $filterDate]);
+}
+$partialPayments = $partialPaymentsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get payment history
-$payments = $db->query("
-    SELECT p.*, cs.creditor_id 
-    FROM payments p
-    JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE cs.creditor_id = $creditorId
-    ORDER BY p.payment_date DESC
-")->fetchAll(PDO::FETCH_ASSOC);
+// Payment history (by date or all days)
+if ($isAllDays) {
+    $paymentsStmt = $db->prepare("
+        SELECT p.*, cs.creditor_id 
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE cs.creditor_id = ?
+        ORDER BY p.payment_date DESC
+    ");
+    $paymentsStmt->execute([$creditorId]);
+} else {
+    $paymentsStmt = $db->prepare("
+        SELECT p.*, cs.creditor_id 
+        FROM payments p
+        JOIN credit_sales cs ON p.sale_id = cs.id
+        WHERE cs.creditor_id = ? AND DATE(p.payment_date) = ?
+        ORDER BY p.payment_date DESC
+    ");
+    $paymentsStmt->execute([$creditorId, $filterDate]);
+}
+$payments = $paymentsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get EFT payment history
-$eftPayments = $db->query("
-    SELECT e.*, cs.creditor_id, cs.id as credit_sale_id
-    FROM eft_payments e
-    JOIN credit_sales cs ON e.order_id = cs.id
-    WHERE cs.creditor_id = $creditorId
-    ORDER BY e.payment_date DESC
-")->fetchAll(PDO::FETCH_ASSOC);
+// EFT payment history (by date or all days)
+if ($isAllDays) {
+    $eftPaymentsStmt = $db->prepare("
+        SELECT e.*, cs.creditor_id, cs.id as credit_sale_id
+        FROM eft_payments e
+        JOIN credit_sales cs ON e.order_id = cs.id
+        WHERE cs.creditor_id = ?
+        ORDER BY e.payment_date DESC
+    ");
+    $eftPaymentsStmt->execute([$creditorId]);
+} else {
+    $eftPaymentsStmt = $db->prepare("
+        SELECT e.*, cs.creditor_id, cs.id as credit_sale_id
+        FROM eft_payments e
+        JOIN credit_sales cs ON e.order_id = cs.id
+        WHERE cs.creditor_id = ? AND DATE(e.payment_date) = ?
+        ORDER BY e.payment_date DESC
+    ");
+    $eftPaymentsStmt->execute([$creditorId, $filterDate]);
+}
+$eftPayments = $eftPaymentsStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get wallet providers for EFT dropdown
 $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Bank Transfer', 'Standard Bank', 'First National Bank', 'Bank Windhoek', 'Nedbank'];
@@ -298,6 +370,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="sweetalert2@11.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="receipt.php?js=true"></script>
     
     <style>
         .sidebar { position: fixed; height: 100%; }
@@ -412,6 +486,22 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
         .mobile-overlay.active {
             opacity: 1;
             visibility: visible;
+        }
+
+        /* Ensure sidebar is above overlay on mobile */
+        @media (max-width: 1023px) {
+            #sidebar {
+                z-index: 10000 !important;
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .hamburger {
+                display: none;
+            }
+            .mobile-overlay {
+                display: none;
+            }
         }
         
         /* Mobile Table Responsive - Vertical Card Layout */
@@ -631,13 +721,23 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                         </div>
                     </div>
                     
-                    <!-- Go Back Button -->
-                    <a href="credit-book" class="inline-flex items-center px-3 lg:px-4 py-2 border border-gray-300 rounded-md shadow-sm text-xs lg:text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
-                        <svg class="w-4 h-4 lg:w-5 lg:h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-                        </svg>
-                        <span class="hidden sm:inline">Go Back</span>
-                    </a>
+                    <!-- Date filter + Go Back -->
+                    <div class="flex flex-wrap items-center gap-2">
+                        <label class="text-sm font-medium text-gray-700 hidden sm:inline">Date:</label>
+                        <input type="date" id="filterDate" value="<?= $isAllDays ? '' : htmlspecialchars($filterDate) ?>"
+                            class="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
+                            onchange="if(this.value) window.location.href='credit-transactions.php?creditor_id=<?= (int)$creditorId ?>&date=' + this.value">
+                        <a href="credit-transactions.php?creditor_id=<?= (int)$creditorId ?>&date=all" class="inline-flex items-center px-2.5 sm:px-3 py-2 rounded-lg text-sm font-medium transition-colors <?= $isAllDays ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' ?>">All days</a>
+                        <?php if ($isAllDays): ?>
+                        <a href="credit-transactions.php?creditor_id=<?= (int)$creditorId ?>&date=<?= date('Y-m-d') ?>" class="inline-flex items-center px-2.5 sm:px-3 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors">Today</a>
+                        <?php endif; ?>
+                        <a href="credit-book?date=<?= urlencode($filterDate) ?>" class="inline-flex items-center px-3 lg:px-4 py-2 border border-gray-300 rounded-md shadow-sm text-xs lg:text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
+                            <svg class="w-4 h-4 lg:w-5 lg:h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">Go Back</span>
+                        </a>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
@@ -856,34 +956,36 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
 
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
+    // sendToPrinter function is now loaded from receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[credit-transactions.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
             }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+            // Use fetch to receipt.php - the interceptor will catch this
+            return fetch('receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { 
+                return r.json();
+            });
         }
-        
-        return fetch('receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
     }
 
     // Function to open cash drawer

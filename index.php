@@ -1,21 +1,25 @@
 <?php
-// Start session
-session_start();
+// Start session if not already started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-// Check if waitress account exists in database
-$hasWaitressAccount = false;
-try {
-    $db_file = realpath(dirname(__FILE__) . '/user.db');
-    $userDb = new PDO("sqlite:$db_file");
-    $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    $stmt = $userDb->prepare("SELECT COUNT(*) as count FROM users WHERE role = 'waitress'");
-    $stmt->execute();
-    $result = $stmt->fetch(PDO::FETCH_ASSOC);
-    $hasWaitressAccount = ($result['count'] > 0);
-} catch(PDOException $e) {
-    // If database error, default to false (don't show waitress option)
-    $hasWaitressAccount = false;
+// If user is already logged in, redirect to appropriate home page
+if ($_SERVER["REQUEST_METHOD"] == "GET" && isset($_SESSION['user_id']) && isset($_SESSION['role'])) {
+    $role = strtolower($_SESSION['role']);
+    if ($role === 'admin') {
+        header("Location: admin/home");
+        exit();
+    } elseif ($role === 'manager') {
+        header("Location: manager/home");
+        exit();
+    } elseif ($role === 'waitress') {
+        header("Location: waitress/home");
+        exit();
+    } else {
+        header("Location: home");
+        exit();
+    }
 }
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
@@ -54,6 +58,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 $_SESSION['username'] = $user['username'];
                 $_SESSION['role'] = $user['role'];
                 
+                // Ensure session is written before redirect
+                session_write_close();
+                
                 // Redirect based on role with absolute paths
                 if ($user['role'] === 'admin') {
                     header("Location: admin/home");
@@ -80,6 +87,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         header("Location: " . strtok($_SERVER["REQUEST_URI"], '?') . "?error=" . urlencode($error_message));
         exit();
     }
+}
+
+// Check if there are any waitress accounts in the database
+$has_waitress_accounts = false;
+try {
+    $db_file = realpath(dirname(__FILE__) . '/user.db');
+    $userDb = new PDO("sqlite:$db_file");
+    $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    $waitressCheckStmt = $userDb->prepare("SELECT COUNT(*) as count FROM users WHERE role = 'waitress'");
+    $waitressCheckStmt->execute();
+    $waitressResult = $waitressCheckStmt->fetch(PDO::FETCH_ASSOC);
+    $has_waitress_accounts = ($waitressResult['count'] > 0);
+} catch(PDOException $e) {
+    // If database error, default to false (don't show waitress option)
+    $has_waitress_accounts = false;
 }
 ?>
 <!DOCTYPE html>
@@ -394,7 +417,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     
                     
                                 <div class="mb-8 grid grid-cols-2 sm:flex sm:justify-center gap-2 sm:gap-4 sm:space-x-0">
-                                    <?php if ($hasWaitressAccount): ?>
+                                    <?php if ($has_waitress_accounts): ?>
                                     <button id="waitressBtn" type="button" class="user-role-btn w-full sm:w-28 px-2 sm:px-3 py-2 sm:py-1.5 flex items-center justify-between border-2 border-transparent bg-white rounded-xl shadow-md hover:shadow-lg scale-100 transition-all duration-100">
                                         <div class="flex items-center">
                                             <i class="fas fa-user-circle text-base sm:text-xl text-gray-500 mr-1 sm:mr-2"></i>
@@ -472,7 +495,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                                         <a href="resetpass/requestReset" class="text-sm text-gray-600 hover:text-gray-900">Forgot your password?</a>
                                     </div>
                     
-                                    <input type="hidden" id="userType" name="userType" value="<?php echo $hasWaitressAccount ? 'waitress' : 'cashier'; ?>">
+                                    <input type="hidden" id="userType" name="userType" value="<?php echo $has_waitress_accounts ? 'waitress' : 'cashier'; ?>">
                     
                                     <button type="submit" 
                                             class="flex w-full items-center justify-center rounded-lg border-2 border-gray-400 bg-transparent px-4 py-2.5 text-sm/6 font-semibold text-gray-700 hover:border-gray-600 hover:text-gray-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-300 transition duration-200">
@@ -506,7 +529,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             const adminBtn = document.getElementById('adminBtn');
             const userType = document.getElementById('userType');
             
-            // Build buttons array, filtering out null values (buttons that don't exist)
+            // Build buttons array, excluding null elements (waitressBtn might not exist)
             const buttons = [waitressBtn, cashierBtn, managerBtn, adminBtn].filter(btn => btn !== null);
 
             if (!cashierBtn || !managerBtn || !adminBtn || !userType) return;
@@ -550,9 +573,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             }
 
             // Set initial state - use waitress if available, otherwise cashier
-            const initialRole = waitressBtn ? 'waitress' : 'cashier';
-            const initialBtn = waitressBtn || cashierBtn;
-            selectButton(initialBtn, initialRole);
+            if (waitressBtn) {
+                selectButton(waitressBtn, 'waitress');
+            } else {
+                selectButton(cashierBtn, 'cashier');
+            }
 
             // Use event delegation for better performance
             if (waitressBtn) {

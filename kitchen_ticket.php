@@ -33,8 +33,19 @@ try {
             'name' => 'POS SOLUTION',
             'location' => 'Kitchen',
             'phone' => '',
+            'footer_text' => 'Thank you for your purchase!',
+            'vat_inclusive' => 'exclusive',
+            'vat_rate' => 15.0
         ];
     }
+    
+    // Enrich orderData with business info for Android interceptor
+    $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+    $orderData['location'] = $businessInfo['location'] ?? '';
+    $orderData['phone'] = $businessInfo['phone'] ?? '';
+    $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+    $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+    $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
 
     // Determine printer based on client IP (same logic as receipt.php)
     $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
@@ -120,7 +131,8 @@ try {
     }
 
     $printer->text(str_repeat('-', 32) . "\n");
-    $printer->feed(2);
+    // Reduced from feed(2) to feed(1) to save paper
+    $printer->feed(1);
 
     $printer->setJustification(Printer::JUSTIFY_CENTER);
 
@@ -135,14 +147,34 @@ try {
         'message' => 'Kitchen ticket printed',
         'printer_used' => $printerName,
         'client_ip' => $clientIP,
-        'connection_type' => $isNetworkPrinter ? 'network' : 'local'
+        'connection_type' => $isNetworkPrinter ? 'network' : 'local',
+        'order_data' => $orderData  // Include enriched orderData for Android
     ]);
 } catch (Exception $e) {
+    // Enrich orderData even on error for Android compatibility
+    if (isset($orderData) && is_array($orderData)) {
+        try {
+            $db = new PDO('sqlite:info.db');
+            $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            if ($businessInfo) {
+                $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+                $orderData['location'] = $businessInfo['location'] ?? '';
+                $orderData['phone'] = $businessInfo['phone'] ?? '';
+                $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+                $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+                $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+            }
+        } catch (Exception $dbError) {
+            // Ignore database errors in error handler
+        }
+    }
+    
     header('Content-Type: application/json');
     http_response_code(500);
     echo json_encode([
         'success' => false,
-        'message' => $e->getMessage()
+        'message' => $e->getMessage(),
+        'order_data' => $orderData ?? []  // Include orderData even on error for Android
     ]);
 }
 

@@ -62,6 +62,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="3.4.16"></script>
+    <script src="../receipt.php?js=true"></script>
     <style>
         .toast-notification {
             transition: opacity 0.5s ease-out, transform 0.5s ease-out;
@@ -170,115 +171,145 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             }
         }
 
+        /* Table container responsive */
+        .mobile-table-container {
+            width: 100%;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        /* Ensure parent containers don't overflow */
+        @media (max-width: 640px) {
+            .mobile-table-container,
+            .mobile-table-container > table {
+                max-width: 100%;
+                box-sizing: border-box;
+            }
+            
+            /* Force table to fit container */
+            .mobile-table-container table {
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            
+            /* Ensure all columns respect their width */
+            .mobile-table-container table th,
+            .mobile-table-container table td {
+                box-sizing: border-box;
+            }
+        }
+
         /* Ensure table fits on mobile without horizontal scroll */
         @media (max-width: 640px) {
             .mobile-table-container {
+                overflow-x: hidden;
+                max-width: 100%;
                 width: 100%;
-                overflow: visible;
-                max-width: 100vw;
             }
             
-            /* Allow actions column to overflow if needed */
             .mobile-table-container table {
-                overflow: visible;
-            }
-            
-            .mobile-table-container table td:nth-child(6),
-            .mobile-table-container table th:nth-child(6) {
-                position: relative;
-                z-index: 1;
-            }
-            
-            table {
-                font-size: 0.7rem;
+                font-size: 0.65rem;
                 table-layout: fixed;
                 width: 100%;
                 max-width: 100%;
+                border-collapse: collapse;
             }
             
-            /* Keep same padding as desktop - maintain column spacing */
+            /* Minimal padding on mobile */
             table th,
             table td {
+                padding: 0.375rem 0.25rem;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
             
-            /* Prevent actions column from truncating */
-            table th:nth-child(6),
-            table td:nth-child(6) {
-                overflow: visible !important;
-                text-overflow: clip !important;
-            }
-            
-            /* Slim headers on mobile */
-            table th:first-child {
-                padding: 0.5rem 1.5rem; /* Slim on mobile - py-2 */
-            }
-            
-            table th:not(:first-child) {
-                padding: 0.5rem 1.5rem; /* Slim on mobile - py-2 */
-            }
-            
-            table td {
-                padding: 0.75rem 1.5rem; /* Slightly reduced on mobile - py-3 */
-            }
-            
-            /* Column width distribution for mobile - optimized to fit with images while maintaining spacing */
+            /* Product name column - allow some space but truncate */
             table th:nth-child(1),
             table td:nth-child(1) {
-                width: 29%; /* Product name - slightly increased */
-                min-width: 0;
+                width: 25%;
+                max-width: 25%;
+                padding-left: 0.5rem;
+                padding-right: 0.25rem;
             }
             
+            /* Quantity column - compact */
             table th:nth-child(2),
             table td:nth-child(2) {
-                width: 15%; /* Stock - even width */
+                width: 10%;
+                max-width: 10%;
+                text-align: center;
+                padding: 0.375rem 0.125rem;
             }
             
+            /* Price column - compact */
             table th:nth-child(3),
             table td:nth-child(3) {
-                width: 15%; /* Price - even width */
+                width: 12%;
+                max-width: 12%;
+                text-align: center;
+                padding: 0.375rem 0.125rem;
             }
             
+            /* Cost column - compact */
             table th:nth-child(4),
             table td:nth-child(4) {
-                width: 15%; /* Cost - even width */
+                width: 12%;
+                max-width: 12%;
+                text-align: center;
+                padding: 0.375rem 0.125rem;
             }
             
+            /* Image column - very compact */
             table th:nth-child(5),
             table td:nth-child(5) {
-                width: 11%; /* Image - slightly increased */
+                width: 8%;
+                max-width: 8%;
+                text-align: center;
+                padding: 0.375rem 0.125rem;
             }
             
+            /* Actions column - compact with icons only */
             table th:nth-child(6),
             table td:nth-child(6) {
-                width: 15%; /* Actions - slightly reduced */
-                min-width: 3rem; /* Ensure minimum width for buttons */
-                overflow: visible !important;
-                white-space: nowrap !important;
-                text-overflow: clip !important;
+                width: 13%;
+                max-width: 13%;
+                text-align: center;
+                padding: 0.375rem 0.25rem;
+                padding-right: 0.5rem;
             }
             
-            /* Make action links use icons on mobile - more compact */
+            /* Make images smaller on mobile */
+            table td:nth-child(5) img.mobile-table-image,
+            table td:nth-child(5) .mobile-table-image {
+                width: 1.5rem !important;
+                height: 1.5rem !important;
+                max-width: 1.5rem !important;
+                max-height: 1.5rem !important;
+            }
+            
+            table td:nth-child(5) .fas.fa-cube.mobile-table-icon,
+            table td:nth-child(5) .mobile-table-icon {
+                font-size: 0.875rem !important;
+            }
+            
+            /* Make action links use icons only on mobile - very compact */
             table td:nth-child(6) a {
-                font-size: 0.6rem;
-                padding: 0.2rem;
+                font-size: 0.5rem;
+                padding: 0.25rem;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                margin: 0 0.1rem;
+                margin: 0 0.0625rem;
                 min-width: 1.25rem;
                 min-height: 1.25rem;
                 white-space: nowrap;
-                overflow: visible;
-                text-overflow: clip;
             }
             
-            /* Make icons smaller on mobile and show them */
+            /* Make icons smaller on mobile */
             table td:nth-child(6) a svg {
-                width: 0.875rem;
-                height: 0.875rem;
+                width: 0.75rem;
+                height: 0.75rem;
                 display: block;
             }
             
@@ -286,27 +317,98 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 display: none;
             }
             
-            /* On larger screens, hide icons and show text */
-            @media (min-width: 640px) {
-                table td:nth-child(6) a svg {
-                    display: none;
-                }
-                
-                table td:nth-child(6) a span {
-                    display: inline;
-                }
-            }
-            
             /* Remove sort icons on mobile to save space */
             table th svg {
                 display: none;
+            }
+            
+            /* Make header text smaller */
+            table th {
+                font-size: 0.6rem;
+                font-weight: 600;
+            }
+            
+            /* Ensure table doesn't overflow */
+            table {
+                box-sizing: border-box;
+            }
+        }
+        
+        /* Very small phones (320px - 375px) */
+        @media (max-width: 375px) {
+            .mobile-table-container table {
+                font-size: 0.6rem;
+            }
+            
+            table th,
+            table td {
+                padding: 0.25rem 0.125rem;
+            }
+            
+            table th:nth-child(1),
+            table td:nth-child(1) {
+                padding-left: 0.375rem;
+            }
+            
+            table th:nth-child(6),
+            table td:nth-child(6) {
+                padding-right: 0.375rem;
+            }
+            
+            table td:nth-child(5) img.mobile-table-image,
+            table td:nth-child(5) .mobile-table-image {
+                width: 1.25rem !important;
+                height: 1.25rem !important;
+                max-width: 1.25rem !important;
+                max-height: 1.25rem !important;
+            }
+            
+            table td:nth-child(6) a {
+                padding: 0.1875rem;
+                min-width: 1rem;
+                min-height: 1rem;
+            }
+            
+            table td:nth-child(6) a svg {
+                width: 0.625rem;
+                height: 0.625rem;
+            }
+        }
+        
+        /* Tablet styles */
+        @media (min-width: 641px) and (max-width: 1023px) {
+            .mobile-table-container table {
+                table-layout: auto;
+                font-size: 0.75rem;
+            }
+            
+            table th {
+                padding: 0.75rem 1rem;
+            }
+            
+            table td {
+                padding: 0.875rem 1rem;
+            }
+            
+            /* Show text on tablet for actions */
+            table td:nth-child(6) a svg {
+                display: none;
+            }
+            
+            table td:nth-child(6) a span {
+                display: inline;
             }
         }
         
         /* Desktop table - keep original size */
         @media (min-width: 1024px) {
+            .mobile-table-container {
+                overflow-x: visible;
+            }
+            
             .mobile-table-container table {
                 table-layout: auto;
+                font-size: 0.875rem;
             }
             
             /* Restore original desktop padding - override mobile styles */
@@ -336,6 +438,13 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             .mobile-table-container table th:nth-child(6),
             .mobile-table-container table td:nth-child(6) {
                 width: auto !important;
+                min-width: auto !important;
+            }
+            
+            /* Remove sticky positioning on desktop */
+            .mobile-table-container table th:nth-child(6),
+            .mobile-table-container table td:nth-child(6) {
+                position: static !important;
             }
         }
     </style>
@@ -348,201 +457,367 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <!-- Fixed Header -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-4 flex items-center justify-between gap-4 px-4 lg:px-8 shadow-sm">
-                <div class="w-full max-w-7xl mx-auto flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-                    <div class="flex items-center gap-2 sm:gap-4 lg:gap-6 flex-wrap">
-                        <!-- Mobile Hamburger Menu Button -->
-                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded" onclick="toggleSidebar()">
-                            <span></span>
-                            <span></span>
-                            <span></span>
-                        </div>
-                        <h1 class="text-xl sm:text-2xl lg:text-3xl font-bold">Inventory Management</h1>
-                        <!-- Notification Icon -->
-                        <div class="relative cursor-pointer">
-                            <svg onclick="toggleNotifications()" class="h-6 w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                            </svg>
-                            <?php
-                            $notificationCount = count($outOfStock) + count($lowStock);
-                            if ($notificationCount > 0): ?>
-                                <span class="absolute top-1 -right-0 -mt-2 -mr-1 bg-red-500 text-white text-xs rounded-full min-h-[1rem] min-w-[1rem] px-1 flex items-center justify-center pointer-events-none"><?= $notificationCount ?></span>
-                            <?php endif; ?>
-                            
-                            <!-- Notifications Dropdown -->
-                            <div id="notificationsDropdown" class="hidden absolute right-0 mt-2 w-96 bg-white rounded-2xl shadow-2xl z-50 transform transition-all duration-300 opacity-0 scale-95 border border-gray-100 max-h-[80vh] overflow-y-auto custom-scrollbar">
-                                <?php if (empty($outOfStock) && empty($lowStock)): ?>
-                                    <div class="p-6 text-center">
-                                        <div class="mx-auto w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
-                                            <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                                            </svg>
-                                        </div>
-                                        <p class="text-gray-500 font-medium">No notifications</p>
-                                        <p class="text-gray-400 text-sm mt-1">You're all caught up!</p>
-                                    </div>
-                                <?php else: ?>
+            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 shadow-sm">
+                <div class="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8">
+                    <!-- Mobile: Two Row Layout -->
+                    <div class="lg:hidden">
+                        <!-- Top Row: Title and Icons -->
+                        <div class="flex items-center justify-between gap-2 sm:gap-3 py-3 sm:py-4">
+                            <!-- Left Side: Hamburger, Title, Action Icons -->
+                            <div class="flex items-center gap-2 sm:gap-3 md:gap-4 flex-1 min-w-0">
+                                <!-- Mobile Hamburger Menu Button -->
+                                <div class="hamburger bg-[#f3f4f6] p-2 rounded flex-shrink-0" onclick="toggleSidebar()">
+                                    <span></span>
+                                    <span></span>
+                                    <span></span>
+                                </div>
+                                
+                                <!-- Title -->
+                                <h1 class="text-lg sm:text-xl md:text-2xl font-bold truncate flex-shrink-0">Inventory Management</h1>
+                                
+                                <!-- Action Icons Group -->
+                                <div class="flex items-center gap-1.5 sm:gap-2 md:gap-3 flex-shrink-0 ml-auto">
+                                    <!-- Notification Icon -->
+                                    <div class="relative cursor-pointer flex-shrink-0">
+                                        <svg onclick="toggleNotifications(event)" class="h-5 w-5 sm:h-6 sm:w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200 cursor-pointer" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                                        </svg>
+                                        <?php
+                                        $notificationCount = count($outOfStock) + count($lowStock);
+                                        if ($notificationCount > 0): ?>
+                                            <span class="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] rounded-full min-h-[1rem] min-w-[1rem] px-1 flex items-center justify-center pointer-events-none"><?= $notificationCount ?></span>
+                                        <?php endif; ?>
+                                        
+                                        <!-- Notifications Dropdown -->
+                                        <div id="notificationsDropdown" class="hidden absolute right-0 mt-2 w-[calc(100vw-2rem)] sm:w-80 md:w-96 max-w-[90vw] sm:max-w-none bg-white rounded-2xl shadow-2xl z-50 transform transition-all duration-300 opacity-0 scale-95 border border-gray-100 max-h-[80vh] overflow-y-auto custom-scrollbar">
+                                            <?php if (empty($outOfStock) && empty($lowStock)): ?>
+                                                <div class="p-6 text-center">
+                                                    <div class="mx-auto w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
+                                                        <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                                        </svg>
+                                                    </div>
+                                                    <p class="text-gray-500 font-medium">No notifications</p>
+                                                    <p class="text-gray-400 text-sm mt-1">You're all caught up!</p>
+                                                </div>
+                                            <?php else: ?>
 
-                                    <?php if (!empty($outOfStock)): ?>
-                                        <div class="p-4 border-b border-gray-100 hover:bg-gray-50 transition-colors duration-200">
-                                            <div class="flex items-start">
-                                                <div class="flex-shrink-0">
-                                                    <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                                                        <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-                                                        </svg>
-                                                    </div>
-                                                </div>
-                                                <div class="ml-4 flex-1">
-                                                    <div class="flex items-center justify-between">
-                                                        <h3 class="text-sm font-semibold text-gray-900">Out of Stock Products</h3>
-                                                        <span class="text-xs font-medium text-red-500 bg-red-50 px-2 py-1 rounded-full"><?= count($outOfStock) ?></span>
-                                                    </div>
-                                                    <div class="mt-2 space-y-2">
-                                                        <?php foreach($outOfStock as $product): ?>
-                                                            <div class="flex items-center text-sm">
-                                                                <svg class="w-4 h-4 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                                                </svg>
-                                                                <a href="edit.php?id=<?= $product['id'] ?>" class="text-gray-700 hover:text-teal-600 transition-colors">
-                                                                    <?= htmlspecialchars($product['name']) ?>
-                                                                </a>
-                                                            </div>
-                                                        <?php endforeach; ?>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    <?php endif; ?>
-                                    
-                                    <?php if (!empty($lowStock)): ?>
-                                        <div class="p-4 hover:bg-gray-50 transition-colors duration-200">
-                                            <div class="flex items-start">
-                                                <div class="flex-shrink-0">
-                                                    <div class="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
-                                                        <svg class="w-6 h-6 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                                        </svg>
-                                                    </div>
-                                                </div>
-                                                <div class="ml-4 flex-1">
-                                                    <div class="flex items-center justify-between">
-                                                        <h3 class="text-sm font-semibold text-gray-900">Low Stock Alert</h3>
-                                                        <span class="text-xs font-medium text-yellow-500 bg-yellow-50 px-2 py-1 rounded-full"><?= count($lowStock) ?></span>
-                                                    </div>
-                                                    <div class="mt-2 space-y-2">
-                                                        <?php foreach($lowStock as $product): ?>
-                                                            <div class="flex items-center justify-between text-sm">
-                                                                <div class="flex items-center">
-                                                                    <svg class="w-4 h-4 text-yellow-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                                                <?php if (!empty($outOfStock)): ?>
+                                                    <div class="p-4 border-b border-gray-100 hover:bg-gray-50 transition-colors duration-200">
+                                                        <div class="flex items-start">
+                                                            <div class="flex-shrink-0">
+                                                                <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                                                                    <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                                                                     </svg>
-                                                                    <a href="edit.php?id=<?= $product['id'] ?>" class="text-gray-700 hover:text-teal-600 transition-colors">
-                                                                        <?= htmlspecialchars($product['name']) ?>
-                                                                    </a>
                                                                 </div>
-                                                                <span class="text-yellow-600 font-medium"><?= $product['quantity'] ?> left</span>
                                                             </div>
-                                                        <?php endforeach; ?>
+                                                            <div class="ml-4 flex-1">
+                                                                <div class="flex items-center justify-between">
+                                                                    <h3 class="text-sm font-semibold text-gray-900">Out of Stock Products</h3>
+                                                                    <span class="text-xs font-medium text-red-500 bg-red-50 px-2 py-1 rounded-full"><?= count($outOfStock) ?></span>
+                                                                </div>
+                                                                <div class="mt-2 space-y-2">
+                                                                    <?php foreach($outOfStock as $product): ?>
+                                                                        <div class="flex items-center text-sm">
+                                                                            <svg class="w-4 h-4 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                                            </svg>
+                                                                            <a href="edit.php?id=<?= $product['id'] ?>" class="text-gray-700 hover:text-teal-600 transition-colors">
+                                                                                <?= htmlspecialchars($product['name']) ?>
+                                                                            </a>
+                                                                        </div>
+                                                                    <?php endforeach; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            </div>
+                                                <?php endif; ?>
+                                                
+                                                <?php if (!empty($lowStock)): ?>
+                                                    <div class="p-4 hover:bg-gray-50 transition-colors duration-200">
+                                                        <div class="flex items-start">
+                                                            <div class="flex-shrink-0">
+                                                                <div class="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
+                                                                    <svg class="w-6 h-6 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                                    </svg>
+                                                                </div>
+                                                            </div>
+                                                            <div class="ml-4 flex-1">
+                                                                <div class="flex items-center justify-between">
+                                                                    <h3 class="text-sm font-semibold text-gray-900">Low Stock Alert</h3>
+                                                                    <span class="text-xs font-medium text-yellow-500 bg-yellow-50 px-2 py-1 rounded-full"><?= count($lowStock) ?></span>
+                                                                </div>
+                                                                <div class="mt-2 space-y-2">
+                                                                    <?php foreach($lowStock as $product): ?>
+                                                                        <div class="flex items-center justify-between text-sm">
+                                                                            <div class="flex items-center">
+                                                                                <svg class="w-4 h-4 text-yellow-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                                                                                </svg>
+                                                                                <a href="edit.php?id=<?= $product['id'] ?>" class="text-gray-700 hover:text-teal-600 transition-colors">
+                                                                                    <?= htmlspecialchars($product['name']) ?>
+                                                                                </a>
+                                                                            </div>
+                                                                            <span class="text-yellow-600 font-medium"><?= $product['quantity'] ?> left</span>
+                                                                        </div>
+                                                                    <?php endforeach; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
                                         </div>
-                                    <?php endif; ?>
-                                <?php endif; ?>
+                                    </div>
+                                    
+                                    <!-- Truck Icon for Receiving -->
+                                    <div class="relative cursor-pointer flex-shrink-0" title="Stock Receiving">
+                                        <svg onclick="window.location.href='receiving'" class="h-5 w-5 sm:h-6 sm:w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0zM13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
+                                        </svg>
+                                    </div>
+                                    
+                                    <!-- Clipboard Icon for Stock Taking -->
+                                    <div class="relative cursor-pointer flex-shrink-0" title="Stock Taking">
+                                        <svg onclick="window.location.href='stock_taking'" class="h-5 w-5 sm:h-6 sm:w-6 text-gray-400 hover:text-blue-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                        </svg>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         
-                        <!-- Truck Icon for Receiving -->
-                        <div class="relative cursor-pointer" title="Stock Receiving">
-                            <svg onclick="window.location.href='receiving'" class="h-6 w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0zM13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
-                            </svg>
+                        <!-- Bottom Row: Search and Action Buttons -->
+                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 pb-3 sm:pb-4 border-t border-gray-200 pt-3">
+                            <!-- Search Input -->
+                            <div class="relative flex-1 sm:flex-initial sm:min-w-[200px] md:min-w-[250px] order-2 sm:order-1">
+                                <input type="text" id="searchInput" placeholder="Search products..." class="w-full pl-9 sm:pl-10 pr-3 sm:pr-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent">
+                                <svg class="w-4 h-4 sm:w-5 sm:h-5 absolute left-2.5 sm:left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                            </div>
+                            
+                            <!-- Action Buttons -->
+                            <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0 order-1 sm:order-2">
+                                <button onclick="printInventoryReceipt()" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap flex-shrink-0">
+                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">Print Inventory</span>
+                                    <span class="sm:hidden">Print</span>
+                                </button>
+                                
+                                <a href="add_product" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm bg-gray-300 hover:bg-gray-400 text-black font-medium rounded-md shadow-sm whitespace-nowrap flex-shrink-0 transition-colors">
+                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">Add Product</span>
+                                    <span class="sm:hidden">Add</span>
+                                </a>
+                            </div>
                         </div>
-                        
-                        <!-- Clipboard Icon for Stock Taking -->
-                        <div class="relative cursor-pointer" title="Stock Taking">
-                            <svg onclick="window.location.href='stock_taking'" class="h-6 w-6 text-gray-400 hover:text-blue-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-                            </svg>
-                        </div>
-                        
-                       
                     </div>
                     
-                    <div class="flex flex-wrap items-center gap-2 sm:gap-4 w-full sm:w-auto">
-                       <a href="stock_tracking.php?export_pdf=true&report_type=inventory" class="inline-flex items-center px-2 sm:px-4 py-2 text-sm sm:text-base text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
-                            <span class="hidden sm:inline">Inventory PDF</span>
-                            <span class="sm:hidden">PDF</span>
-                        </a>                    
-                        <div class="relative flex-1 sm:flex-initial min-w-[150px]">
-                            <input type="text" id="searchInput" placeholder="Search..." class="w-full pl-8 sm:pl-10 pr-2 sm:pr-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5 absolute left-2 top-2.5 sm:top-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
+                    <!-- Desktop: Single Row Layout -->
+                    <div class="hidden lg:flex items-center justify-between gap-4 py-4">
+                        <!-- Left Side: Title and Action Icons -->
+                        <div class="flex items-center gap-4 flex-shrink-0">
+                            <!-- Title -->
+                            <h1 class="text-2xl lg:text-3xl font-bold whitespace-nowrap">Inventory Management</h1>
+                            
+                            <!-- Action Icons Group -->
+                            <div class="flex items-center gap-3 flex-shrink-0">
+                                <!-- Notification Icon -->
+                                <div class="relative cursor-pointer flex-shrink-0">
+                                    <svg onclick="toggleNotifications(event)" class="h-6 w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200 cursor-pointer" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                                    </svg>
+                                    <?php
+                                    $notificationCount = count($outOfStock) + count($lowStock);
+                                    if ($notificationCount > 0): ?>
+                                        <span class="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full min-h-[1.25rem] min-w-[1.25rem] px-1 flex items-center justify-center pointer-events-none"><?= $notificationCount ?></span>
+                                    <?php endif; ?>
+                                    
+                                    <!-- Notifications Dropdown -->
+                                    <div id="notificationsDropdownDesktop" class="hidden absolute right-0 mt-2 w-96 bg-white rounded-2xl shadow-2xl z-50 transform transition-all duration-300 opacity-0 scale-95 border border-gray-100 max-h-[80vh] overflow-y-auto custom-scrollbar">
+                                        <?php if (empty($outOfStock) && empty($lowStock)): ?>
+                                            <div class="p-6 text-center">
+                                                <div class="mx-auto w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
+                                                    <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                                    </svg>
+                                                </div>
+                                                <p class="text-gray-500 font-medium">No notifications</p>
+                                                <p class="text-gray-400 text-sm mt-1">You're all caught up!</p>
+                                            </div>
+                                        <?php else: ?>
+
+                                            <?php if (!empty($outOfStock)): ?>
+                                                <div class="p-4 border-b border-gray-100 hover:bg-gray-50 transition-colors duration-200">
+                                                    <div class="flex items-start">
+                                                        <div class="flex-shrink-0">
+                                                            <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                                                                <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                                                                </svg>
+                                                            </div>
+                                                        </div>
+                                                        <div class="ml-4 flex-1">
+                                                            <div class="flex items-center justify-between">
+                                                                <h3 class="text-sm font-semibold text-gray-900">Out of Stock Products</h3>
+                                                                <span class="text-xs font-medium text-red-500 bg-red-50 px-2 py-1 rounded-full"><?= count($outOfStock) ?></span>
+                                                            </div>
+                                                            <div class="mt-2 space-y-2">
+                                                                <?php foreach($outOfStock as $product): ?>
+                                                                    <div class="flex items-center text-sm">
+                                                                        <svg class="w-4 h-4 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                                        </svg>
+                                                                        <a href="edit.php?id=<?= $product['id'] ?>" class="text-gray-700 hover:text-teal-600 transition-colors">
+                                                                            <?= htmlspecialchars($product['name']) ?>
+                                                                        </a>
+                                                                    </div>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            <?php endif; ?>
+                                            
+                                            <?php if (!empty($lowStock)): ?>
+                                                <div class="p-4 hover:bg-gray-50 transition-colors duration-200">
+                                                    <div class="flex items-start">
+                                                        <div class="flex-shrink-0">
+                                                            <div class="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
+                                                                <svg class="w-6 h-6 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                                </svg>
+                                                            </div>
+                                                        </div>
+                                                        <div class="ml-4 flex-1">
+                                                            <div class="flex items-center justify-between">
+                                                                <h3 class="text-sm font-semibold text-gray-900">Low Stock Alert</h3>
+                                                                <span class="text-xs font-medium text-yellow-500 bg-yellow-50 px-2 py-1 rounded-full"><?= count($lowStock) ?></span>
+                                                            </div>
+                                                            <div class="mt-2 space-y-2">
+                                                                <?php foreach($lowStock as $product): ?>
+                                                                    <div class="flex items-center justify-between text-sm">
+                                                                        <div class="flex items-center">
+                                                                            <svg class="w-4 h-4 text-yellow-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                                                                            </svg>
+                                                                            <a href="edit.php?id=<?= $product['id'] ?>" class="text-gray-700 hover:text-teal-600 transition-colors">
+                                                                                <?= htmlspecialchars($product['name']) ?>
+                                                                            </a>
+                                                                        </div>
+                                                                        <span class="text-yellow-600 font-medium"><?= $product['quantity'] ?> left</span>
+                                                                    </div>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                                
+                                <!-- Truck Icon for Receiving -->
+                                <div class="relative cursor-pointer flex-shrink-0" title="Stock Receiving">
+                                    <svg onclick="window.location.href='receiving'" class="h-6 w-6 text-gray-400 hover:text-teal-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17a2 2 0 11-4 0 2 2 0 014 0zM19 17a2 2 0 11-4 0 2 2 0 014 0zM13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
+                                    </svg>
+                                </div>
+                                
+                                <!-- Clipboard Icon for Stock Taking -->
+                                <div class="relative cursor-pointer flex-shrink-0" title="Stock Taking">
+                                    <svg onclick="window.location.href='stock_taking'" class="h-6 w-6 text-gray-400 hover:text-blue-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                    </svg>
+                                </div>
+                            </div>
                         </div>
-                        <a href="add_product" class="inline-flex items-center px-2 sm:px-4 py-2 text-sm sm:text-base bg-gray-300 hover:bg-gray-400 text-black font-medium rounded-md shadow-sm whitespace-nowrap">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-                            </svg>
-                            <span class="hidden sm:inline">Add Product</span>
-                            <span class="sm:hidden">Add</span>
-                        </a>
- 
+                        
+                        <!-- Right Side: Search and Action Buttons -->
+                        <div class="flex items-center gap-3 flex-1 justify-end">
+                            <!-- Search Input -->
+                            <div class="relative flex-1 max-w-md">
+                                <input type="text" id="searchInputDesktop" placeholder="Search products..." class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent">
+                                <svg class="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                            </div>
+                            
+                            <!-- Action Buttons -->
+                            <div class="flex items-center gap-3 flex-shrink-0">
+                                <button onclick="printInventoryReceipt()" class="inline-flex items-center justify-center px-4 py-2 text-sm text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
+                                    </svg>
+                                    <span>Print Inventory</span>
+                                </button>
+                                
+                                <a href="add_product" class="inline-flex items-center justify-center px-4 py-2 text-sm bg-gray-300 hover:bg-gray-400 text-black font-medium rounded-md shadow-sm whitespace-nowrap transition-colors">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                                    </svg>
+                                    <span>Add Product</span>
+                                </a>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
             
             <!-- Spacer for fixed header -->
-            <div class="h-20 mb-4"></div>
+            <div class="h-[120px] sm:h-[140px] lg:h-20 mb-4"></div>
             
-            <div class="w-full max-w-7xl mx-auto px-2 sm:px-4 lg:px-8">
+            <div class="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8">
                 <div class="bg-white rounded-lg shadow-sm overflow-hidden w-full">
                     <div class="mobile-table-container w-full">
                     <table class="w-full divide-y divide-gray-200">
                         <thead class="bg-gray-300">
                             <tr>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-6 text-left text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(0)">
+                                <th scope="col" class="px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-6 text-left text-[10px] sm:text-xs md:text-sm lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(0)">
                                     <div class="flex items-center">
                                         <span class="hidden sm:inline">Product</span>
                                         <span class="sm:hidden">Prod</span>
-                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5 hidden sm:inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
                                         </svg>
                                     </div>
                                 </th>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(1, true)">
+                                <th scope="col" class="px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-3 text-center text-[10px] sm:text-xs md:text-sm lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(1, true)">
                                     <div class="flex items-center justify-center">
                                         Qty
-                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5 hidden sm:inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
                                         </svg>
                                     </div>
                                 </th>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(2, true)">
+                                <th scope="col" class="px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-3 text-center text-[10px] sm:text-xs md:text-sm lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(2, true)">
                                     <div class="flex items-center justify-center">
                                         Price
-                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5 hidden sm:inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
                                         </svg>
                                     </div>
                                 </th>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(3, true)">
+                                <th scope="col" class="px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-3 text-center text-[10px] sm:text-xs md:text-sm lg:text-xs font-medium text-black uppercase tracking-wider cursor-pointer" onclick="sortTable(3, true)">
                                     <div class="flex items-center justify-center">
                                         Cost
-                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <svg class="w-2.5 h-2.5 sm:w-3 sm:h-3 lg:w-3 lg:h-3 ml-0.5 sm:ml-1.5 lg:ml-1.5 hidden sm:inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
                                         </svg>
                                     </div>
                                 </th>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
+                                <th scope="col" class="px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-3 text-center text-[10px] sm:text-xs md:text-sm lg:text-xs font-medium text-black uppercase tracking-wider">
                                     <span class="hidden lg:inline">Image</span>
                                     <span class="lg:hidden">Img</span>
                                 </th>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">Actions</th>
+                                <th scope="col" class="px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-3 text-center text-[10px] sm:text-xs md:text-sm lg:text-xs font-medium text-black uppercase tracking-wider">Actions</th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
@@ -550,13 +825,13 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                             $db = new SQLite3('../pos.db');
                             $results = $db->query("SELECT * FROM products");
                             while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
-                                echo "<tr class='hover:bg-gray-50 transition-colors' data-category='" . htmlspecialchars($row['category'] ?? '') . "'>";
-                                echo "<td class='px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs lg:text-sm font-medium text-black-900 truncate' title='{$row['name']}'>{$row['name']}</td>";
-                                echo "<td class='px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500'>{$row['quantity']}</td>";
-                                echo "<td class='px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500'>{$row['price']}</td>";
-                                echo "<td class='px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500'>{$row['buying_price']}</td>";
-                                echo "<td class='px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center'><div class='flex items-center justify-center relative'><img src='../products/{$row['image_url']}' alt='Product' class='w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 rounded-lg object-cover' style='display:none;' onload=\"this.style.display='block';this.nextElementSibling.style.display='none';\" onerror=\"this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-block';\"><i class='fas fa-cube text-gray-400 text-xl sm:text-2xl lg:text-3xl'></i></div></td>";
-                                echo "<td class='px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm font-medium'>";
+                                echo "<tr class='hover:bg-gray-50 transition-colors' data-category=\"" . htmlspecialchars($row['category'] ?? '', ENT_QUOTES, 'UTF-8') . "\">";
+                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium text-black-900 truncate' title='{$row['name']}'>{$row['name']}</td>";
+                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['quantity']}</td>";
+                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['price']}</td>";
+                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['buying_price']}</td>";
+                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center'><div class='flex items-center justify-center relative'><img src='../products/{$row['image_url']}' alt='Product' class='w-6 h-6 sm:w-8 sm:h-8 md:w-9 md:h-9 lg:w-10 lg:h-10 rounded-lg object-cover mobile-table-image' style='display:none;' onload=\"this.style.display='block';this.nextElementSibling.style.display='none';\" onerror=\"this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-block';\"><i class='fas fa-cube text-gray-400 text-lg sm:text-xl md:text-2xl lg:text-3xl mobile-table-icon'></i></div></td>";
+                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium'>";
                                 echo "<a href='edit.php?id={$row['id']}' class='text-teal-600 hover:text-teal-900 mr-0.5 sm:mr-3 lg:mr-3 px-0.5 py-0.5 inline-flex items-center justify-center' title='Edit'>";
                                 echo "<svg class='w-3.5 h-3.5 sm:hidden' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z'></path></svg>";
                                 echo "<span class='hidden sm:inline'>Edit</span>";
@@ -649,9 +924,9 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     </div>
                 </div>
             </div>
-            <div class="w-full max-w-7xl mx-auto px-2 sm:px-4 lg:px-8">
-                <div class="text-center mt-4">
-                    <a href="stock_tracking" class="text-teal-600 hover:text-teal-800 flex items-center justify-center space-x-2 text-sm sm:text-base">
+            <div class="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8">
+                <div class="text-center mt-4 sm:mt-6">
+                    <a href="stock_tracking" class="text-teal-600 hover:text-teal-800 flex items-center justify-center space-x-2 text-sm sm:text-base transition-colors duration-200">
                         <span>Inventory Logs</span>
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
@@ -682,17 +957,36 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         let sortDirection = {};
         const totalPages = Math.ceil(rows.length / rowsPerPage);
         let currentPage = 1;
+        let showAllMode = false;
         const searchInput = document.getElementById('searchInput');
+        const searchInputDesktop = document.getElementById('searchInputDesktop');
         const categoryFilter = document.getElementById('categoryFilter');
         const categoryFilterDesktop = document.getElementById('categoryFilterDesktop');
         
+        // Sync search inputs
+        function syncSearchInputs(value) {
+            if (searchInput) searchInput.value = value;
+            if (searchInputDesktop) searchInputDesktop.value = value;
+        }
+        
+        // Get active search input value
+        function getSearchValue() {
+            return (searchInput && searchInput.value) || (searchInputDesktop && searchInputDesktop.value) || '';
+        }
+        
+        function getInventoryCategoryValue() {
+            if (categoryFilter && categoryFilterDesktop) {
+                return categoryFilter.value || categoryFilterDesktop.value;
+            }
+            if (categoryFilter) return categoryFilter.value;
+            if (categoryFilterDesktop) return categoryFilterDesktop.value;
+            return '';
+        }
+
         // Store current page and category in sessionStorage
         function saveCurrentPage() {
             sessionStorage.setItem('inventoryCurrentPage', currentPage);
-            const activeFilter = categoryFilter || categoryFilterDesktop;
-            if (activeFilter) {
-                sessionStorage.setItem('inventoryCategory', activeFilter.value);
-            }
+            sessionStorage.setItem('inventoryCategory', getInventoryCategoryValue());
         }
         
         // Retrieve current page and category from sessionStorage
@@ -705,38 +999,46 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (savedCategory) {
                 if (categoryFilter) categoryFilter.value = savedCategory;
                 if (categoryFilterDesktop) categoryFilterDesktop.value = savedCategory;
-                filterRows(searchInput.value);
+                filterRows(getSearchValue());
             }
         }
         
         // Load saved page on page initialization
         loadCurrentPage();
 
-        searchInput.addEventListener('input', (e) => {
+        // Add event listeners for both search inputs
+        function handleSearchInput(e) {
+            const value = e.target.value;
+            // Sync both inputs
+            syncSearchInputs(value);
             // If user types in search, exit showAllMode and use pagination
             if (showAllMode) {
                 showAllMode = false;
                 resetPagination();
             }
-            filterRows(e.target.value);
-        });
+            filterRows(value);
+        }
+        
+        if (searchInput) {
+            searchInput.addEventListener('input', handleSearchInput);
+        }
+        if (searchInputDesktop) {
+            searchInputDesktop.addEventListener('input', handleSearchInput);
+        }
 
-        // Helper function to handle category filter change
-        function handleCategoryFilter() {
+        // Helper function to handle category filter change (must use event.target: both selects exist in DOM; only one is visible)
+        function handleCategoryFilter(e) {
             // If category is selected, exit showAllMode and use pagination
             if (showAllMode) {
                 showAllMode = false;
                 resetPagination();
             }
-            
-            // Sync both filters
-            const activeFilter = categoryFilter || categoryFilterDesktop;
-            const selectedValue = activeFilter ? activeFilter.value : '';
-            if (categoryFilter && categoryFilterDesktop) {
-                categoryFilter.value = selectedValue;
-                categoryFilterDesktop.value = selectedValue;
-            }
-            filterRows(searchInput.value);
+
+            const source = e && e.target ? e.target : (categoryFilter || categoryFilterDesktop);
+            const selectedValue = source ? source.value : '';
+            if (categoryFilter) categoryFilter.value = selectedValue;
+            if (categoryFilterDesktop) categoryFilterDesktop.value = selectedValue;
+            filterRows(getSearchValue());
         }
 
         // Add event listeners for category filters
@@ -744,8 +1046,6 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         if (categoryFilterDesktop) categoryFilterDesktop.addEventListener('change', handleCategoryFilter);
         
         // View All button functionality - toggle between show all and pagination
-        let showAllMode = false;
-        
         function handleViewAll() {
             // Toggle showAllMode
             showAllMode = !showAllMode;
@@ -754,7 +1054,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 // Enter show all mode
                 if (categoryFilter) categoryFilter.value = '';
                 if (categoryFilterDesktop) categoryFilterDesktop.value = '';
-                filterRows(searchInput.value);
+                filterRows(getSearchValue());
                 showAllProducts();
             } else {
                 // Exit show all mode and return to pagination
@@ -803,11 +1103,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         if (viewAllDesktop) viewAllDesktop.addEventListener('click', handleViewAll);
 
         function filterRows(searchTerm) {
-            const activeFilter = categoryFilter || categoryFilterDesktop;
-            const selectedCategory = activeFilter ? activeFilter.value : '';
+            // If searchTerm is not provided, get from active input
+            if (searchTerm === undefined) {
+                searchTerm = getSearchValue();
+            }
+            const selectedCategory = (getInventoryCategoryValue() || '').trim();
             rows = allRows.filter(row => {
                 const productName = row.children[0].textContent.toLowerCase();
-                const productCategory = row.dataset.category || '';
+                const productCategory = (row.dataset.category || '').trim();
                 const matchesSearch = productName.includes(searchTerm.toLowerCase());
                 const matchesCategory = !selectedCategory || productCategory === selectedCategory;
                 return matchesSearch && matchesCategory;
@@ -1401,25 +1704,70 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
 
 
 <script>
-    function toggleNotifications() {
+    function toggleNotifications(event) {
+        // Prevent event from bubbling to click outside handler
+        if (event) {
+            event.stopPropagation();
+        }
+        
         const dropdown = document.getElementById('notificationsDropdown');
-        dropdown.classList.toggle('hidden');
-        if (!dropdown.classList.contains('hidden')) {
-            dropdown.classList.remove('opacity-0', 'scale-95');
-            dropdown.classList.add('opacity-100', 'scale-100');
-        } else {
-            dropdown.classList.add('opacity-0', 'scale-95');
-            dropdown.classList.remove('opacity-100', 'scale-100');
+        const dropdownDesktop = document.getElementById('notificationsDropdownDesktop');
+        
+        // Determine which dropdown to use based on screen size
+        const isDesktop = window.innerWidth >= 1024;
+        const targetDropdown = isDesktop ? (dropdownDesktop || dropdown) : (dropdown || dropdownDesktop);
+        
+        if (targetDropdown) {
+            const isHidden = targetDropdown.classList.contains('hidden');
+            
+            // Close both dropdowns first
+            if (dropdown) {
+                dropdown.classList.add('hidden', 'opacity-0', 'scale-95');
+                dropdown.classList.remove('opacity-100', 'scale-100');
+            }
+            if (dropdownDesktop) {
+                dropdownDesktop.classList.add('hidden', 'opacity-0', 'scale-95');
+                dropdownDesktop.classList.remove('opacity-100', 'scale-100');
+            }
+            
+            // Toggle the appropriate dropdown
+            if (isHidden) {
+                targetDropdown.classList.remove('hidden', 'opacity-0', 'scale-95');
+                targetDropdown.classList.add('opacity-100', 'scale-100');
+            } else {
+                targetDropdown.classList.add('opacity-0', 'scale-95');
+                setTimeout(() => {
+                    targetDropdown.classList.add('hidden');
+                }, 300);
+            }
         }
     }
 
     // Close dropdown when clicking outside
     document.addEventListener('click', function(event) {
         const dropdown = document.getElementById('notificationsDropdown');
-        const notificationIcon = event.target.closest('svg');
-        if (!dropdown.contains(event.target) && !notificationIcon) {
-            dropdown.classList.add('hidden', 'opacity-0', 'scale-95');
-            dropdown.classList.remove('opacity-100', 'scale-100');
+        const dropdownDesktop = document.getElementById('notificationsDropdownDesktop');
+        
+        // Check if click is on notification icon
+        const notificationIcon = event.target.closest('svg[onclick*="toggleNotifications"]');
+        const notificationContainer = event.target.closest('.relative.cursor-pointer');
+        const isNotificationIcon = notificationIcon || 
+                                  (notificationContainer && notificationContainer.querySelector('svg[onclick*="toggleNotifications"]'));
+        
+        // Check if click is inside any dropdown
+        const isInsideDropdown = (dropdown && dropdown.contains(event.target)) || 
+                                 (dropdownDesktop && dropdownDesktop.contains(event.target));
+        
+        // Only close if clicking outside both the icon and the dropdown
+        if (!isNotificationIcon && !isInsideDropdown) {
+            if (dropdown) {
+                dropdown.classList.add('hidden', 'opacity-0', 'scale-95');
+                dropdown.classList.remove('opacity-100', 'scale-100');
+            }
+            if (dropdownDesktop) {
+                dropdownDesktop.classList.add('hidden', 'opacity-0', 'scale-95');
+                dropdownDesktop.classList.remove('opacity-100', 'scale-100');
+            }
         }
     });
 
@@ -1442,6 +1790,106 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         sidebar.classList.remove('open');
         overlay.classList.remove('active');
         hamburger.classList.remove('open');
+    }
+    
+    // Print Inventory Receipt function
+    function printInventoryReceipt() {
+        // Collect inventory data from the table
+        const tableBody = document.getElementById('tableBody');
+        const rows = tableBody.querySelectorAll('tr');
+        
+        const items = [];
+        let grandTotal = 0;
+        
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length >= 3) {
+                const name = cells[0].textContent.trim();
+                const quantity = parseInt(cells[1].textContent.trim()) || 0;
+                const price = parseFloat(cells[2].textContent.trim()) || 0;
+                const totalValue = quantity * price;
+                
+                items.push({
+                    name: name,
+                    quantity: quantity,
+                    price: price,
+                    total_value: totalValue
+                });
+                
+                grandTotal += totalValue;
+            }
+        });
+        
+        // Prepare receipt data
+        const receiptData = {
+            is_inventory_receipt: true,
+            print_only: true,
+            cashier_username: '<?= htmlspecialchars($_SESSION['username'] ?? 'Admin') ?>',
+            items: items,
+            grand_total: grandTotal
+        };
+        
+        // Show loading indicator
+        const btn = event.target.closest('button');
+        const originalContent = btn.innerHTML;
+        btn.innerHTML = '<svg class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+        btn.disabled = true;
+        
+        const printFn = (typeof window.sendToPrinter === 'function')
+            ? window.sendToPrinter
+            : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+
+        printFn(receiptData)
+        .then(result => {
+            // Restore button
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+            
+            if (result.success) {
+                // Show success toast
+                showToast('Inventory receipt printed successfully!', 'success');
+            } else {
+                // Show error toast
+                showToast('Print failed: ' + (result.message || 'Unknown error'), 'error');
+            }
+        })
+        .catch(error => {
+            // Restore button
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+            
+            console.error('Print error:', error);
+            showToast('Print failed: ' + error.message, 'error');
+        });
+    }
+    
+    // Toast notification function (if not already defined)
+    function showToast(message, type = 'info') {
+        // Remove existing toasts
+        const existingToasts = document.querySelectorAll('.toast-notification');
+        existingToasts.forEach(toast => toast.remove());
+        
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.className = 'toast-notification fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-[99999] transform transition-all duration-300';
+        
+        if (type === 'success') {
+            toast.classList.add('bg-green-500', 'text-white');
+        } else if (type === 'error') {
+            toast.classList.add('bg-red-500', 'text-white');
+        } else {
+            toast.classList.add('bg-blue-500', 'text-white');
+        }
+        
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        
+        // Auto-remove after 3 seconds
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(100%)';
+            setTimeout(() => toast.remove(), 500);
+        }, 3000);
     }
 </script>
 </body>

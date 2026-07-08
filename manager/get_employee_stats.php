@@ -21,12 +21,26 @@ try {
     exit();
 }
 
-// Get period from request
-$period = $_GET['period'] ?? 'all';
+// Get period or date from request
+$period = $_GET['period'] ?? null;
+$date = $_GET['date'] ?? null;
 
-// Function to get date range based on period
-function getDateRange($period) {
+// Function to get date range based on period or date
+function getDateRange($period, $date = null) {
     $today = date('Y-m-d');
+    
+    // If a specific date is provided, use it
+    if ($date !== null && $date !== '') {
+        // Validate date format
+        if (DateTime::createFromFormat('Y-m-d', $date) !== false) {
+            return ['start' => $date, 'end' => $date];
+        }
+    }
+    
+    // If no period specified, default to today
+    if ($period === null || $period === '') {
+        $period = 'today';
+    }
     
     switch ($period) {
         case 'all':
@@ -83,7 +97,7 @@ function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTim
 }
 
 try {
-    $dateRange = getDateRange($period);
+    $dateRange = getDateRange($period, $date);
     $startDate = $dateRange['start'];
     $endDate = $dateRange['end'];
     $noFilter = isset($dateRange['no_filter']) && $dateRange['no_filter'] === true;
@@ -197,57 +211,102 @@ try {
             $paymentWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
         }
         
-        // Check if eft_payments table exists
+        // Check if eft_payments and mixed_payments tables exist
         $eftTableExists = false;
+        $mixedTableExists = false;
         try {
             $checkEftTable = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'");
             $eftTableExists = ($checkEftTable->fetchColumn() !== false);
         } catch (PDOException $e) {
             $eftTableExists = false;
         }
-        
-        // 1. Get CASH SALES (orders without EFT payments)
-        $cashSalesData = ['cash_sales' => 0, 'cash_orders' => 0];
         try {
-            if ($eftTableExists) {
-                $cashSalesQuery = $db->prepare("
-                    SELECT COALESCE(SUM(o.total), 0) as cash_sales, COUNT(o.id) as cash_orders
+            $checkMixedTable = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='mixed_payments'");
+            $mixedTableExists = ($checkMixedTable->fetchColumn() !== false);
+        } catch (PDOException $e) {
+            $mixedTableExists = false;
+        }
+        
+        // 1. Get CASH and EFT SALES (handling mixed payments correctly)
+        $cashSalesData = ['cash_sales' => 0, 'cash_orders' => 0];
+        $eftSales = 0;
+        $eftOrders = 0;
+        try {
+            if ($eftTableExists && $mixedTableExists) {
+                // Handle mixed payments: use mixed_payments table if exists, otherwise calculate from EFT
+                $salesQuery = $db->prepare("
+                    WITH order_payments AS (
+                        SELECT 
+                            o.id as order_id,
+                            o.cashier_id,
+                            o.total,
+                            o.created_at,
+                            -- Check for mixed payments first
+                            COALESCE(mp.cash_amount, 0) as mixed_cash,
+                            COALESCE(mp.eft_amount, 0) as mixed_eft,
+                            -- Sum all EFT payments for this order
+                            COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id AND status = 'completed'), 0) as eft_total
+                        FROM orders o
+                        LEFT JOIN mixed_payments mp ON o.id = mp.order_id
+                        WHERE o.cashier_id = :cashier_id AND ($whereClause)
+                    ),
+                    order_totals AS (
+                        SELECT 
+                            op.order_id,
+                            op.cashier_id,
+                            op.total,
+                            -- If mixed payment exists, use mixed amounts; otherwise calculate from EFT
+                            CASE 
+                                WHEN op.mixed_cash > 0 OR op.mixed_eft > 0 THEN op.mixed_cash
+                                ELSE op.total - op.eft_total
+                            END as cash_amount,
+                            CASE 
+                                WHEN op.mixed_cash > 0 OR op.mixed_eft > 0 THEN op.mixed_eft
+                                ELSE op.eft_total
+                            END as eft_amount
+                        FROM order_payments op
+                    )
+                    SELECT 
+                        COALESCE(SUM(cash_amount), 0) as cash_sales,
+                        COUNT(DISTINCT CASE WHEN cash_amount > 0 THEN order_id END) as cash_orders,
+                        COALESCE(SUM(eft_amount), 0) as eft_sales,
+                        COUNT(DISTINCT CASE WHEN eft_amount > 0 THEN order_id END) as eft_orders
+                    FROM order_totals
+                ");
+            } elseif ($eftTableExists) {
+                // No mixed_payments table, calculate from EFT
+                $salesQuery = $db->prepare("
+                    SELECT 
+                        COALESCE(SUM(o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id AND ep.status = 'completed'), 0)), 0) as cash_sales,
+                        COUNT(DISTINCT CASE WHEN o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id AND ep.status = 'completed'), 0) > 0 THEN o.id END) as cash_orders,
+                        COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id AND ep.status = 'completed'), 0) as eft_sales,
+                        COUNT(DISTINCT CASE WHEN (SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id AND ep.status = 'completed') > 0 THEN o.id END) as eft_orders
                     FROM orders o
-                    LEFT JOIN eft_payments e ON o.id = e.order_id
-                    WHERE o.cashier_id = :cashier_id AND e.order_id IS NULL AND ($whereClause)
+                    WHERE o.cashier_id = :cashier_id AND ($whereClause)
                 ");
             } else {
-                $cashSalesQuery = $db->prepare("
-                    SELECT COALESCE(SUM(total), 0) as cash_sales, COUNT(id) as cash_orders
+                // No EFT table, all sales are cash
+                $salesQuery = $db->prepare("
+                    SELECT 
+                        COALESCE(SUM(total), 0) as cash_sales,
+                        COUNT(id) as cash_orders,
+                        0 as eft_sales,
+                        0 as eft_orders
                     FROM orders 
                     WHERE cashier_id = :cashier_id AND ($whereClause)
                 ");
             }
-            $cashSalesQuery->bindParam(':cashier_id', $cashierId);
-            $cashSalesQuery->execute();
-            $cashSalesData = $cashSalesQuery->fetch(PDO::FETCH_ASSOC);
+            $salesQuery->bindParam(':cashier_id', $cashierId);
+            $salesQuery->execute();
+            $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC);
+            $cashSalesData = [
+                'cash_sales' => floatval($salesData['cash_sales'] ?? 0),
+                'cash_orders' => intval($salesData['cash_orders'] ?? 0)
+            ];
+            $eftSales = floatval($salesData['eft_sales'] ?? 0);
+            $eftOrders = intval($salesData['eft_orders'] ?? 0);
         } catch (PDOException $e) {
             // Use default values if query fails
-        }
-        
-        // 2. Get EFT SALES
-        $eftSales = 0;
-        $eftOrders = 0;
-        if ($eftTableExists) {
-            try {
-                $eftSalesQuery = $db->prepare("
-                    SELECT COALESCE(SUM(amount), 0) as eft_sales, COUNT(id) as eft_orders
-                    FROM eft_payments 
-                    WHERE cashier_id = :cashier_id AND status = 'completed' AND ($paymentWhereClause)
-                ");
-                $eftSalesQuery->bindParam(':cashier_id', $cashierId);
-                $eftSalesQuery->execute();
-                $eftData = $eftSalesQuery->fetch(PDO::FETCH_ASSOC);
-                $eftSales = floatval($eftData['eft_sales']);
-                $eftOrders = intval($eftData['eft_orders']);
-            } catch (PDOException $e) {
-                // Use default values if query fails
-            }
         }
         
         // 3. Get CREDIT SALES

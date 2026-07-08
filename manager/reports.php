@@ -37,6 +37,13 @@ if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 
+// Ensure tab tips column exists (ignore if already added)
+try {
+    $db->exec("ALTER TABLE tab_payments ADD COLUMN tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column may already exist
+}
+
 // Calculate business day boundaries based on closing time
 $closingHour = (int)substr($closingTime, 0, 2);
 $closingMinute = (int)substr($closingTime, 3, 2);
@@ -328,24 +335,35 @@ $ordersQuery = $db->prepare("
         SELECT oi.order_id, GROUP_CONCAT(oi.product_name || ' (x' || oi.quantity || ')', ', ') AS products
         FROM order_items oi
         GROUP BY oi.order_id
+    ), order_tab_info AS (
+        SELECT
+            tp.order_id,
+            t.tab_name,
+            MIN(tp.cashier_id) as tab_cashier_id,
+            COALESCE(SUM(tp.tip_amount), 0) as tips
+        FROM tab_payments tp
+        JOIN tabs t ON tp.tab_id = t.id
+        GROUP BY tp.order_id, t.tab_name
     ), order_splits AS (
         SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
                MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
-               MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount
+               MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
+               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips
         FROM orders o
         LEFT JOIN order_sums os ON os.order_id = o.id
         LEFT JOIN order_products op ON op.order_id = o.id
+        LEFT JOIN order_tab_info oti ON oti.order_id = o.id
         WHERE (
             (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
             (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
         )
         GROUP BY o.id
     )
-    SELECT id, cash_amount AS total, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id
+    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
     FROM order_splits
     WHERE cash_amount > 0
     UNION ALL
-    SELECT id, eft_amount AS total, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id
+    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
     FROM order_splits
     WHERE eft_amount > 0
     ORDER BY created_at DESC
@@ -355,6 +373,7 @@ $creditQuery = $db->prepare("
     SELECT 
         cs.id, 
         cs.total_amount as total, 
+        0 as tips,
         cs.created_at,
         GROUP_CONCAT(csi.product_name || ' (x' || csi.quantity || ')', ', ') as products,
         CASE 
@@ -520,10 +539,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
     <link href="../src/output.css" rel="stylesheet">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../src/jquery-3.6.0.min.js"></script>
-    <script src="../src/howler.min.js"></script>
-    <script src="../sweetalert2@11.js"></script>
 
-    <script src="../lucide.js"></script>
 
     <style>
         :root {
@@ -1035,38 +1051,38 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <!-- Fixed Header -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-4 flex items-center justify-between gap-4 px-4 lg:px-8 shadow-sm">
-                <div class="w-full max-w-7xl mx-auto flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-                    <div class="flex items-center gap-2 sm:gap-4 lg:gap-6 flex-wrap">
+            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 lg:py-4 flex items-center px-3 sm:px-4 lg:px-8 shadow-sm">
+                <div class="w-full flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 sm:gap-4">
+                    <div class="flex items-center gap-2 sm:gap-3 lg:gap-4 flex-shrink-0 min-w-0">
                         <!-- Mobile Hamburger Menu Button -->
-                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded" onclick="toggleSidebar()">
+                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded flex-shrink-0" onclick="toggleSidebar()">
                             <span></span>
                             <span></span>
                             <span></span>
                         </div>
-                        <h1 class="text-xl sm:text-2xl lg:text-3xl font-bold">Daily Report</h1>
-                        <a href="weekly_sales.php" class="inline-flex items-center px-2 sm:px-4 py-2 text-xs sm:text-sm lg:text-base border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
+                        <h1 class="text-lg sm:text-xl lg:text-2xl font-bold whitespace-nowrap flex-shrink-0">Daily Report</h1>
+                        <a href="weekly_sales.php" class="inline-flex items-center px-2 sm:px-3 lg:px-4 py-1.5 sm:py-2 text-xs sm:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap flex-shrink-0">
                             <i class="fas fa-calendar-week mr-1 sm:mr-2"></i>
                             <span class="hidden sm:inline">Weekly Sales</span>
                             <span class="sm:hidden">Weekly</span>
                         </a>
-                        <a href="monthly_sales.php" class="inline-flex items-center px-2 sm:px-4 py-2 text-xs sm:text-sm lg:text-base border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
+                        <a href="monthly_sales.php" class="inline-flex items-center px-2 sm:px-3 lg:px-4 py-1.5 sm:py-2 text-xs sm:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap flex-shrink-0">
                             <i class="fas fa-calendar-alt mr-1 sm:mr-2"></i>
                             <span class="hidden sm:inline">Monthly Sales</span>
                             <span class="sm:hidden">Monthly</span>
                         </a>
                     </div>
                     
-                    <div class="flex flex-wrap items-center gap-2 sm:gap-4 w-full sm:w-auto">
-                        <form method="POST" action="" class="flex items-center gap-2" id="dateForm" style="margin-bottom:0;">
+                    <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0 min-w-0">
+                        <form method="POST" action="" class="flex items-center gap-2 flex-shrink-0" id="dateForm" style="margin-bottom:0;">
                             <div class="relative">
-                                <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                                <div class="absolute inset-y-0 left-0 flex items-center pl-2 sm:pl-3 pointer-events-none">
                                     <!-- calendar icon -->
-                                    <svg class="w-4 h-4 lg:w-5 lg:h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                                    <svg class="w-3 h-3 sm:w-4 sm:h-4 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
                                         <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 0 0 -2H6z" clip-rule="evenodd"/>
                                     </svg>
                                 </div>
-                                <select id="date" name="date" onchange="updateReport();" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs lg:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-8 lg:pl-10 pr-8 lg:pr-10 p-2 lg:p-2.5 shadow-sm transition-colors cursor-pointer">
+                                <select id="date" name="date" onchange="updateReport();" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs sm:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-7 sm:pl-8 pr-7 sm:pr-8 py-1.5 sm:py-2 shadow-sm transition-colors cursor-pointer whitespace-nowrap">
                                     <?php foreach ($distinctDates as $date): ?>
                                         <option value="<?= htmlspecialchars($date) ?>" <?= $date == $selectedDate ? 'selected' : '' ?>>
                                             <?= htmlspecialchars($date) ?>
@@ -1077,22 +1093,17 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                         </form>
                         <a id="downloadMonthlyReport"
                            href="generate_monthly_report.php?month=<?= date('m', strtotime($selectedDate)) ?>&year=<?= date('Y', strtotime($selectedDate)) ?>" 
-                           class="inline-flex items-center justify-center px-2 sm:px-6 py-2 text-xs sm:text-base bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-lg shadow-sm transition duration-200 ease-in-out transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-opacity-50 whitespace-nowrap">
+                           class="inline-flex items-center justify-center px-3 sm:px-4 lg:px-6 py-1.5 sm:py-2 text-xs sm:text-sm bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-lg shadow-sm transition duration-200 ease-in-out transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-opacity-50 whitespace-nowrap flex-shrink-0">
                             <i class="fas fa-file-pdf mr-1 sm:mr-2"></i>
                             <span class="hidden sm:inline">Download Monthly Report</span>
                             <span class="sm:hidden">PDF</span>
                         </a>
-                        <button onclick="handleCashUp()" class="inline-flex items-center justify-center px-2 sm:px-6 py-2 text-xs sm:text-base bg-teal-800 hover:bg-teal-900 text-white font-semibold rounded-lg shadow-sm transition duration-200 ease-in-out transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-opacity-50 whitespace-nowrap">
-                            <i class="fas fa-trending-up mr-1 sm:mr-2"></i>
-                            <span class="hidden sm:inline">Cash Up</span>
-                            <span class="sm:hidden">Cash Up</span>
-                        </button>
                     </div>
                 </div>
             </div>
             
             <!-- Spacer for fixed header -->
-            <div class="h-20 mb-4"></div>
+            <div class="h-16 sm:h-20 mb-4"></div>
             
             <div class="container mx-auto p-6">
                 <!-- Stats Cards -->
@@ -1290,10 +1301,19 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                             <td class="py-1 px-2 text-sm font-bold text-gray-900" data-label="Total">N$<?= number_format($row['total'], 2) ?></td>
                             <td class="products-cell text-sm text-gray-600" data-label="Products">
                                 <span class="font-medium <?= $row['sale_type'] === 'credit' ? 'text-gray-600' : 'text-gray-600' ?>"><?= htmlspecialchars($row['products']) ?></span>
-                                <?php if ($row['creditor_name']): ?>
+                                <?php if (isset($row['creditor_name']) && $row['creditor_name']): ?>
                                 <span class="text-xs text-orange-500 font-medium">(<?= htmlspecialchars($row['creditor_name']) ?>)</span>
                                 <?php endif; ?>
-                                <?php if ($row['provider_name']): ?>
+                                <?php if (floatval($row['tips'] ?? 0) > 0): ?>
+                                <span class="text-xs text-emerald-600 font-medium">(Tip: N$<?= number_format(floatval($row['tips']), 2) ?>)</span>
+                                <?php endif; ?>
+                                <?php if (isset($row['tab_name']) && $row['tab_name']): ?>
+                                <span class="text-xs text-blue-500 font-medium">[Tab: <?= htmlspecialchars($row['tab_name']) ?>]</span>
+                                <?php if (isset($row['tab_cashier_id']) && $row['tab_cashier_id']): ?>
+                                <span class="text-xs text-blue-400 font-medium">by <?= htmlspecialchars($row['tab_cashier_id']) ?></span>
+                                <?php endif; ?>
+                                <?php endif; ?>
+                                <?php if (isset($row['provider_name']) && $row['provider_name']): ?>
                                 <span class="text-xs text-purple-500 font-medium">via <?= htmlspecialchars($row['provider_name']) ?></span>
                                 <?php endif; ?>
                             </td>
@@ -1823,63 +1843,7 @@ window.addEventListener('DOMContentLoaded', function() {
         </div>
     </div>
 
-    <?php
-    // Fetch business info for Android printing
-    $dbInfo = new PDO('sqlite:../info.db');
-    $businessInfo = $dbInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    if (!$businessInfo) {
-        $businessInfo = [
-            'name' => 'POS SOLUTION',
-            'location' => '',
-            'phone' => '',
-            'footer_text' => 'Thank you!',
-            'vat_inclusive' => 'exclusive',
-            'vat_rate' => 15.0
-        ];
-    }
-    ?>
-
     <script>
-    // Business info for Android printing
-    var businessInfo = {
-        business_name: <?= json_encode($businessInfo['name'] ?? 'POS SOLUTION') ?>,
-        location: <?= json_encode($businessInfo['location'] ?? '') ?>,
-        phone: <?= json_encode($businessInfo['phone'] ?? '') ?>,
-        footer_text: <?= json_encode($businessInfo['footer_text'] ?? 'Thank you!') ?>,
-        vat_inclusive: <?= json_encode($businessInfo['vat_inclusive'] ?? 'exclusive') ?>,
-        vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
-    };
-
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
-            }
-        }
-        
-        return fetch('../receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
-    }
-
     // Function to update report data via form submission
     function updateReport() {
         // Simply submit the form to reload the page with the new date
@@ -2593,288 +2557,6 @@ window.addEventListener('DOMContentLoaded', function() {
         sidebar.classList.remove('open');
         overlay.classList.remove('active');
         hamburger.classList.remove('open');
-    }
-
-    // Cash Up functionality
-    const cashSound = new Howl({
-        src: ['../pay.mp3'],
-        volume: 0.5
-    });
-
-    // Function to open cash drawer only (no receipt printing)
-    function openCashDrawer() {
-        const drawerData = {
-            open_drawer_only: true,
-            cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
-        };
-
-        // Return a promise - uses Android or server printing
-        return sendToPrinter(drawerData)
-        .then(result => {
-            if (result.success) {
-                console.log('Cash drawer opened successfully');
-            } else {
-                console.error('Cash drawer failed:', result.message);
-            }
-            return result;
-        })
-        .catch(err => {
-            console.error('Drawer opening error:', err);
-            return { success: false, error: err };
-        });
-    }
-
-    function handleCashUp() {
-        // Get today's date as default
-        const today = new Date().toISOString().split('T')[0];
-        const currentUser = '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>';
-        
-        // Show date selection modal first
-        Swal.fire({
-            title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">Select Date for Cash Up</h1>',
-            html: `
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">Select Date:</label>
-                        <input type="date" 
-                               id="cashUpDate" 
-                               value="${today}"
-                               max="${today}"
-                               class="w-full px-4 py-2 border-2 border-teal-100 rounded-xl 
-                                      focus:border-teal-500 focus:ring-2 focus:ring-teal-200 
-                                      text-base font-medium shadow-sm transition-all duration-200
-                                      bg-teal-50 hover:bg-teal-100">
-                    </div>
-                    <p class="text-xs text-gray-500">Choose the date for which you want to perform cash up</p>
-                </div>
-            `,
-            showCancelButton: true,
-            reverseButtons: true,
-            confirmButtonText: 'Continue',
-            confirmButtonClass: 'swal2-confirm-btn bg-teal-600 hover:bg-teal-700 text-white px-6 py-2 rounded-lg',
-            cancelButtonClass: 'swal2-cancel-btn bg-gray-100 hover:bg-gray-200 text-gray-700 px-6 py-2 rounded-lg',
-            customClass: {
-                popup: 'rounded-2xl shadow-xl',
-            },
-            allowOutsideClick: false,
-            preConfirm: () => {
-                const selectedDate = document.getElementById('cashUpDate').value;
-                if (!selectedDate) {
-                    Swal.showValidationMessage('Please select a date');
-                    return false;
-                }
-                return { selectedDate };
-            }
-        }).then((dateResult) => {
-            if (!dateResult.isConfirmed) return;
-            
-            const selectedDate = dateResult.value.selectedDate;
-            
-            // First fetch expected cash amount from fetch_report_data.php
-            const formData = new FormData();
-            formData.append('date', selectedDate);
-            
-            fetch('../fetch_report_data.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Error',
-                        text: data.error || 'Failed to load cash data',
-                        timer: 3000,
-                        showConfirmButton: false
-                    });
-                    return;
-                }
-                
-                const expectedAmount = parseFloat(data.cashAvailableInTill || 0);
-                
-                Swal.fire({
-                    title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">Cash Up - ' + selectedDate + '</h1>',
-                    html: `
-                        <div class="space-y-4">
-                            <div class="w-full flex items-center justify-between mb-2">
-                                <span class="text-sm font-medium text-gray-700">Expected Cash in Till:</span>
-                                <span class="text-lg font-bold text-teal-700">N$${expectedAmount.toFixed(2)}</span>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Actual Cash in Till:</label>
-                                <input type="number" 
-                                       id="actualCashInTill" 
-                                       min="0" 
-                                       step="0.01" 
-                                       class="w-full px-4 py-2 border-2 border-teal-100 rounded-xl 
-                                              focus:border-teal-500 focus:ring-2 focus:ring-teal-200 
-                                              text-base font-medium shadow-sm transition-all duration-200
-                                              bg-teal-50 hover:bg-teal-100"
-                                       placeholder="0.00">
-                            </div>
-                            <p class="text-xs text-gray-500">Enter the actual amount of cash in the till</p>
-                        </div>
-                    `,
-                    showCancelButton: true,
-                    reverseButtons: true,
-                    confirmButtonText: 'Generate Report',
-                    confirmButtonClass: 'swal2-confirm-btn bg-teal-600 hover:bg-teal-700 text-white px-6 py-2 rounded-lg',
-                    cancelButtonClass: 'swal2-cancel-btn bg-gray-100 hover:bg-gray-200 text-gray-700 px-6 py-2 rounded-lg',
-                    customClass: {
-                        popup: 'rounded-2xl shadow-xl',
-                    },
-                    allowOutsideClick: false,
-                    preConfirm: () => {
-                        const actualAmount = parseFloat(document.getElementById('actualCashInTill').value);
-                        if (isNaN(actualAmount) || actualAmount < 0) {
-                            Swal.showValidationMessage('Please enter a valid cash amount');
-                            return false;
-                        }
-                        return { actualAmount, expectedAmount };
-                    }
-                }).then((result) => {
-                    if (result.isConfirmed) {
-                        const actualAmount = result.value.actualAmount;
-                        const expectedAmount = result.value.expectedAmount;
-                        const difference = actualAmount - expectedAmount;
-                        
-                        // Fetch full cash up data
-                        const cashupFormData = new FormData();
-                        cashupFormData.append('date', selectedDate);
-                        cashupFormData.append('actual_cash_in_till', actualAmount);
-                        cashupFormData.append('cash_difference', difference);
-                    
-                    fetch('../fetch_report_data.php', {
-                        method: 'POST',
-                        body: cashupFormData
-                    })
-                    .then(response => response.json())
-                    .then(cashupData => {
-                        if (cashupData.error) {
-                            Swal.fire({
-                                icon: 'error',
-                                title: 'Error',
-                                text: cashupData.error || 'Failed to generate cash-up report',
-                                timer: 3000,
-                                showConfirmButton: false
-                            });
-                            return;
-                        }
-                        
-                        // Open cash drawer before generating report
-                        openCashDrawer();
-                        
-                        // Create a form to submit for PDF generation
-                        const form = document.createElement('form');
-                        form.method = 'POST';
-                        form.action = '../cash-pdf.php';
-                        
-                        // Add all data as hidden fields
-                        const pdfData = {
-                            is_cashup: 'true',
-                            date: selectedDate,
-                            cashier_username: currentUser,
-                            total_cash_sales: cashupData.cashSalesTotal || 0,
-                            eft_sales_total: cashupData.eftSalesTotal || 0,
-                            unpaid_credit: cashupData.unpaidCredit || 0,
-                            cash_on_hand: cashupData.cashOnHand || 0,
-                            cash_available_in_till: cashupData.cashAvailableInTill || 0,
-                            expected_cash: expectedAmount, // Add expected cash amount
-                            actual_cash_in_till: actualAmount,
-                            cash_difference: difference,
-                            total_cash_in: cashupData.totalCashIn || 0,
-                            total_cash_out: cashupData.totalCashOut || 0,
-                            cumulative_cash_sales: cashupData.cumulativeCashSales || 0,
-                            cumulative_paid_credit: cashupData.cumulativePaidCredit || 0
-                        };
-                        
-                        for (const [key, value] of Object.entries(pdfData)) {
-                            const hiddenField = document.createElement('input');
-                            hiddenField.type = 'hidden';
-                            hiddenField.name = key;
-                            hiddenField.value = value;
-                            form.appendChild(hiddenField);
-                        }
-                        
-                        // Add form to body and submit for PDF
-                        document.body.appendChild(form);
-                        form.submit();
-                        document.body.removeChild(form);
-                        
-                        // Also print the cash-up receipt
-                        const printData = Object.assign({}, pdfData, {
-                            is_cashup_report: true,
-                            expected_cash: expectedAmount,
-                            cash_sales: cashupData.cash_sales || 0,
-                            credit_cash: cashupData.credit_cash || 0,
-                            credit_eft: cashupData.credit_eft || 0,
-                            eft_sales: cashupData.eft_sales || 0,
-                            credit_unpaid: cashupData.credit_unpaid || 0,
-                            total_income: cashupData.total_income || 0,
-                            total_expense: cashupData.total_expense || 0,
-                            net_amount: cashupData.net_amount || 0
-                        });
-                        
-                        // Send data to printer (Android native or server)
-                        sendToPrinter(printData)
-                        .then(result => {
-                            if (result.success) {
-                                cashSound.play();
-                                Swal.fire({
-                                    icon: 'success',
-                                    title: 'Cash Up Complete',
-                                    text: difference === 0 ? 
-                                        'Cash till balanced successfully' : 
-                                        `Cash till ${difference > 0 ? 'surplus' : 'shortage'} of N$${Math.abs(difference).toFixed(2)} recorded`,
-                                    timer: 2000,
-                                    showConfirmButton: false
-                                });
-                            } else {
-                                Swal.fire({
-                                    icon: 'warning',
-                                    title: 'PDF Generated',
-                                    text: 'Receipt printing failed: ' + (result.message || 'Unknown error'),
-                                    timer: 3000,
-                                    showConfirmButton: false
-                                });
-                            }
-                        })
-                        .catch(err => {
-                            console.error('Print error:', err);
-                            Swal.fire({
-                                icon: 'warning',
-                                title: 'PDF Generated',
-                                text: 'Receipt printing failed',
-                                timer: 3000,
-                                showConfirmButton: false
-                            });
-                        });
-                    })
-                    .catch(error => {
-                        console.error('Error:', error);
-                        Swal.fire({
-                            icon: 'error',
-                            title: 'Error',
-                            text: 'Failed to generate cash-up report',
-                            timer: 3000,
-                            showConfirmButton: false
-                        });
-                    });
-                }
-            });
-            })
-            .catch(error => {
-                console.error('Error fetching cash data:', error);
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Error',
-                    text: 'Failed to load cash data',
-                    timer: 3000,
-                    showConfirmButton: false
-                });
-            });
-        });
     }
     </script>
 </body>

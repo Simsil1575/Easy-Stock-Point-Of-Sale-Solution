@@ -8,18 +8,41 @@ try {
 
     // Get the JSON data from the request body
     $data = json_decode(file_get_contents('php://input'), true);
-    $hide_available_quantity = $data['hide_available_quantity'] ?? 0;
+    $hide_available_quantity = $data['hide_available_quantity'] ?? null;
+    $skip_stock_checks = $data['skip_stock_checks'] ?? null;
+    $use_qz_tray = $data['use_qz_tray'] ?? null;
 
-    // Add column if it doesn't exist
+    // Add columns if they don't exist
     try {
         $pdo->exec("ALTER TABLE product_settings ADD COLUMN hide_available_quantity BOOLEAN NOT NULL DEFAULT 0");
     } catch (PDOException $e) {
         // Column already exists, continue
     }
+    try {
+        $pdo->exec("ALTER TABLE product_settings ADD COLUMN skip_stock_checks BOOLEAN NOT NULL DEFAULT 0");
+    } catch (PDOException $e) {
+        // Column already exists, continue
+    }
+    try {
+        $pdo->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+    } catch (PDOException $e) {
+        // Column already exists, continue
+    }
 
-    // Update the setting in the database
-    $stmt = $pdo->prepare("UPDATE product_settings SET hide_available_quantity = ? WHERE id = 1");
-    $stmt->execute([$hide_available_quantity]);
+    // Update the setting(s) in the database (only update what was sent)
+    if ($hide_available_quantity !== null) {
+        $stmt = $pdo->prepare("UPDATE product_settings SET hide_available_quantity = ? WHERE id = 1");
+        $stmt->execute([$hide_available_quantity]);
+    }
+    if ($skip_stock_checks !== null) {
+        $stmt = $pdo->prepare("UPDATE product_settings SET skip_stock_checks = ? WHERE id = 1");
+        $stmt->execute([$skip_stock_checks]);
+    }
+
+    if ($use_qz_tray !== null) {
+        $stmt = $pdo->prepare("UPDATE product_settings SET use_qz_tray = ? WHERE id = 1");
+        $stmt->execute([$use_qz_tray]);
+    }
 
     // Return a success response
     echo json_encode(['success' => true, 'message' => 'Setting updated successfully']);

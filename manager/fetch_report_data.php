@@ -16,11 +16,11 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 header('Content-Type: application/json');
 
 // IMPORTANT: 
-// 1. Cash-in and cash-out transactions are calculated for ALL TIME
-// 2. Cash sales and paid credit are calculated CUMULATIVELY up to the selected date
+// Cash in till calculation matches cash.php exactly:
+// 1. Cash-in, cash-out, cash sales, and credit payments are calculated for the SELECTED DATE ONLY
+// 2. Uses business day logic (considers closing time) to determine which transactions belong to the selected date
 // 3. Other financial data (daily sales, credit totals) are specific to the selected date only
-// This ensures the cash available in till shows the actual running total of all money that
-// should be in the register at the end of the selected date.
+// This ensures the cash available in till matches the calculation in cash.php
 
 if (!isset($_POST['date']) || !DateTime::createFromFormat('Y-m-d', $_POST['date'])) {
     die(json_encode(['error' => 'Invalid date format']));
@@ -55,6 +55,7 @@ $isAfterMidnight = $closingHour < 12;
 
 // Calculate the next day date for queries
 $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+$nextBusinessDay = $nextDay; // Alias for consistency with cash.php
 
 // Pre-calculate business day start and end timestamps for efficient querying
 // Business day starts at closing time of the previous day and ends at closing time of current day
@@ -68,18 +69,46 @@ if ($isAfterMidnight) {
     $businessDayEnd = date('Y-m-d H:i:s', strtotime($nextDay . ' ' . $closingTime));
 }
 
-// Fetch cash sales total for selected date (optimized with direct timestamp comparison)
-$cashSalesQuery = $db->prepare("
-    SELECT COALESCE(SUM(o.total), 0)
-    FROM orders o
-    LEFT JOIN eft_payments e ON o.id = e.order_id
-    WHERE e.order_id IS NULL
-    AND o.created_at >= :businessDayStart
-    AND o.created_at < :businessDayEnd
-");
-$cashSalesQuery->bindParam(':businessDayStart', $businessDayStart);
-$cashSalesQuery->bindParam(':businessDayEnd', $businessDayEnd);
-$cashSalesQuery->execute();
+// Fetch cash sales total for selected date (matching cash.php logic exactly)
+$eftTableExists = false;
+try {
+    $checkEftTable = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'");
+    $eftTableExists = ($checkEftTable->fetchColumn() !== false);
+} catch (PDOException $e) {
+    $eftTableExists = false;
+}
+
+if ($eftTableExists) {
+    $cashSalesQuery = $db->prepare("
+        SELECT COALESCE(SUM(
+            o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
+        ), 0)
+        FROM orders o
+        WHERE (
+            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
+            (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
+        )
+    ");
+    $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
+    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+    $cashSalesQuery->bindParam(':closingTime', $closingTime);
+    $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+    $cashSalesQuery->execute();
+} else {
+    $cashSalesQuery = $db->prepare("
+        SELECT COALESCE(SUM(total), 0) 
+        FROM orders 
+        WHERE (
+            (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
+            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
+        )
+    ");
+    $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
+    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+    $cashSalesQuery->bindParam(':closingTime', $closingTime);
+    $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+    $cashSalesQuery->execute();
+}
 $cashSalesTotal = (float)$cashSalesQuery->fetchColumn();
 
 // Get cumulative cash sales up to end of selected business day
@@ -94,22 +123,37 @@ $cumulativeCashSalesQuery->bindParam(':businessDayEnd', $businessDayEnd);
 $cumulativeCashSalesQuery->execute();
 $cumulativeCashSales = (float)$cumulativeCashSalesQuery->fetchColumn();
 
-// Get cash in/out with business day logic
+// Get cash in/out for selected date only (matching cash.php logic exactly)
+// This ensures cash in till calculation matches cash.php
 $cashInQuery = $db->prepare("
-    SELECT SUM(amount) FROM cash_transactions 
-    WHERE type = 'cash-in'
+    SELECT COALESCE(SUM(amount), 0) 
+    FROM cash_transactions 
+    WHERE type = 'cash-in' AND (
+        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
+        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
+    )
 ");
+$cashInQuery->bindParam(':selectedDate', $selectedDate);
+$cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+$cashInQuery->bindParam(':closingTime', $closingTime);
+$cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashInQuery->execute();
-$totalCashIn = $cashInQuery->fetchColumn();
-$totalCashIn = (float)($totalCashIn ?: 0);
+$totalCashIn = (float)$cashInQuery->fetchColumn();
 
 $cashOutQuery = $db->prepare("
-    SELECT SUM(amount) FROM cash_transactions 
-    WHERE type = 'cash-out'
+    SELECT COALESCE(SUM(amount), 0) 
+    FROM cash_transactions 
+    WHERE type = 'cash-out' AND (
+        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
+        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
+    )
 ");
+$cashOutQuery->bindParam(':selectedDate', $selectedDate);
+$cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+$cashOutQuery->bindParam(':closingTime', $closingTime);
+$cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashOutQuery->execute();
-$totalCashOut = $cashOutQuery->fetchColumn();
-$totalCashOut = (float)($totalCashOut ?: 0);
+$totalCashOut = (float)$cashOutQuery->fetchColumn();
 
 // Calculate EFT payments with business day logic (optimized)
 $eftSalesQuery = $db->prepare("
@@ -177,22 +221,28 @@ $cumulativePaidCreditQuery->bindParam(':businessDayEnd', $businessDayEnd);
 $cumulativePaidCreditQuery->execute();
 $cumulativePaidCredit = (float)$cumulativePaidCreditQuery->fetchColumn();
 
-// Get paid credit sales for the selected period (optimized)
+// Get paid credit sales for the selected period (matching cash.php logic exactly)
 $paidCreditQuery = $db->prepare("
-    SELECT COALESCE(SUM(p.amount), 0) as paid_credit
+    SELECT COALESCE(SUM(p.amount), 0) 
     FROM payments p
     JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE p.payment_date >= :businessDayStart
-    AND p.payment_date < :businessDayEnd
+    WHERE cs.payment_status = 'paid' AND (
+        (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
+        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
+    )
 ");
-$paidCreditQuery->bindParam(':businessDayStart', $businessDayStart);
-$paidCreditQuery->bindParam(':businessDayEnd', $businessDayEnd);
+$paidCreditQuery->bindParam(':selectedDate', $selectedDate);
+$paidCreditQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+$paidCreditQuery->bindParam(':closingTime', $closingTime);
+$paidCreditQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $paidCreditQuery->execute();
 $paidCreditAmount = (float)$paidCreditQuery->fetchColumn();
 
-// Calculate cash available in till (now using business-day-adjusted values)
+// Calculate cash available in till (matching cash.php calculation exactly)
+// Uses selected date's transactions only, not cumulative
 // NOTE: EFT payments are explicitly excluded from cash available calculations
-$cashAvailableInTill = $totalCashIn - $totalCashOut + $cumulativeCashSales + $cumulativePaidCredit;
+// Final calculation matching cash.php: $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+$cashAvailableInTill = $totalCashIn + $cashSalesTotal + $paidCreditAmount - $totalCashOut;
 
 // Total revenue includes all sales regardless of payment method (only for selected date)
 $totalCashOnHand = $cashSalesTotal + $creditTotal + $eftSalesTotal;

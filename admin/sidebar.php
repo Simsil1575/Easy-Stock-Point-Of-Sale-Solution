@@ -462,6 +462,19 @@
             </li>
 
             <li>
+                <a href="reports-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports-center">
+                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18 17V9"/>
+                        <path d="M13 17V5"/>
+                        <path d="M8 17v-3"/>
+                    </svg>
+                    <span class="text-lg text-gray-700">Reports</span>
+                </a>
+            </li>
+        
+
+            <li>
                 <a href="inventory" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="inventory">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
@@ -469,6 +482,7 @@
                     <span class="text-lg text-gray-700">Inventory</span>
                 </a>
             </li>
+            
 
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
@@ -497,23 +511,9 @@
                 </a>
             </li>
 
+      
             <li>
-                <a href="cash-up" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cash-up">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                    </svg>
-                    <span class="text-lg text-gray-700">Cash Up</span>
-                </a>
-            </li>
-
-            <li>
-    <a href="inbox" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="inbox">
-        <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m0 0v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8m18-2a2 2 0 00-2-2H5a2 2 0 00-2 2" />
-        </svg>
-        <span class="text-lg text-gray-700">Inbox</span>
-        <span id="inbox-badge" class="ml-2 px-2 py-0.5 text-xs font-medium bg-red-500 text-white rounded-full opacity-0 transition-opacity duration-200"></span>
-    </a>
+ 
 </li>
 
 
@@ -604,6 +604,11 @@
                      currentPage === 'weekly_sales.php' ||
                      currentPage === 'generate_weekly_report' ||
                      currentPage === 'generate_weekly_report.php')) ||
+                (link.getAttribute('data-href') === 'reports-center' && 
+                    (currentPage === 'reports-center' || 
+                     currentPage === 'reports-center.php' ||
+                     currentPage === 'generate_report_pdf' ||
+                     currentPage === 'generate_report_pdf.php')) ||
                 (link.getAttribute('data-href') === 'cash-up' && 
                     (currentPage === 'cash-up' || 
                      currentPage === 'cash-up.php' ||
@@ -613,45 +618,13 @@
         });
     }
 
-    // Function to update inbox badge
-    function updateInboxBadge() {
-        const badge = document.getElementById('inbox-badge');
-        // Don't update if already updating
-        if (badge.dataset.updating === 'true') return;
-        
-        badge.dataset.updating = 'true';
-        
-        fetch('chat_api.php?unread_count=1')
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'success' && data.count > 0) {
-                    badge.textContent = data.count;
-                    badge.classList.remove('opacity-0');
-                } else {
-                    badge.classList.add('opacity-0');
-                }
-            })
-            .catch(error => {
-                console.error('Error fetching unread count:', error);
-                badge.classList.add('opacity-0');
-            })
-            .finally(() => {
-                badge.dataset.updating = 'false';
-            });
-    }
-    
-
     // Update active link on page load and set default active
     document.addEventListener('DOMContentLoaded', () => {
         updateActiveLink();
-        updateInboxBadge();
         // If no page is selected, activate home by default
         if (!document.querySelector('.nav-link.bg-gray-300')) {
             document.querySelector('[data-href="./"]').classList.add('bg-gray-300');
         }
-
-        // Update inbox badge every 30 seconds
-        setInterval(updateInboxBadge, 30000);
     });
     
     // Mobile sidebar functions
@@ -817,39 +790,6 @@
             setTimeout(adjustSidebarButtons, 100);
         });
     }
-
-            // Silent notification generation
-            function generateSilentNotification() {
-            // Get last notification time from localStorage
-            const lastNotificationTime = localStorage.getItem('lastNotificationTime');
-            const currentTime = new Date().getTime();
-            const fourHoursInMs = 4 * 60 * 60 * 1000; // 4 hours in milliseconds
-
-            // Check if 6 hours have passed since last notification
-            if (!lastNotificationTime || (currentTime - parseInt(lastNotificationTime)) >= sixHoursInMs) {
-                fetch('chat_api.php?generate_notification=1')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.status === 'success') {
-                            // Update last notification time
-                            localStorage.setItem('lastNotificationTime', currentTime.toString());
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error generating notification:', error);
-                    });
-            }
-        }
-
-        // Generate notification once on page load
-        generateSilentNotification();
-
-        // Handle page visibility
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) {
-                generateSilentNotification();
-            }
-        });
 </script>
 
 <script src="3.4.16"></script>

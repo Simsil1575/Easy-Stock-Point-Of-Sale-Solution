@@ -136,6 +136,8 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
     <script src="../sweetalert2@11.js"></script>
     <!-- Lucide Icons CDN -->
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="../receipt.php?js=true"></script>
    
 
     <style>
@@ -365,6 +367,17 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 display: flex;
                 align-items: center;
                 gap: 0.5rem;
+            }
+
+            /* Make sure absolute-position Actions stays visible */
+            table tbody tr {
+                position: relative;
+            }
+
+            /* Prevent clipping of the absolute-position Actions cell */
+            .border.rounded-lg.divide-y.divide-gray-200,
+            .border.rounded-lg.divide-y.divide-gray-200 > .overflow-hidden {
+                overflow: visible !important;
             }
             
             table tbody td[data-label="Actions"]::before {
@@ -913,34 +926,36 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
 
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
+    // sendToPrinter function is now loaded from ../receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[admin/credit-book.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
             }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+            // Use fetch to receipt.php - the interceptor will catch this
+            return fetch('../receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { 
+                return r.json();
+            });
         }
-        
-        return fetch('../receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
     }
 
     // Global variables for sorting and pagination
@@ -1264,7 +1279,10 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                         </svg>
                     </div>
                     <p class="mb-2">Payment for <strong>${creditorName}</strong></p>
-                    <p class="text-lg font-semibold text-gray-800 mb-4">N$${totalBalance.toFixed(2)}</p>
+                    <p class="text-lg font-semibold text-gray-800 mb-2">N$${totalBalance.toFixed(2)}</p>
+                    <div class="text-xs text-gray-500 mb-4">
+                        <span>Total: N$${totalBalance.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div class="space-y-4">
                     <div class="flex flex-col">

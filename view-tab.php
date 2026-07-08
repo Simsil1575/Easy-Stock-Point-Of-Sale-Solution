@@ -109,28 +109,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($item) {
             $db->beginTransaction();
             try {
-                // Restore product quantity to stock
+                // Restore product quantity to stock (catalog products only)
                 $restoreStmt = $db->prepare("UPDATE products SET quantity = quantity + ? WHERE name = ?");
                 $restoreStmt->execute([$item['quantity'], $item['product_name']]);
                 
-                // Update daily stock summary (decrease sold_quantity since we're returning to stock)
+                // Update daily stock summary when this line matches a catalog product (skip ad-hoc / renamed lines)
                 $currentDate = date('Y-m-d');
-                $stmtEnsureDailySummary = $db->prepare("
-                    INSERT OR IGNORE INTO daily_stock_summary 
-                    (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
-                    VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
-                ");
-                $stmtEnsureDailySummary->execute([$currentDate, $item['product_name']]);
-                
-                $stmtUpdateDailySummary = $db->prepare("
-                    UPDATE daily_stock_summary 
-                    SET sold_quantity = CASE 
-                        WHEN sold_quantity - ? < 0 THEN 0 
-                        ELSE sold_quantity - ? 
-                    END
-                    WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
-                ");
-                $stmtUpdateDailySummary->execute([$item['quantity'], $item['quantity'], $currentDate, $item['product_name']]);
+                $resolveProductStmt = $db->prepare("SELECT id FROM products WHERE name = ? LIMIT 1");
+                $resolveProductStmt->execute([$item['product_name']]);
+                if ($resolveProductStmt->fetchColumn()) {
+                    $stmtEnsureDailySummary = $db->prepare("
+                        INSERT OR IGNORE INTO daily_stock_summary 
+                        (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
+                        VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
+                    ");
+                    $stmtEnsureDailySummary->execute([$currentDate, $item['product_name']]);
+                    
+                    $stmtUpdateDailySummary = $db->prepare("
+                        UPDATE daily_stock_summary 
+                        SET sold_quantity = CASE 
+                            WHEN sold_quantity - ? < 0 THEN 0 
+                            ELSE sold_quantity - ? 
+                        END
+                        WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
+                    ");
+                    $stmtUpdateDailySummary->execute([$item['quantity'], $item['quantity'], $currentDate, $item['product_name']]);
+                }
                 
                 // Delete related tab_item_payments first (cascade should handle this, but being explicit)
                 $deletePaymentsStmt = $db->prepare("DELETE FROM tab_item_payments WHERE tab_item_id = ?");
@@ -448,6 +452,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Make payment on tab - treat as sale and decrease quantities
         $tabId = intval($_POST['tab_id']);
         $amount = floatval($_POST['payment_amount']);
+        $tipAmount = floatval($_POST['tip_amount'] ?? 0);
         $paymentMethod = $_POST['payment_method'];
         $transactionRef = $_POST['transaction_ref'] ?? '';
         $walletProvider = $_POST['wallet_provider'] ?? '';
@@ -456,6 +461,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         if ($amount <= 0) {
             $_SESSION['error'] = 'Payment amount must be greater than zero';
+            header('Location: view-tab.php?id=' . $tabId);
+            exit();
+        }
+
+        if ($tipAmount < 0) {
+            $_SESSION['error'] = 'Tip amount cannot be negative';
             header('Location: view-tab.php?id=' . $tabId);
             exit();
         }
@@ -501,6 +512,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Create order_id column in tab_payments if it doesn't exist
         try {
             $db->exec("ALTER TABLE tab_payments ADD COLUMN order_id INTEGER");
+        } catch (PDOException $e) {
+            // Column might already exist, ignore error
+        }
+
+        // Create tip_amount column in tab_payments if it doesn't exist
+        try {
+            $db->exec("ALTER TABLE tab_payments ADD COLUMN tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0");
         } catch (PDOException $e) {
             // Column might already exist, ignore error
         }
@@ -593,6 +611,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
             ");
             
+            $resolveProductStmt = $db->prepare("SELECT id FROM products WHERE name = ? LIMIT 1");
             
             $currentDate = date('Y-m-d');
             
@@ -610,24 +629,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $itemPrice
                     ]);
                     
-                    // Ensure daily stock summary exists
-                    $stmtEnsureDailySummary->execute([$currentDate, $itemPayment['product_name']]);
-                    
-                    // Update daily stock summary (for reporting purposes)
-                    $stmtUpdateDailySummary->execute([
-                        $currentDate, $itemPayment['product_name'],
-                        $currentDate, $itemPayment['product_name'],
-                        $currentDate, $itemPayment['product_name'],
-                        $currentDate, $itemPayment['product_name'],
-                        $currentDate, $itemPayment['product_name'], $paidQty,
-                        $currentDate, $itemPayment['product_name']
-                    ]);
+                    // Daily stock summary only for catalog products (tab lines must match products.name exactly)
+                    $resolveProductStmt->execute([$itemPayment['product_name']]);
+                    if ($resolveProductStmt->fetchColumn()) {
+                        $stmtEnsureDailySummary->execute([$currentDate, $itemPayment['product_name']]);
+                        $stmtUpdateDailySummary->execute([
+                            $currentDate, $itemPayment['product_name'],
+                            $currentDate, $itemPayment['product_name'],
+                            $currentDate, $itemPayment['product_name'],
+                            $currentDate, $itemPayment['product_name'],
+                            $currentDate, $itemPayment['product_name'], $paidQty,
+                            $currentDate, $itemPayment['product_name']
+                        ]);
+                    }
                 }
             }
             
             // Insert payment record
-            $paymentStmt = $db->prepare("INSERT INTO tab_payments (tab_id, amount, payment_method, transaction_ref, wallet_provider, cashier_id, order_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $paymentStmt->execute([$tabId, $amount, $paymentMethod, $transactionRef, $walletProvider, $cashierUsername, $orderId]);
+            $paymentStmt = $db->prepare("INSERT INTO tab_payments (tab_id, amount, tip_amount, payment_method, transaction_ref, wallet_provider, cashier_id, order_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $paymentStmt->execute([$tabId, $amount, $tipAmount, $paymentMethod, $transactionRef, $walletProvider, $cashierUsername, $orderId]);
             $paymentId = $db->lastInsertId();
             
             // Link payments to items
@@ -825,16 +845,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
                 ");
                 
+                $resolveProductStmt = $db->prepare("SELECT id FROM products WHERE name = ? LIMIT 1");
                 foreach ($productsToRestore as $productName => $quantity) {
                     if ($quantity > 0) {
                         // Restore quantity to products
                         $restoreStmt->execute([$quantity, $productName]);
                         
-                        // Ensure daily stock summary exists
-                        $stmtEnsureDailySummary->execute([$currentDate, $productName]);
-                        
-                        // Update daily stock summary (decrease sold_quantity)
-                        $stmtUpdateDailySummary->execute([$quantity, $quantity, $currentDate, $productName]);
+                        $resolveProductStmt->execute([$productName]);
+                        if ($resolveProductStmt->fetchColumn()) {
+                            $stmtEnsureDailySummary->execute([$currentDate, $productName]);
+                            $stmtUpdateDailySummary->execute([$quantity, $quantity, $currentDate, $productName]);
+                        }
                     }
                 }
             }
@@ -1057,6 +1078,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             $orderDataForReceipt['payment_method'] = $payment['payment_method'];
             $orderDataForReceipt['transaction_ref'] = $payment['transaction_ref'] ?? '';
             $orderDataForReceipt['wallet_provider'] = $payment['wallet_provider'] ?? '';
+            $orderDataForReceipt['tips'] = floatval($payment['tip_amount'] ?? 0);
             
             if ($payment['payment_method'] === 'mixed' && $mixedPayment) {
                 $orderDataForReceipt['cash_amount'] = floatval($mixedPayment['cash_amount']);
@@ -1091,6 +1113,8 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
     <link rel="icon" href="favicon.ico" type="image/png">
     <script src="lucide.js"></script>
     <script src="sweetalert2@11.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="receipt.php?js=true"></script>
 
     <style>
         .sidebar {
@@ -1221,6 +1245,22 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
         .mobile-overlay.active {
             opacity: 1;
             visibility: visible;
+        }
+
+        /* Ensure sidebar is above overlay on mobile */
+        @media (max-width: 1023px) {
+            #sidebar {
+                z-index: 10000 !important;
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .hamburger {
+                display: none;
+            }
+            .mobile-overlay {
+                display: none;
+            }
         }
         
         /* Mobile Table Responsive - Vertical Card Layout */
@@ -1487,12 +1527,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                     <i data-lucide="arrow-right-left" class="w-4 h-4 mr-2"></i>Transfer to Credit
                                 </button>
                                 <?php endif; ?>
-                                <?php if ($viewTab['current_balance'] > 0): ?>
-                                <button onclick="openVoidTabModal(<?= $viewTab['id'] ?>, '<?= htmlspecialchars($viewTab['tab_name'], ENT_QUOTES) ?>')"
-                                    class="inline-flex items-center px-4 py-2 border border-red-300 rounded-lg text-sm font-medium text-red-800 bg-red-50 hover:bg-red-100 transition-colors">
-                                    <i data-lucide="x-circle" class="w-4 h-4 mr-2"></i>Void Tab
-                                </button>
-                                <?php endif; ?>
+                              
                             </div>
                             <?php endif; ?>
                         </div>
@@ -1619,6 +1654,15 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                    value="<?= $viewTab['current_balance'] ?>" required
                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
                             <p class="text-xs text-gray-500 mt-1">Balance: N$<?= number_format($viewTab['current_balance'], 2) ?></p>
+                        </div>
+
+                        <!-- Tip (optional, does not reduce tab balance) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Tip (N$)</label>
+                            <input type="number" name="tip_amount" id="tipAmount" step="0.01" min="0"
+                                   value="0"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
+                            <p class="text-xs text-gray-500 mt-1">Optional. Printed on the payment receipt.</p>
                         </div>
 
                         <!-- Payment Method -->
@@ -1788,38 +1832,41 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
         };
 
-        // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
-            // Add business info to receipt data
-            var dataWithBusiness = Object.assign({}, receiptData, {
-                business_name: receiptData.business_name || businessInfo.business_name,
-                location: receiptData.location || businessInfo.location,
-                phone: receiptData.phone || businessInfo.phone,
-                footer_text: receiptData.footer_text || businessInfo.footer_text,
-                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-            });
-            
-            // Try multiple interface names for Android
-            var printer = window.AndroidPrinter || window.NativePrinter || null;
-            
-            // Check if Android native printing is available
-            if (printer && typeof printer.printReceipt === 'function') {
-                console.log('[sendToPrinter] Using Android native printing');
-                try {
-                    printer.printReceipt(JSON.stringify(dataWithBusiness));
-                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-                } catch (e) {
-                    console.error('[sendToPrinter] Android print error:', e.message);
+        // sendToPrinter function is now loaded from receipt.php?js=true
+        // The function is defined in receipt.php and automatically handles Android printing
+        // The Android interceptor in MainActivity.java only listens to receipt.php calls
+        // This includes support for:
+        // - Tab balance receipts (is_tab_balance_receipt: true)
+        // - Payment receipts (is_payment_receipt: true)
+        // - Regular tab prints (tab_id/table_id)
+        // - All other receipt types
+        if (typeof sendToPrinter === 'undefined') {
+            console.warn('[view-tab.php] sendToPrinter not loaded from receipt.php, using fallback');
+            function sendToPrinter(receiptData) {
+                // Ensure print_only flag is set for regular receipts
+                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                    receiptData.print_only = true;
                 }
+                
+                // Add business info to receipt data
+                var dataWithBusiness = Object.assign({}, receiptData, {
+                    business_name: receiptData.business_name || businessInfo.business_name,
+                    location: receiptData.location || businessInfo.location,
+                    phone: receiptData.phone || businessInfo.phone,
+                    footer_text: receiptData.footer_text || businessInfo.footer_text,
+                    vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                    vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+                });
+                
+                // Use fetch to receipt.php - the interceptor will catch this
+                return fetch('receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) { 
+                    return r.json();
+                });
             }
-            
-            // Fallback to server-side printing
-            return fetch('receipt.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataWithBusiness)
-            }).then(function(r) { return r.json(); });
         }
 
         // Edit Tab Name Modal functions
@@ -2021,6 +2068,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                 items: orderData.items,
                 cashier_username: orderData.cashier_username,
                 total: orderData.total,
+                tips: orderData.tips || 0,
                 cash_received: orderData.cash_received || 0,
                 payment_method: orderData.payment_method || 'cash',
                 transaction_ref: orderData.transaction_ref || '',

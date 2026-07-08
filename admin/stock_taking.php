@@ -60,6 +60,303 @@ function ensureDailyStockSummary($db, $productId, $date) {
 
 // Set the default timezone to Namibian time
 
+// Handle date range report download requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && ($_POST['action'] === 'download_opening_report' || $_POST['action'] === 'download_closing_report')) {
+    try {
+        $startDate = $_POST['start_date'] ?? date('Y-m-d');
+        $endDate = $_POST['end_date'] ?? date('Y-m-d');
+        $reportType = $_POST['action'] === 'download_opening_report' ? 'opening' : 'closing';
+        
+        // Validate dates
+        if (empty($startDate) || empty($endDate)) {
+            throw new Exception('Start date and end date are required');
+        }
+        
+        if (strtotime($startDate) > strtotime($endDate)) {
+            throw new Exception('Start date cannot be after end date');
+        }
+        
+        // Include FPDF library
+        require('../fpdf/fpdf.php');
+        
+        if ($reportType === 'opening') {
+            // Generate opening stock report for date range
+            class OpeningStockRangePDF extends FPDF {
+                private $startDate;
+                private $endDate;
+                
+                function __construct($startDate, $endDate) {
+                    parent::__construct('L'); // Landscape
+                    $this->startDate = $startDate;
+                    $this->endDate = $endDate;
+                }
+                
+                function Header() {
+                    $this->SetFont('Arial', 'B', 16);
+                    $this->Cell(0, 10, 'OPENING STOCK REPORT', 0, 1, 'C');
+                    $this->SetFont('Arial', '', 10);
+                    $this->Cell(0, 8, 'Date Range: ' . $this->startDate . ' to ' . $this->endDate, 0, 1, 'C');
+                    $this->Cell(0, 8, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
+                    $this->Ln(3);
+                }
+                
+                function Footer() {
+                    $this->SetY(-15);
+                    $this->SetFont('Arial', 'I', 8);
+                    $this->Cell(0, 10, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
+                }
+            }
+            
+            $pdf = new OpeningStockRangePDF($startDate, $endDate);
+            $pdf->AliasNbPages();
+            $pdf->AddPage();
+            $pdf->SetFont('Arial', '', 9);
+            
+            // Column widths for A4 landscape (297mm total width)
+            // Adjusted to fit: 20+55+28+28+28+38 = 197mm (leaves margin)
+            $colWidths = [
+                'id' => 20,
+                'name' => 55,
+                'date' => 28,
+                'quantity' => 28,
+                'unit_price' => 28,
+                'total_value' => 38
+            ];
+            
+            // Table header
+            $pdf->SetFont('Arial', 'B', 9);
+            $pdf->Cell($colWidths['id'], 10, 'ID', 1, 0, 'C');
+            $pdf->Cell($colWidths['name'], 10, 'Product Name', 1, 0, 'C');
+            $pdf->Cell($colWidths['date'], 10, 'Date', 1, 0, 'C');
+            $pdf->Cell($colWidths['quantity'], 10, 'Opening Quantity', 1, 0, 'C');
+            $pdf->Cell($colWidths['unit_price'], 10, 'Unit Price', 1, 0, 'C');
+            $pdf->Cell($colWidths['total_value'], 10, 'Total Value', 1, 1, 'C');
+            
+            $pdf->SetFont('Arial', '', 9);
+            
+            // Get opening stock records for date range
+            $stmt = $db->prepare("
+                SELECT 
+                    os.product_id,
+                    p.name,
+                    p.price,
+                    DATE(os.recorded_at) as record_date,
+                    os.opening_quantity
+                FROM opening_stock os
+                JOIN products p ON os.product_id = p.id
+                WHERE DATE(os.recorded_at) BETWEEN ? AND ?
+                ORDER BY os.recorded_at ASC, p.name ASC
+            ");
+            $stmt->execute([$startDate, $endDate]);
+            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $totalValue = 0;
+            foreach ($records as $record) {
+                $totalValuePerProduct = (float)$record['price'] * (int)$record['opening_quantity'];
+                $totalValue += $totalValuePerProduct;
+                
+                $pdf->Cell($colWidths['id'], 8, $record['product_id'], 1, 0, 'C');
+                $pdf->Cell($colWidths['name'], 8, substr($record['name'], 0, 30), 1, 0, 'L');
+                $pdf->Cell($colWidths['date'], 8, $record['record_date'], 1, 0, 'C');
+                $pdf->Cell($colWidths['quantity'], 8, $record['opening_quantity'], 1, 0, 'C');
+                $pdf->Cell($colWidths['unit_price'], 8, number_format($record['price'], 2), 1, 0, 'R');
+                $pdf->Cell($colWidths['total_value'], 8, number_format($totalValuePerProduct, 2), 1, 1, 'R');
+            }
+            
+            // Add total
+            $pdf->Ln(5);
+            $pdf->SetFont('Arial', 'B', 12);
+            $pdf->Cell(0, 10, 'TOTAL VALUE: N$' . number_format($totalValue, 2), 0, 1, 'L');
+            
+            $fileName = 'Opening_Stock_Report_' . $startDate . '_to_' . $endDate . '.pdf';
+            
+        } else {
+            // Generate closing stock report for date range
+            class ClosingStockRangePDF extends FPDF {
+                private $startDate;
+                private $endDate;
+                
+                function __construct($startDate, $endDate) {
+                    parent::__construct('L'); // Landscape
+                    $this->startDate = $startDate;
+                    $this->endDate = $endDate;
+                }
+                
+                function Header() {
+                    $this->SetFont('Arial', 'B', 16);
+                    $this->Cell(0, 10, 'CLOSING STOCK REPORT', 0, 1, 'C');
+                    $this->SetFont('Arial', '', 10);
+                    $this->Cell(0, 8, 'Date Range: ' . $this->startDate . ' to ' . $this->endDate, 0, 1, 'C');
+                    $this->Cell(0, 8, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
+                    $this->Ln(3);
+                }
+                
+                function Footer() {
+                    $this->SetY(-15);
+                    $this->SetFont('Arial', 'I', 8);
+                    $this->Cell(0, 10, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
+                }
+            }
+            
+            $pdf = new ClosingStockRangePDF($startDate, $endDate);
+            $pdf->AliasNbPages();
+            $pdf->AddPage();
+            $pdf->SetFont('Arial', '', 9);
+            
+            // Column widths for A4 landscape (297mm total width)
+            // Adjusted to fit: 18+50+25+26+26+24+22+28 = 219mm (leaves margin)
+            $colWidths = [
+                'id' => 18,
+                'name' => 50,
+                'date' => 25,
+                'unit_price' => 26,
+                'system_qty' => 26,
+                'physical_qty' => 24,
+                'difference' => 22,
+                'value_diff' => 28
+            ];
+            
+            // Table header
+            $pdf->SetFont('Arial', 'B', 9);
+            $pdf->Cell($colWidths['id'], 10, 'ID', 1, 0, 'C');
+            $pdf->Cell($colWidths['name'], 10, 'Product Name', 1, 0, 'C');
+            $pdf->Cell($colWidths['date'], 10, 'Date', 1, 0, 'C');
+            $pdf->Cell($colWidths['unit_price'], 10, 'Unit Price', 1, 0, 'C');
+            $pdf->Cell($colWidths['system_qty'], 10, 'System Qty (Exp)', 1, 0, 'C');
+            $pdf->Cell($colWidths['physical_qty'], 10, 'Physical (Act)', 1, 0, 'C');
+            $pdf->Cell($colWidths['difference'], 10, 'Difference', 1, 0, 'C');
+            $pdf->Cell($colWidths['value_diff'], 10, 'Value Diff', 1, 1, 'C');
+            
+            $pdf->SetFont('Arial', '', 9);
+            
+            // Get closing stock records for date range with expected quantities
+            // Expected = Opening Stock + Received Stock - Sales
+            $stmt = $db->prepare("
+                SELECT 
+                    cs.product_id,
+                    p.name,
+                    p.price,
+                    p.quantity as system_quantity,
+                    DATE(cs.recorded_at) as record_date,
+                    cs.closing_quantity as physical_count,
+                    COALESCE(
+                        (SELECT os.opening_quantity
+                         FROM opening_stock os 
+                         WHERE os.product_id = cs.product_id 
+                         AND DATE(os.recorded_at) = DATE(cs.recorded_at)
+                         ORDER BY os.recorded_at ASC 
+                         LIMIT 1),
+                        (SELECT dss.opening_quantity
+                         FROM daily_stock_summary dss 
+                         WHERE dss.product_id = cs.product_id 
+                         AND dss.date = DATE(cs.recorded_at)),
+                        (SELECT closing_quantity
+                         FROM closing_stock 
+                         WHERE product_id = cs.product_id 
+                         AND DATE(recorded_at) = DATE(cs.recorded_at, '-1 day')
+                         ORDER BY recorded_at DESC 
+                         LIMIT 1),
+                        0
+                    ) as opening_stock,
+                    COALESCE(
+                        (SELECT SUM(sc.quantity_change)
+                         FROM stock_changes sc 
+                         WHERE sc.product_id = cs.product_id 
+                         AND sc.action = 'Restock'
+                         AND DATE(sc.changed_at) = DATE(cs.recorded_at)),
+                        0
+                    ) as received_stock,
+                    COALESCE(
+                        (SELECT SUM(oi.quantity)
+                         FROM order_items oi
+                         JOIN orders o ON oi.order_id = o.id
+                         WHERE oi.product_name = p.name
+                         AND DATE(o.created_at) = DATE(cs.recorded_at)),
+                        0
+                    ) + COALESCE(
+                        (SELECT SUM(csi.quantity)
+                         FROM credit_sale_items csi
+                         JOIN credit_sales crs ON csi.sale_id = crs.id
+                         WHERE csi.product_name = p.name
+                         AND DATE(crs.created_at) = DATE(cs.recorded_at)),
+                        0
+                    ) as total_sales
+                FROM closing_stock cs
+                JOIN products p ON cs.product_id = p.id
+                WHERE DATE(cs.recorded_at) BETWEEN ? AND ?
+                ORDER BY cs.recorded_at ASC, p.name ASC
+            ");
+            $stmt->execute([$startDate, $endDate]);
+            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $totalValueDifference = 0;
+            foreach ($records as $record) {
+                // Use system quantity from products table
+                $systemQty = (int)$record['system_quantity'];
+                $physicalQty = (int)$record['physical_count'];
+                $difference = $physicalQty - $systemQty;
+                $valueDifference = $difference * (float)$record['price'];
+                $totalValueDifference += $valueDifference;
+                
+                $differenceFormatted = $difference > 0 ? '+' . $difference : (string)$difference;
+                $valueDifferenceFormatted = $valueDifference > 0 ? '+' . number_format($valueDifference, 2) : number_format($valueDifference, 2);
+                
+                $pdf->Cell($colWidths['id'], 8, $record['product_id'], 1, 0, 'C');
+                $pdf->Cell($colWidths['name'], 8, substr($record['name'], 0, 28), 1, 0, 'L');
+                $pdf->Cell($colWidths['date'], 8, $record['record_date'], 1, 0, 'C');
+                $pdf->Cell($colWidths['unit_price'], 8, number_format($record['price'], 2), 1, 0, 'R');
+                $pdf->Cell($colWidths['system_qty'], 8, $systemQty, 1, 0, 'C');
+                $pdf->Cell($colWidths['physical_qty'], 8, $physicalQty, 1, 0, 'C');
+                $pdf->Cell($colWidths['difference'], 8, $differenceFormatted, 1, 0, 'C');
+                $pdf->Cell($colWidths['value_diff'], 8, $valueDifferenceFormatted, 1, 1, 'R');
+            }
+            
+            // Add empty row
+            $pdf->Cell($colWidths['id'], 8, '', 1, 0, 'C');
+            $pdf->Cell($colWidths['name'], 8, '', 1, 0, 'L');
+            $pdf->Cell($colWidths['date'], 8, '', 1, 0, 'C');
+            $pdf->Cell($colWidths['unit_price'], 8, '', 1, 0, 'R');
+            $pdf->Cell($colWidths['system_qty'], 8, '', 1, 0, 'C');
+            $pdf->Cell($colWidths['physical_qty'], 8, '', 1, 0, 'C');
+            $pdf->Cell($colWidths['difference'], 8, '', 1, 0, 'C');
+            $pdf->Cell($colWidths['value_diff'], 8, '', 1, 1, 'R');
+            
+            // Add total
+            $pdf->Ln(5);
+            $pdf->SetFont('Arial', 'B', 12);
+            $totalValueDiffFormatted = $totalValueDifference > 0 ? '+' . number_format($totalValueDifference, 2) : number_format($totalValueDifference, 2);
+            $pdf->Cell(0, 10, 'TOTAL VALUE DIFFERENCE: ' . $totalValueDiffFormatted, 0, 1, 'L');
+            
+            $fileName = 'Closing_Stock_Report_' . $startDate . '_to_' . $endDate . '.pdf';
+        }
+        
+        // Generate PDF content
+        $pdfContent = $pdf->Output('S');
+        
+        // Clean output buffers
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        
+        // Set headers for PDF download
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . $fileName . '"');
+        header('Content-Length: ' . strlen($pdfContent));
+        header('Cache-Control: private, max-age=0, must-revalidate');
+        header('Pragma: public');
+        header('Expires: 0');
+        
+        // Output PDF
+        echo $pdfContent;
+        exit;
+        
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Error: ' . $e->getMessage()]);
+        exit;
+    }
+}
+
 // Handle form submission for stock taking
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
@@ -129,8 +426,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $salesStmt->execute([$productId, $productId]);
                     $actualSales = $salesStmt->fetchColumn();
                     
-                    // Get product details
-                    $stmt = $db->prepare("SELECT name, price, buying_price FROM products WHERE id = ?");
+                    // Get product details and current quantity from products table
+                    $stmt = $db->prepare("SELECT name, price, buying_price, quantity FROM products WHERE id = ?");
                     $stmt->execute([$productId]);
                     $product = $stmt->fetch(PDO::FETCH_ASSOC);
                     
@@ -138,17 +435,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         // Ensure daily stock summary exists for this product and date
                         ensureDailyStockSummary($db, $productId, $today);
                         
-                        // Calculate expected quantity and variances based on stock type
+                        // Expected quantity should always be the current quantity in products table
+                        $expectedStock = (int)$product['quantity'];
+                        $variance = $actualQuantity - $expectedStock;
+                        
+                        // Calculate sold quantity based on stock type
                         if ($stockType === 'opening') {
-                            // For opening stock, we're just recording what we have
-                            $expectedStock = $openingStock;
-                            $variance = $actualQuantity - $expectedStock;
                             $soldQuantity = 0; // No sales calculation for opening stock
                         } else {
-                            // For closing stock: Opening + Received - Sales = Expected Closing
-                            $expectedStock = $openingStock + $receivedStock - $actualSales;
-                            $variance = $actualQuantity - $expectedStock;
-                            // Use actual recorded sales, not calculated difference
+                            // Use actual recorded sales
                             $soldQuantity = $actualSales;
                         }
                         
@@ -542,161 +837,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdf->AddPage();
                     $pdf->SetFont('Arial', '', 9);
                     
-                    // Get all products with their opening stock, received stock, closing stock, damages, and sales
-                    $productsStmt = $db->query("
-                        SELECT 
-                            p.id,
-                            p.name,
-                            p.price,
-                            COALESCE(
-                                (SELECT os.opening_quantity
-                                 FROM opening_stock os 
-                                 WHERE os.product_id = p.id 
-                                 AND DATE(os.recorded_at) = date('now')
-                                 ORDER BY os.recorded_at ASC 
-                                 LIMIT 1),
-                                (SELECT dss.opening_quantity
-                                 FROM daily_stock_summary dss 
-                                 WHERE dss.product_id = p.id 
-                                 AND dss.date = date('now')
-                                ),
-                                (SELECT cs.closing_quantity
-                                 FROM closing_stock cs 
-                                 WHERE cs.product_id = p.id 
-                                 AND DATE(cs.recorded_at) = date('now', '-1 day')
-                                 ORDER BY cs.recorded_at DESC 
-                                 LIMIT 1),
-                                (SELECT os.opening_quantity
-                                 FROM opening_stock os 
-                                 WHERE os.product_id = p.id 
-                                 AND DATE(os.recorded_at) < date('now')
-                                 ORDER BY os.recorded_at DESC 
-                                 LIMIT 1),
-                                0
-                            ) as opening_stock,
-                            COALESCE(
-                                (SELECT SUM(sc.quantity_change)
-                                 FROM stock_changes sc 
-                                 WHERE sc.product_id = p.id 
-                                 AND sc.action = 'Restock'
-                                 AND DATE(sc.changed_at) = date('now')
-                                ), 0
-                            ) as stock_received,
-                            COALESCE(
-                                (SELECT SUM(dg.quantity)
-                                 FROM damaged_goods dg 
-                                 WHERE dg.product_id = p.id 
-                                 AND DATE(dg.date) = date('now')
-                                ), 0
-                            ) as damages,
-                            COALESCE(
-                                (SELECT SUM(oi.quantity)
-                                 FROM order_items oi
-                                 JOIN orders o ON oi.order_id = o.id
-                                 WHERE oi.product_name = p.name
-                                 AND DATE(o.created_at) = date('now')
-                                ), 0
-                            ) + COALESCE(
-                                (SELECT SUM(csi.quantity)
-                                 FROM credit_sale_items csi
-                                 JOIN credit_sales cs ON csi.sale_id = cs.id
-                                 WHERE csi.product_name = p.name
-                                 AND DATE(cs.created_at) = date('now')
-                                ), 0
-                            ) as total_sold
-                        FROM products p
-                        ORDER BY p.id ASC
-                    ");
-                    $products = $productsStmt->fetchAll(PDO::FETCH_ASSOC);
-                    
-                    // Calculate column widths for landscape orientation (297mm width)
-                    // ID: 18, Product Name: 60, Opening Stock: 25, Stock Received: 25, Closing Stock: 30, Damages: 22, Unit Price: 25, Total Revenue: 30
+                    // Calculate column widths for A4 landscape (297mm total width)
+                    // Adjusted to fit: 20+60+28+32+30+26+32 = 228mm (leaves margin)
                     $colWidths = [
-                        'id' => 18,
+                        'id' => 20,
                         'name' => 60,
-                        'opening' => 25,
-                        'received' => 25,
-                        'closing' => 30,
-                        'damages' => 22,
-                        'unit_price' => 25,
-                        'revenue' => 30
+                        'unit_price' => 28,
+                        'system_qty' => 32,
+                        'physical_qty' => 30,
+                        'difference' => 26,
+                        'value_diff' => 32
                     ];
                     
                     // Draw table header
                     $pdf->SetFont('Arial', 'B', 9);
                     $pdf->Cell($colWidths['id'], 10, 'ID', 1, 0, 'C');
                     $pdf->Cell($colWidths['name'], 10, 'Product Name', 1, 0, 'C');
-                    $pdf->Cell($colWidths['opening'], 10, 'Opening Stock', 1, 0, 'C');
-                    $pdf->Cell($colWidths['received'], 10, 'Stock Received', 1, 0, 'C');
-                    $pdf->Cell($colWidths['closing'], 10, 'Closing Stock on Hand', 1, 0, 'C');
-                    $pdf->Cell($colWidths['damages'], 10, 'Damages', 1, 0, 'C');
                     $pdf->Cell($colWidths['unit_price'], 10, 'Unit Price', 1, 0, 'C');
-                    $pdf->Cell($colWidths['revenue'], 10, 'Total Revenue', 1, 1, 'C');
+                    $pdf->Cell($colWidths['system_qty'], 10, 'System Qty (Exp)', 1, 0, 'C');
+                    $pdf->Cell($colWidths['physical_qty'], 10, 'Physical (Act)', 1, 0, 'C');
+                    $pdf->Cell($colWidths['difference'], 10, 'Difference', 1, 0, 'C');
+                    $pdf->Cell($colWidths['value_diff'], 10, 'Value Diff', 1, 1, 'C');
                     
-                    $totalRevenue = 0;
+                    $totalValueDifference = 0;
                     $pdf->SetFont('Arial', '', 9);
                     
-                    // Process each product
-                    foreach ($products as $product) {
-                        $productId = $product['id'];
+                    // Process each stock taking item
+                    foreach ($stockTakingItems as $item) {
+                        $productId = $item['product_id'];
+                        $productName = $item['product_name'];
+                        $unitPrice = $item['price'];
+                        $systemQuantity = (int)$item['expected_quantity'];
+                        $physicalCount = (int)$item['actual_quantity'];
+                        $difference = $physicalCount - $systemQuantity;
+                        $valueDifference = $difference * $unitPrice;
+                        $totalValueDifference += $valueDifference;
                         
-                        // Get opening stock - prioritize from daily_stock_summary for today, then opening_stock table
-                        $openingStockStmt = $db->prepare("
-                            SELECT COALESCE(
-                                (SELECT opening_quantity FROM daily_stock_summary 
-                                 WHERE product_id = ? AND date = date('now')),
-                                (SELECT opening_quantity FROM opening_stock 
-                                 WHERE product_id = ? AND DATE(recorded_at) = date('now')
-                                 ORDER BY recorded_at ASC LIMIT 1),
-                                (SELECT closing_quantity FROM closing_stock 
-                                 WHERE product_id = ? AND DATE(recorded_at) = date('now', '-1 day')
-                                 ORDER BY recorded_at DESC LIMIT 1),
-                                0
-                            )
-                        ");
-                        $openingStockStmt->execute([$productId, $productId, $productId]);
-                        $openingStock = (int)$openingStockStmt->fetchColumn();
-                        
-                        $stockReceived = (int)$product['stock_received'];
-                        $damages = (int)$product['damages'];
-                        $totalSold = (int)$product['total_sold'];
-                        
-                        // Get closing stock from stock taking items (actual counted quantity)
-                        $closingStock = 0;
-                        foreach ($stockTakingItems as $stockItem) {
-                            if (isset($stockItem['product_id']) && $stockItem['product_id'] == $productId) {
-                                $closingStock = (int)$stockItem['actual_quantity'];
-                                break;
-                            }
-                        }
-                        
-                        // If not in stock taking, get from products table (current quantity)
-                        if ($closingStock == 0) {
-                            $qtyStmt = $db->prepare("SELECT quantity FROM products WHERE id = ?");
-                            $qtyStmt->execute([$productId]);
-                            $closingStock = (int)$qtyStmt->fetchColumn();
-                        }
-                        
-                        // Calculate total revenue: (Opening Stock + Stock Received - Closing Stock) × Unit Price
-                        $quantitySold = $openingStock + $stockReceived - $closingStock;
-                        $revenue = $quantitySold * $product['price'];
-                        $totalRevenue += $revenue;
+                        // Format difference with + or - sign
+                        $differenceFormatted = $difference > 0 ? '+' . $difference : (string)$difference;
+                        $valueDifferenceFormatted = $valueDifference > 0 ? '+' . number_format($valueDifference, 2) : number_format($valueDifference, 2);
                         
                         // Add row to PDF
                         $pdf->Cell($colWidths['id'], 8, $productId, 1, 0, 'C');
-                        $pdf->Cell($colWidths['name'], 8, substr($product['name'], 0, 35), 1, 0, 'L');
-                        $pdf->Cell($colWidths['opening'], 8, $openingStock, 1, 0, 'C');
-                        $pdf->Cell($colWidths['received'], 8, $stockReceived, 1, 0, 'C');
-                        $pdf->Cell($colWidths['closing'], 8, $closingStock, 1, 0, 'C');
-                        $pdf->Cell($colWidths['damages'], 8, $damages, 1, 0, 'C');
-                        $pdf->Cell($colWidths['unit_price'], 8, 'N$' . number_format($product['price'], 2), 1, 0, 'R');
-                        $pdf->Cell($colWidths['revenue'], 8, 'N$' . number_format($revenue, 2), 1, 1, 'R');
+                        $pdf->Cell($colWidths['name'], 8, substr($productName, 0, 32), 1, 0, 'L');
+                        $pdf->Cell($colWidths['unit_price'], 8, number_format($unitPrice, 2), 1, 0, 'R');
+                        $pdf->Cell($colWidths['system_qty'], 8, $systemQuantity, 1, 0, 'C');
+                        $pdf->Cell($colWidths['physical_qty'], 8, $physicalCount, 1, 0, 'C');
+                        $pdf->Cell($colWidths['difference'], 8, $differenceFormatted, 1, 0, 'C');
+                        $pdf->Cell($colWidths['value_diff'], 8, $valueDifferenceFormatted, 1, 1, 'R');
                     }
                     
-                    // Add total revenue line
+                    // Add empty row for spacing
+                    $pdf->Cell($colWidths['id'], 8, '', 1, 0, 'C');
+                    $pdf->Cell($colWidths['name'], 8, '', 1, 0, 'L');
+                    $pdf->Cell($colWidths['unit_price'], 8, '', 1, 0, 'R');
+                    $pdf->Cell($colWidths['system_qty'], 8, '', 1, 0, 'C');
+                    $pdf->Cell($colWidths['physical_qty'], 8, '', 1, 0, 'C');
+                    $pdf->Cell($colWidths['difference'], 8, '', 1, 0, 'C');
+                    $pdf->Cell($colWidths['value_diff'], 8, '', 1, 1, 'R');
+                    
+                    // Add total value difference line
                     $pdf->Ln(5);
                     $pdf->SetFont('Arial', 'B', 12);
-                    $pdf->Cell(0, 10, 'TOTAL REVENUE: N$' . number_format($totalRevenue, 2), 0, 1, 'L');
+                    $totalValueDiffFormatted = $totalValueDifference > 0 ? '+' . number_format($totalValueDifference, 2) : number_format($totalValueDifference, 2);
+                    $pdf->Cell(0, 10, 'TOTAL VALUE DIFFERENCE: ' . $totalValueDiffFormatted, 0, 1, 'L');
                     
                     // Generate filename
                     $fileName = 'Closing_Stock_Report_' . date('Y-m-d_H-i-s') . '.pdf';
@@ -740,10 +944,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $mail->Body = '
                             <h2>Closing Stock Report</h2>
                             <p><strong>Date:</strong> ' . date('Y-m-d H:i:s') . '</p>
-                            <p><strong>Total Revenue:</strong> N$' . number_format($totalRevenue, 2) . '</p>
+                            <p><strong>Total Value Difference:</strong> ' . $totalValueDiffFormatted . '</p>
                             <br>
                             <p>Please find the detailed closing stock report attached.</p>
-                            <p>The report includes opening stock, stock received, closing stock on hand, damages, and total revenue for each product.</p>
+                            <p>The report includes product ID, product name, unit price, system(expected), Actual count, difference, and value difference for each product.</p>
                             <br>
                             <p>Best regards,<br>POS System</p>
                         ';
@@ -1065,11 +1269,11 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
         
         /* Ensure sidebar maintains proper z-index above overlay */
         .sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         #sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         /* Mobile responsive adjustments */
@@ -1503,11 +1707,39 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                             </div>
                         </div>
                     </div>
+                    
+                    <!-- Row 2: Compact Date Range Report Download Section -->
+                    <div class="mt-2 pt-2 border-t border-gray-200">
+                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 text-xs sm:text-sm">
+                            <span class="hidden sm:inline font-medium text-gray-700 whitespace-nowrap">Reports:</span>
+                            <div class="flex items-center gap-2 flex-1">
+                                <input type="date" id="reportStartDate" class="flex-1 sm:flex-initial px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-xs sm:text-sm min-w-0">
+                                <span class="text-gray-500 whitespace-nowrap">to</span>
+                                <input type="date" id="reportEndDate" class="flex-1 sm:flex-initial px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-xs sm:text-sm min-w-0">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button id="downloadOpeningReportBtn" class="inline-flex items-center px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm transition-colors whitespace-nowrap">
+                                    <svg class="w-3 h-3 sm:w-4 sm:h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">Opening</span>
+                                    <span class="sm:hidden">Open</span>
+                                </button>
+                                <button id="downloadClosingReportBtn" class="inline-flex items-center px-2 sm:px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm transition-colors whitespace-nowrap">
+                                    <svg class="w-3 h-3 sm:w-4 sm:h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">Closing</span>
+                                    <span class="sm:hidden">Close</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             
-            <!-- Spacer for fixed header -->
-            <div class="h-20 sm:h-20 mb-4"></div>
+            <!-- Spacer for fixed header (increased height to accommodate report section) -->
+            <div class="h-28 sm:h-24 mb-4"></div>
             
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
@@ -1778,6 +2010,103 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 }
             }, 100);
         });
+        // Date range report download handlers
+        const downloadOpeningReportBtn = document.getElementById('downloadOpeningReportBtn');
+        const downloadClosingReportBtn = document.getElementById('downloadClosingReportBtn');
+        const reportStartDate = document.getElementById('reportStartDate');
+        const reportEndDate = document.getElementById('reportEndDate');
+        
+        // Set default dates (last 30 days)
+        const today = new Date();
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(today.getDate() - 30);
+        reportStartDate.value = thirtyDaysAgo.toISOString().split('T')[0];
+        reportEndDate.value = today.toISOString().split('T')[0];
+        
+        downloadOpeningReportBtn.addEventListener('click', function() {
+            const startDate = reportStartDate.value;
+            const endDate = reportEndDate.value;
+            
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return;
+            }
+            
+            if (new Date(startDate) > new Date(endDate)) {
+                alert('Start date cannot be after end date');
+                return;
+            }
+            
+            // Create form and submit
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '';
+            
+            const actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'action';
+            actionInput.value = 'download_opening_report';
+            form.appendChild(actionInput);
+            
+            const startDateInput = document.createElement('input');
+            startDateInput.type = 'hidden';
+            startDateInput.name = 'start_date';
+            startDateInput.value = startDate;
+            form.appendChild(startDateInput);
+            
+            const endDateInput = document.createElement('input');
+            endDateInput.type = 'hidden';
+            endDateInput.name = 'end_date';
+            endDateInput.value = endDate;
+            form.appendChild(endDateInput);
+            
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        });
+        
+        downloadClosingReportBtn.addEventListener('click', function() {
+            const startDate = reportStartDate.value;
+            const endDate = reportEndDate.value;
+            
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return;
+            }
+            
+            if (new Date(startDate) > new Date(endDate)) {
+                alert('Start date cannot be after end date');
+                return;
+            }
+            
+            // Create form and submit
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '';
+            
+            const actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'action';
+            actionInput.value = 'download_closing_report';
+            form.appendChild(actionInput);
+            
+            const startDateInput = document.createElement('input');
+            startDateInput.type = 'hidden';
+            startDateInput.name = 'start_date';
+            startDateInput.value = startDate;
+            form.appendChild(startDateInput);
+            
+            const endDateInput = document.createElement('input');
+            endDateInput.type = 'hidden';
+            endDateInput.name = 'end_date';
+            endDateInput.value = endDate;
+            form.appendChild(endDateInput);
+            
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        });
+        
         const searchInput = document.getElementById('searchInput');
         const categoryFilter = document.getElementById('categoryFilter');
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');

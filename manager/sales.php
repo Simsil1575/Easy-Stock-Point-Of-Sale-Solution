@@ -907,10 +907,10 @@ try {
                         <div class="flex items-center justify-between mb-4">
                             <div>
                                 <p class="text-sm font-medium text-gray-600">Revenue</p>
-                                <h3 id="revenue-value" class="text-2xl font-bold text-gray-900">N$<?php echo number_format($totalRevenue, 2); ?></h3>
+                                <h3 id="revenue-value" class="text-2xl font-bold text-gray-600">N$<?php echo number_format($totalRevenue, 2); ?></h3>
                             </div>
-                            <div class="p-2 bg-teal-100 rounded-full">
-                                <i class="fas fa-chart-line text-teal-600 text-lg"></i>
+                            <div class="p-2 bg-gray-100 rounded-full">
+                                <i class="fas fa-chart-line text-gray-600 text-lg"></i>
                             </div>
                         </div>
                         <p class="text-sm text-gray-500">Total sales revenue</p>
@@ -919,11 +919,11 @@ try {
                         <div class="flex items-center justify-between mb-4">
                             <div>
                                 <p class="text-sm font-medium text-gray-600">Gross Profit</p>
-                                <h3 id="gross-profit-value" class="text-2xl font-bold text-teal-600">N$<?php echo number_format($grossProfit, 2); ?></h3>
-                                <div id="gross-margin-value" class="mt-1 inline-flex items-center text-xs font-medium text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">Margin <?php echo number_format($grossMarginPct, 1); ?>%</div>
+                                <h3 id="gross-profit-value" class="text-2xl font-bold text-gray-600">N$<?php echo number_format($grossProfit, 2); ?></h3>
+                                <div id="gross-margin-value" class="mt-1 inline-flex items-center text-xs font-medium text-gray-700 bg-gray-50 px-2 py-0.5 rounded-full">Margin <?php echo number_format($grossMarginPct, 1); ?>%</div>
                             </div>
-                            <div class="p-2 bg-teal-100 rounded-full">
-                                <i class="fas fa-arrow-up text-teal-600 text-lg"></i>
+                            <div class="p-2 bg-gray-100 rounded-full">
+                                <i class="fas fa-arrow-up text-gray-600 text-lg"></i>
                             </div>
                         </div>
                         <p class="text-sm text-gray-500">Profit before expenses</p>
@@ -932,11 +932,11 @@ try {
                         <div class="flex items-center justify-between mb-4">
                             <div>
                                 <p class="text-sm font-medium text-gray-600">Net Profit</p>
-                                <h3 id="net-profit-value" class="text-2xl font-bold <?php echo $netProfit >= 0 ? 'text-teal-600' : 'text-red-600'; ?>">N$<?php echo number_format($netProfit, 2); ?></h3>
-                                <div id="net-margin-value" class="mt-1 inline-flex items-center text-xs font-medium text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">Margin <?php echo number_format($netMarginPct, 1); ?>%</div>
+                                <h3 id="net-profit-value" class="text-2xl font-bold <?php echo $netProfit >= 0 ? 'text-gray-600' : 'text-red-600'; ?>">N$<?php echo number_format($netProfit, 2); ?></h3>
+                                <div id="net-margin-value" class="mt-1 inline-flex items-center text-xs font-medium text-gray-700 bg-gray-50 px-2 py-0.5 rounded-full">Margin <?php echo number_format($netMarginPct, 1); ?>%</div>
                             </div>
-                            <div class="p-2 bg-teal-100 rounded-full">
-                                <i class="fas fa-chart-line text-teal-600 text-lg"></i>
+                            <div class="p-2 bg-gray-100 rounded-full">
+                                <i class="fas fa-chart-line text-gray-600 text-lg"></i>
                             </div>
                         </div>
                         <p class="text-sm text-gray-500">Profit after expenses</p>
@@ -945,10 +945,10 @@ try {
                         <div class="flex items-center justify-between mb-4">
                             <div class="flex-1 min-w-0">
                                 <p class="text-sm font-medium text-gray-600">Period</p>
-                                <h3 id="period-value" class="text-2xl font-bold text-gray-900 truncate"><?php echo htmlspecialchars($dateDisplay); ?></h3>
+                                <h3 id="period-value" class="text-2xl font-bold text-gray-600 truncate"><?php echo htmlspecialchars($dateDisplay); ?></h3>
                             </div>
-                            <div class="p-2 bg-teal-100 rounded-full flex-shrink-0 ml-2">
-                                <i class="fas fa-calendar text-teal-600 text-lg"></i>
+                            <div class="p-2 bg-gray-100 rounded-full flex-shrink-0 ml-2">
+                                <i class="fas fa-calendar text-gray-600 text-lg"></i>
                             </div>
                         </div>
                         <p class="text-sm text-gray-500">Selected time period</p>
@@ -962,13 +962,13 @@ try {
                         <!-- View Type Tabs -->
                         <div class="mb-6">
                             <div class="flex flex-wrap gap-2 mb-4">
-                                <button type="button" onclick="switchView('daily')" id="tab-daily" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'daily' ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                <button type="button" onclick="switchView('daily')" id="tab-daily" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'daily' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                                     <i class="fas fa-calendar-day mr-2"></i>Daily
                                 </button>
-                                <button type="button" onclick="switchView('weekly')" id="tab-weekly" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'weekly' ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                <button type="button" onclick="switchView('weekly')" id="tab-weekly" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'weekly' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                                     <i class="fas fa-calendar-week mr-2"></i>Weekly
                                 </button>
-                                <button type="button" onclick="switchView('monthly')" id="tab-monthly" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'monthly' ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                <button type="button" onclick="switchView('monthly')" id="tab-monthly" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'monthly' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                                     <i class="fas fa-calendar-alt mr-2"></i>Monthly
                                 </button>
                             </div>
@@ -1002,7 +1002,7 @@ try {
                                         $isCurrentMonth = ($monthKey === $currentMonthKey);
                                     ?>
                                         <button type="button" onclick="filterDailyByMonth('<?php echo $monthKey; ?>')" 
-                                                class="daily-month-badge px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 <?php echo $isCurrentMonth ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?>"
+                                                class="daily-month-badge px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 <?php echo $isCurrentMonth ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?>"
                                                 data-month="<?php echo $monthKey; ?>">
                                             <?php echo $monthName; ?>
                                         </button>
@@ -1025,8 +1025,8 @@ try {
                                             <button type="button" 
                                                     onclick="selectDate('<?php echo $date; ?>')" 
                                                     class="date-badge px-2 py-2 rounded-md text-xs font-medium transition-all duration-200 flex flex-col items-center justify-center gap-0.5 min-h-[50px] border border-gray-300 <?php 
-                                                        echo $isSelected ? 'bg-teal-100 text-teal-700 shadow-md transform scale-105' : 
-                                                           'bg-gray-100 text-gray-700 hover:bg-teal-50 hover:text-teal-700 hover:shadow-md'; 
+                                                        echo $isSelected ? 'bg-gray-100 text-gray-700 shadow-md transform scale-105' : 
+                                                           'bg-gray-100 text-gray-700 hover:bg-gray-50 hover:text-gray-700 hover:shadow-md'; 
                                                     ?>"
                                                     data-date="<?php echo $date; ?>"
                                                     data-month="<?php echo date('Y-m', strtotime($date)); ?>">
@@ -1144,8 +1144,8 @@ try {
                                             <button type="button" 
                                                     onclick="selectWeek('<?php echo $weekValue; ?>', '<?php echo $week['year']; ?>', '<?php echo $week['week']; ?>')" 
                                                     class="week-badge px-3 py-3 rounded-md text-xs md:text-sm font-medium transition-all duration-200 flex flex-col items-center justify-center gap-1 min-h-[70px] border border-gray-300 <?php 
-                                                        echo $isSelected ? 'bg-teal-100 text-teal-700 shadow-md transform scale-105' : 
-                                                           'bg-gray-100 text-gray-700 hover:bg-teal-50 hover:text-teal-700 hover:shadow-md'; 
+                                                        echo $isSelected ? 'bg-gray-100 text-gray-700 shadow-md transform scale-105' : 
+                                                           'bg-gray-100 text-gray-700 hover:bg-gray-50 hover:text-gray-700 hover:shadow-md'; 
                                                     ?>"
                                                     data-week="<?php echo $weekValue; ?>">
                                                 <span class="font-semibold"><?php echo $weekLabel; ?></span>
@@ -1183,7 +1183,7 @@ try {
                                 <div class="mb-4 flex flex-wrap gap-2">
                                     <?php foreach ($availableYears as $year): ?>
                                         <button type="button" onclick="filterByYear('<?php echo $year; ?>')" 
-                                                class="year-badge px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 <?php echo $year == $currentYear ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?>"
+                                                class="year-badge px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 <?php echo $year == $currentYear ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?>"
                                                 data-year="<?php echo $year; ?>">
                                             <?php echo $year; ?>
                                         </button>
@@ -1211,8 +1211,8 @@ try {
                                         <button type="button" 
                                                 onclick="selectMonth('<?php echo $monthKey; ?>')" 
                                                 class="month-badge px-3 py-2.5 rounded-md text-xs md:text-sm font-medium transition-all duration-200 flex flex-col items-center justify-center gap-1 min-h-[60px] border border-gray-300 <?php 
-                                                    echo $isSelected ? 'bg-teal-100 text-teal-700 shadow-md transform scale-105' : 
-                                                       ($hasData ? 'bg-gray-100 text-gray-700 hover:bg-teal-50 hover:text-teal-700 hover:shadow-md' : 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-50'); 
+                                                    echo $isSelected ? 'bg-gray-100 text-gray-700 shadow-md transform scale-105' : 
+                                                       ($hasData ? 'bg-gray-100 text-gray-700 hover:bg-gray-50 hover:text-gray-700 hover:shadow-md' : 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-50'); 
                                                 ?>"
                                                 data-month="<?php echo $monthKey; ?>"
                                                 <?php echo !$hasData ? 'disabled' : ''; ?>>
@@ -1234,7 +1234,7 @@ try {
                             <div class="flex flex-wrap gap-3">
                              
                             </div>
-                            <button type="button" onclick="downloadPDF()" class="px-4 py-2 bg-teal-600 text-white rounded-md shadow-md hover:bg-teal-700 transition-all duration-200 font-medium flex items-center gap-2 text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                            <button type="button" onclick="downloadPDF()" class="px-4 py-2 bg-gray-600 text-white rounded-md shadow-md hover:bg-gray-700 transition-all duration-200 font-medium flex items-center gap-2 text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                 </svg>
@@ -1249,9 +1249,9 @@ try {
                     <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-4">
                         <h2 class="text-xl lg:text-2xl font-bold text-gray-800">Top Selling Products</h2>
                         <div class="flex flex-wrap gap-2">
-                            <button type="button" onclick="updateView('daily', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'daily' ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-teal-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" id="dailyBtn">Daily</button>
-                            <button type="button" onclick="updateView('weekly', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'weekly' ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-teal-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" id="weeklyBtn">Weekly</button>
-                            <button type="button" onclick="updateView('monthly', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'monthly' ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-teal-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" id="monthlyBtn">Monthly</button>
+                            <button type="button" onclick="updateView('daily', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'daily' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="dailyBtn">Daily</button>
+                            <button type="button" onclick="updateView('weekly', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'weekly' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="weeklyBtn">Weekly</button>
+                            <button type="button" onclick="updateView('monthly', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'monthly' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="monthlyBtn">Monthly</button>
                         </div>
                     </div>
                     <div class="flex flex-container">
@@ -1268,7 +1268,7 @@ try {
                                     <h3 class="text-lg font-semibold text-gray-800">Product Sales</h3>
                                     <div class="flex items-center space-x-4">
                                         <div class="relative">
-                                            <input type="text" id="searchInput" placeholder="Search products..." class="block appearance-none w-full bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:border-teal-500">
+                                            <input type="text" id="searchInput" placeholder="Search products..." class="block appearance-none w-full bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:border-gray-500">
                                         </div>
                                     </div>
                                 </div>
@@ -1386,7 +1386,7 @@ try {
                                 <td class="py-2 px-4 pl-8 text-gray-600">Rent Expenses</td>
                                 <td class="py-2 px-4 text-right text-gray-600">-</td>
                             </tr>
-                            <tr class="border-b bg-teal-50 font-bold">
+                            <tr class="border-b bg-gray-50 font-bold">
                                 <td class="py-2 px-4">Net Profit</td>
                                 <td id="is-net-profit" class="py-2 px-4 text-right">N$<?php echo number_format($netProfit, 2); ?></td>
                             </tr>
@@ -1542,11 +1542,11 @@ try {
             
             // Update button styles
             document.querySelectorAll('#dailyBtn, #weeklyBtn, #monthlyBtn').forEach(btn => {
-                btn.classList.remove('bg-teal-100', 'text-teal-700');
+                btn.classList.remove('bg-gray-100', 'text-gray-700');
                 btn.classList.add('bg-gray-100', 'text-gray-700');
             });
             document.getElementById(view + 'Btn').classList.remove('bg-gray-100', 'text-gray-700');
-            document.getElementById(view + 'Btn').classList.add('bg-teal-100', 'text-teal-700');
+            document.getElementById(view + 'Btn').classList.add('bg-gray-100', 'text-gray-700');
 
             // Redirect to the same page with the new view parameter
             const currentUrl = new URL(window.location);
@@ -1739,14 +1739,14 @@ try {
         function switchView(viewType) {
             // Update tab buttons
             document.querySelectorAll('.view-tab').forEach(tab => {
-                tab.classList.remove('bg-teal-100', 'text-teal-700');
+                tab.classList.remove('bg-gray-100', 'text-gray-700');
                 tab.classList.add('bg-gray-100', 'text-gray-700');
             });
             
             const activeTab = document.getElementById('tab-' + viewType);
             if (activeTab) {
                 activeTab.classList.remove('bg-gray-100', 'text-gray-700');
-                activeTab.classList.add('bg-teal-100', 'text-teal-700');
+                activeTab.classList.add('bg-gray-100', 'text-gray-700');
             }
             
             // Hide all views
@@ -1783,7 +1783,7 @@ try {
                 // Update badge styles - remove selection from all
                 document.querySelectorAll('.month-badge').forEach(badge => {
                     if (!badge.disabled) {
-                        badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                         badge.classList.add('bg-gray-100', 'text-gray-700');
                     }
                 });
@@ -1797,10 +1797,10 @@ try {
                 document.querySelectorAll('.month-badge').forEach(badge => {
                     const badgeMonth = badge.getAttribute('data-month');
                     if (badgeMonth === monthKey) {
-                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'bg-teal-50', 'text-teal-700');
-                        badge.classList.add('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'bg-gray-50', 'text-gray-700');
+                        badge.classList.add('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                     } else {
-                        badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                         if (!badge.disabled) {
                             badge.classList.add('bg-gray-100', 'text-gray-700');
                         }
@@ -1823,9 +1823,9 @@ try {
                 const badgeYear = badge.getAttribute('data-year');
                 if (badgeYear === year) {
                     badge.classList.remove('bg-gray-100', 'text-gray-700');
-                    badge.classList.add('bg-teal-100', 'text-teal-700');
+                    badge.classList.add('bg-gray-100', 'text-gray-700');
                 } else {
-                    badge.classList.remove('bg-teal-100', 'text-teal-700');
+                    badge.classList.remove('bg-gray-100', 'text-gray-700');
                     badge.classList.add('bg-gray-100', 'text-gray-700');
                 }
             });
@@ -2031,7 +2031,7 @@ try {
                 
                 // Update badge styles - remove selection from all
                 document.querySelectorAll('.date-badge').forEach(badge => {
-                    badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                    badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                     badge.classList.add('bg-gray-100', 'text-gray-700');
                 });
                 
@@ -2045,10 +2045,10 @@ try {
                 document.querySelectorAll('.date-badge').forEach(badge => {
                     const badgeDate = badge.getAttribute('data-date');
                     if (badgeDate === date) {
-                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'bg-teal-50', 'text-teal-700');
-                        badge.classList.add('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'bg-gray-50', 'text-gray-700');
+                        badge.classList.add('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                     } else {
-                        badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                         badge.classList.add('bg-gray-100', 'text-gray-700');
                     }
                 });
@@ -2065,9 +2065,9 @@ try {
                 const badgeMonth = badge.getAttribute('data-month');
                 if (badgeMonth === monthKey) {
                     badge.classList.remove('bg-gray-100', 'text-gray-700');
-                    badge.classList.add('bg-teal-100', 'text-teal-700');
+                    badge.classList.add('bg-gray-100', 'text-gray-700');
                 } else {
-                    badge.classList.remove('bg-teal-100', 'text-teal-700');
+                    badge.classList.remove('bg-gray-100', 'text-gray-700');
                     badge.classList.add('bg-gray-100', 'text-gray-700');
                 }
             });
@@ -2095,8 +2095,8 @@ try {
                     badge.type = 'button';
                     badge.onclick = () => selectDate(date);
                     badge.className = `date-badge px-2 py-2 rounded-md text-xs font-medium transition-all duration-200 flex flex-col items-center justify-center gap-0.5 min-h-[50px] border border-gray-300 ${
-                        isSelected ? 'bg-teal-100 text-teal-700 shadow-md transform scale-105' : 
-                        'bg-gray-100 text-gray-700 hover:bg-teal-50 hover:text-teal-700 hover:shadow-md'
+                        isSelected ? 'bg-gray-100 text-gray-700 shadow-md transform scale-105' : 
+                        'bg-gray-100 text-gray-700 hover:bg-gray-50 hover:text-gray-700 hover:shadow-md'
                     }`;
                     badge.setAttribute('data-date', date);
                     badge.setAttribute('data-month', monthKey);
@@ -2120,7 +2120,7 @@ try {
             
             // Remove selection from all date badges
             document.querySelectorAll('.date-badge').forEach(badge => {
-                badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                 badge.classList.add('bg-gray-100', 'text-gray-700');
             });
             
@@ -2143,7 +2143,7 @@ try {
                 
                 // Update badge styles - remove selection from all
                 document.querySelectorAll('.week-badge').forEach(badge => {
-                    badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                    badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                     badge.classList.add('bg-gray-100', 'text-gray-700');
                 });
                 
@@ -2156,10 +2156,10 @@ try {
                 document.querySelectorAll('.week-badge').forEach(badge => {
                     const badgeWeek = badge.getAttribute('data-week');
                     if (badgeWeek === weekValue) {
-                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'bg-teal-50', 'text-teal-700');
-                        badge.classList.add('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'bg-gray-50', 'text-gray-700');
+                        badge.classList.add('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                     } else {
-                        badge.classList.remove('bg-teal-100', 'text-teal-700', 'shadow-md', 'scale-105');
+                        badge.classList.remove('bg-gray-100', 'text-gray-700', 'shadow-md', 'scale-105');
                         badge.classList.add('bg-gray-100', 'text-gray-700');
                     }
                 });

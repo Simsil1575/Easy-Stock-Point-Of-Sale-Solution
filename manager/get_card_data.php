@@ -78,76 +78,6 @@ function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTim
     }
 }
 
-// Function to get total cash in (ALL TIME - for cash in till calculation)
-function getTotalCashInAllTime($db) {
-    try {
-        $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-in'");
-        $stmt->execute();
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error in getTotalCashInAllTime: " . $e->getMessage());
-        return 0;
-    }
-}
-
-// Function to get total cash out (ALL TIME - for cash in till calculation)
-function getTotalCashOutAllTime($db) {
-    try {
-        $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out'");
-        $stmt->execute();
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error in getTotalCashOutAllTime: " . $e->getMessage());
-        return 0;
-    }
-}
-
-// Function to get total cash sales (ALL TIME - for cash in till calculation)
-function getCashSalesAllTime($db) {
-    try {
-        $eftTableExists = false;
-        try {
-            $checkEftTable = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'");
-            $eftTableExists = ($checkEftTable->fetchColumn() !== false);
-        } catch (PDOException $e) {
-            $eftTableExists = false;
-        }
-        
-        if ($eftTableExists) {
-            $stmt = $db->prepare("
-                SELECT COALESCE(SUM(o.total), 0)
-                FROM orders o
-                LEFT JOIN eft_payments e ON o.id = e.order_id
-                WHERE e.order_id IS NULL
-            ");
-        } else {
-            $stmt = $db->prepare("SELECT COALESCE(SUM(total), 0) FROM orders");
-        }
-        
-        $stmt->execute();
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error in getCashSalesAllTime: " . $e->getMessage());
-        return 0;
-    }
-}
-
-// Function to get credit payments (ALL TIME - for cash in till calculation)
-function getCreditPaymentsAllTime($db) {
-    try {
-        $stmt = $db->prepare("
-            SELECT COALESCE(SUM(p.amount), 0) 
-            FROM payments p
-            JOIN credit_sales cs ON p.sale_id = cs.id
-        ");
-        $stmt->execute();
-        return $stmt->fetchColumn();
-    } catch (PDOException $e) {
-        error_log("Error in getCreditPaymentsAllTime: " . $e->getMessage());
-        return 0;
-    }
-}
-
 // Function to get total cash in for date range (using business days)
 function getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
@@ -182,8 +112,34 @@ function getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnig
     }
 }
 
-// Function to get total cash sales (excluding EFT) using business days
+// Function to get total cash sales using business days
+// This matches sales.php getCashSalesAjax exactly - includes ALL orders (not excluding EFT) + payments
 function getCashSales($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+    try {
+        $orderWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $paymentWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        
+        $stmt = $db->prepare("
+            SELECT 
+                (SELECT COALESCE(SUM(total), 0) 
+                 FROM orders 
+                 WHERE ($orderWhereClause))
+                +
+                (SELECT COALESCE(SUM(amount), 0) 
+                 FROM payments 
+                 WHERE ($paymentWhereClause))
+        ");
+        $stmt->execute();
+        return $stmt->fetchColumn();
+    } catch (PDOException $e) {
+        error_log("Error in getCashSales: " . $e->getMessage());
+        return 0;
+    }
+}
+
+// Function to get cash sales from orders only (excluding EFT and payments)
+// Used for cashInTill calculation to avoid double-counting with credit payments
+function getCashSalesFromOrders($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         // Check if eft_payments table exists
         $eftTableExists = false;
@@ -194,27 +150,28 @@ function getCashSales($db, $startDate, $endDate, $closingTime, $isAfterMidnight)
             $eftTableExists = false;
         }
         
-        $whereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $orderWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
         
         if ($eftTableExists) {
             $stmt = $db->prepare("
-                SELECT COALESCE(SUM(o.total), 0)
+                SELECT COALESCE(SUM(
+                    o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
+                ), 0)
                 FROM orders o
-                LEFT JOIN eft_payments e ON o.id = e.order_id
-                WHERE e.order_id IS NULL AND ($whereClause)
+                WHERE ($orderWhereClause)
             ");
         } else {
             $stmt = $db->prepare("
                 SELECT COALESCE(SUM(total), 0) 
                 FROM orders o
-                WHERE ($whereClause)
+                WHERE ($orderWhereClause)
             ");
         }
         
         $stmt->execute();
         return $stmt->fetchColumn();
     } catch (PDOException $e) {
-        error_log("Error in getCashSales: " . $e->getMessage());
+        error_log("Error in getCashSalesFromOrders: " . $e->getMessage());
         return 0;
     }
 }
@@ -224,7 +181,7 @@ function getCreditSales($db, $startDate, $endDate, $closingTime, $isAfterMidnigh
     try {
         $whereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
         $stmt = $db->prepare("
-            SELECT COALESCE(SUM(total_amount), 0)
+            SELECT COALESCE(SUM(total_amount - paid_amount), 0)
             FROM credit_sales 
             WHERE ($whereClause)
         ");
@@ -279,7 +236,7 @@ function getUnpaidCreditSales($db, $startDate, $endDate, $closingTime, $isAfterM
     }
 }
 
-// Function to get total EFT payments using business days
+// Function to get total EFT payments using business days (includes both direct EFT and credit EFT)
 function getTotalEftPayments($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         // Check if eft_payments table exists
@@ -291,25 +248,41 @@ function getTotalEftPayments($db, $startDate, $endDate, $closingTime, $isAfterMi
             $eftTableExists = false;
         }
         
-        if (!$eftTableExists) {
-            return 0;
+        $eftDirectTotal = 0;
+        $eftCreditTotal = 0;
+        
+        // Get direct EFT payments from orders
+        if ($eftTableExists) {
+            $orderWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+            $stmt = $db->prepare("
+                SELECT COALESCE(SUM(e.amount), 0)
+                FROM eft_payments e
+                JOIN orders o ON e.order_id = o.id
+                WHERE ($orderWhereClause) AND e.status = 'completed'
+            ");
+            $stmt->execute();
+            $eftDirectTotal = $stmt->fetchColumn();
         }
         
-        $whereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        // Get credit EFT payments (from payments table where payment_status is 'eft')
+        $paymentWhereClause = getBusinessDayWhereClause('p.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
         $stmt = $db->prepare("
-            SELECT COALESCE(SUM(amount), 0) as eft_total
-            FROM eft_payments
-            WHERE ($whereClause) AND status = 'completed'
+            SELECT COALESCE(SUM(p.amount), 0)
+            FROM payments p
+            JOIN credit_sales cs ON p.sale_id = cs.id
+            WHERE cs.payment_status = 'eft' AND ($paymentWhereClause)
         ");
         $stmt->execute();
-        return $stmt->fetchColumn();
+        $eftCreditTotal = $stmt->fetchColumn();
+        
+        return ($eftDirectTotal ?: 0) + ($eftCreditTotal ?: 0);
     } catch (PDOException $e) {
         error_log("Error in getTotalEftPayments: " . $e->getMessage());
         return 0;
     }
 }
 
-// Function to get credit payments using business days
+// Function to get credit payments using business days (only paid credit sales)
 function getCreditPayments($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         $whereClause = getBusinessDayWhereClause('p.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
@@ -317,7 +290,7 @@ function getCreditPayments($db, $startDate, $endDate, $closingTime, $isAfterMidn
             SELECT COALESCE(SUM(p.amount), 0) 
             FROM payments p
             JOIN credit_sales cs ON p.sale_id = cs.id
-            WHERE ($whereClause)
+            WHERE cs.payment_status = 'paid' AND ($whereClause)
         ");
         $stmt->execute();
         return $stmt->fetchColumn();
@@ -378,6 +351,7 @@ if (isset($_GET['view'])) {
         $totalCashIn = getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
         $totalCashOut = getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
         $cashSales = getCashSales($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $cashSalesFromOrders = getCashSalesFromOrders($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
         $creditSales = getCreditSales($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
         $costOfGoodsSold = getCostOfGoodsSold($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
         $unpaidCreditSales = getUnpaidCreditSales($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
@@ -389,22 +363,20 @@ if (isset($_GET['view'])) {
         $totalProducts = getTotalProducts($db);
         $productsInStock = getProductsInStock($db);
         
-        // Get ALL-TIME data for cash in till calculation (this should never change)
-        $allTimeCashIn = getTotalCashInAllTime($db);
-        $allTimeCashOut = getTotalCashOutAllTime($db);
-        $allTimeCashSales = getCashSalesAllTime($db);
-        $allTimeCreditPayments = getCreditPaymentsAllTime($db);
-        
-        // Calculate derived values
+        // Calculate derived values (matching sales.php exactly)
+        // Note: sales.php does NOT include EFT in totalRevenue, only cashSales + creditSales
         $totalRevenue = $cashSales + $creditSales;
         $grossProfit = $totalRevenue - $costOfGoodsSold;
-        $netRevenue = $grossProfit;
+        // Net Revenue should match Net Profit in sales.php: Gross Profit + Cash In - Cash Out
+        $netRevenue = $grossProfit + $totalCashIn - $totalCashOut;
         
-        // Cash in till calculation using ALL-TIME data (never changes based on period)
-        $cashInTill = $allTimeCashIn + $allTimeCashSales + $allTimeCreditPayments - $allTimeCashOut;
+        // Cash in till calculation using period-specific data with businessClosingTime (matching cash.php)
+        // Uses cashSalesFromOrders (orders minus EFT, no payments) to avoid double-counting with creditPayments
+        // All components (totalCashIn, cashSalesFromOrders, totalCreditPayments, totalCashOut) use business day logic
+        $cashInTill = $totalCashIn + $cashSalesFromOrders + $totalCreditPayments - $totalCashOut;
         
-        // Total deposits calculation using period-specific data
-        $totalDeposits = $totalCashIn + $cashSales + $totalCreditPayments;
+        // Total deposits calculation using period-specific data (matching home.php)
+        $totalDeposits = $totalCashIn + $cashSalesFromOrders + $totalCreditPayments;
         
         // Return JSON response
         header('Content-Type: application/json');

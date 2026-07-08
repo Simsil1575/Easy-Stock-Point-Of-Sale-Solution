@@ -23,9 +23,14 @@ if ($activationStatus == 0) {
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-// Helper function to get username from user_id with caching
+// Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
     if (empty($userId)) return 'Unknown';
+    
+    // If it's already a username (not numeric), return it as is
+    if (!is_numeric($userId)) {
+        return $userId;
+    }
     
     // Check cache first
     if (isset($usernameCache[$userId])) {
@@ -160,6 +165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $paymentMethod = $_POST['payment_method'];
         $transactionRef = $_POST['transaction_ref'] ?? '';
         $walletProvider = $_POST['wallet_provider'] ?? '';
+        $cashierUsername = $_SESSION['username'] ?? 'Unknown';
         
         if ($amount <= 0) {
             $_SESSION['error'] = 'Payment amount must be greater than zero';
@@ -187,9 +193,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $db->beginTransaction();
         try {
-            // Insert payment record
+            // Insert payment record - store username for consistent tracking
             $paymentStmt = $db->prepare("INSERT INTO tab_payments (tab_id, amount, payment_method, transaction_ref, wallet_provider, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $paymentStmt->execute([$tabId, $amount, $paymentMethod, $transactionRef, $walletProvider, $_SESSION['user_id'] ?? null]);
+            $paymentStmt->execute([$tabId, $amount, $paymentMethod, $transactionRef, $walletProvider, $cashierUsername]);
             
             // Update tab balance
             $updateStmt = $db->prepare("UPDATE tabs SET current_balance = current_balance - ? WHERE id = ?");
@@ -224,9 +230,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: credit-tabs');
         exit();
     } elseif (isset($_POST['close_id'])) {
-        // Close tab
+        // Close tab - store username for consistent tracking
+        $closedByUsername = $_SESSION['username'] ?? 'Unknown';
         $stmt = $db->prepare("UPDATE tabs SET status = 'closed', closed_at = CURRENT_TIMESTAMP, closed_by = ? WHERE id = ?");
-        $stmt->execute([$_SESSION['user_id'] ?? null, $_POST['close_id']]);
+        $stmt->execute([$closedByUsername, $_POST['close_id']]);
         $_SESSION['success'] = 'Tab closed successfully';
         header('Location: credit-tabs');
         exit();
@@ -243,12 +250,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tab_name = $_POST['tab_name'];
         $opening_balance = isset($_POST['opening_balance']) ? floatval($_POST['opening_balance']) : 0.00;
         $notes = $_POST['notes'] ?? '';
-        $cashier_id = $_SESSION['user_id'] ?? null;
+        $cashierUsername = $_SESSION['username'] ?? 'Unknown';
 
         if (empty($_POST['id'])) {
-            // Add new tab
+            // Add new tab - store username for consistent tracking
             $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashier_id]);
+            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername]);
             $_SESSION['success'] = 'Tab created successfully';
         } else {
             // Update tab (only allow updating name and notes, not balance)
@@ -262,6 +269,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Fetch all tabs with creditor information - optimized query
+// Filter by current user's username OR user_id for backward compatibility
+$currentUsername = $_SESSION['username'] ?? '';
 $currentUserId = $_SESSION['user_id'] ?? '';
 $tabsStmt = $db->prepare("
     SELECT 
@@ -280,13 +289,13 @@ $tabsStmt = $db->prepare("
         c.phone as creditor_phone
     FROM tabs t
     LEFT JOIN creditors c ON t.creditor_id = c.id
-    WHERE t.cashier_id = ?
+    WHERE t.cashier_id = ? OR t.cashier_id = ?
     ORDER BY t.opened_at DESC
 ");
-$tabsStmt->execute([$currentUserId]);
+$tabsStmt->execute([$currentUsername, $currentUserId]);
 $tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Add usernames to tabs using getUsernameById (with caching)
+// Add usernames to tabs using getUsernameById (handles both numeric IDs and usernames)
 $usernameCache = [];
 foreach ($tabs as &$tab) {
     $tab['opened_by_username'] = getUsernameById($tab['cashier_id'], $usernameCache);
@@ -316,6 +325,8 @@ $totalOpenBalance = array_sum(array_column($openTabs, 'current_balance'));
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="sweetalert2@11.js"></script>
     <script src="lucide.js"></script>
+    <!-- Load sendToPrinter function from receipt.php (for future use) -->
+    <script src="receipt.php?js=true"></script>
 
     <style>
         .fade-in {
@@ -701,6 +712,22 @@ $totalOpenBalance = array_sum(array_column($openTabs, 'current_balance'));
     visibility: visible;
 }
 
+/* Ensure sidebar is above overlay on mobile */
+@media (max-width: 1023px) {
+    #sidebar {
+        z-index: 10000 !important;
+    }
+}
+
+@media (min-width: 1024px) {
+    .hamburger {
+        display: none;
+    }
+    .mobile-overlay {
+        display: none;
+    }
+}
+
 /* Touch scrolling improvements for product grid */
 #productGrid {
     -webkit-overflow-scrolling: touch;
@@ -933,6 +960,12 @@ th[onclick]:hover {
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
+                        <a href="cashier-center" class="inline-flex items-center px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            Back
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>

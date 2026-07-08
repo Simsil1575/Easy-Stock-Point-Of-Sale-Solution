@@ -211,9 +211,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: credit-tabs');
         exit();
     } elseif (isset($_POST['edit_tab_name'])) {
-        // Edit tab name - Only managers can edit tab names
-        if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'manager') {
-            $_SESSION['error'] = 'Only managers can edit tab names';
+        // Edit tab name - Only admins or managers can edit tab names
+        $allowedRoles = ['admin', 'manager'];
+        if (!isset($_SESSION['role']) || !in_array(strtolower($_SESSION['role']), $allowedRoles)) {
+            $_SESSION['error'] = 'Only admins or managers can edit tab names';
             header('Location: view-tab.php?id=' . intval($_POST['tab_id']));
             exit();
         }
@@ -240,9 +241,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
     } elseif (isset($_POST['transfer_to_credit_sale'])) {
-        // Transfer tab to credit sale - Only managers can transfer tabs
-        if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'manager') {
-            $_SESSION['error'] = 'Only managers can transfer tabs to credit sales';
+        // Transfer tab to credit sale - Only admins or managers can transfer tabs
+        $allowedRoles = ['admin', 'manager'];
+        if (!isset($_SESSION['role']) || !in_array(strtolower($_SESSION['role']), $allowedRoles)) {
+            $_SESSION['error'] = 'Only admins or managers can transfer tabs to credit sales';
             header('Location: view-tab.php?id=' . intval($_POST['tab_id']));
             exit();
         }
@@ -739,9 +741,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
     } elseif (isset($_POST['void_tab_id'])) {
-        // Void tab - Only managers can void tabs
-        if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'manager') {
-            $_SESSION['error'] = 'Only managers can void tabs';
+        // Void tab - Only admins or managers can void tabs
+        $allowedRoles = ['admin', 'manager'];
+        if (!isset($_SESSION['role']) || !in_array(strtolower($_SESSION['role']), $allowedRoles)) {
+            $_SESSION['error'] = 'Only admins or managers can void tabs';
             header('Location: view-tab.php?id=' . intval($_POST['void_tab_id']));
             exit();
         }
@@ -1091,6 +1094,8 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
     <link rel="icon" href="../favicon.ico" type="image/png">
     <script src="../lucide.js"></script>
     <script src="../sweetalert2@11.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="../receipt.php?js=true"></script>
 
     <style>
         .sidebar {
@@ -1404,7 +1409,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                     <h1 class="text-2xl font-bold text-gray-900">
                                         <?= htmlspecialchars($viewTab['tab_name']) ?>
                                     </h1>
-                                    <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'manager'): ?>
+                                    <?php if (isset($_SESSION['role']) && in_array(strtolower($_SESSION['role']), ['admin', 'manager'])): ?>
                                     <button onclick="openEditTabNameModal(<?= $viewTab['id'] ?>, '<?= htmlspecialchars($viewTab['tab_name'], ENT_QUOTES) ?>')" 
                                             class="text-gray-400 hover:text-blue-600 transition-colors p-1" 
                                             title="Edit tab name">
@@ -1788,34 +1793,41 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
         };
 
-        // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
-            var dataWithBusiness = Object.assign({}, receiptData, {
-                business_name: receiptData.business_name || businessInfo.business_name,
-                location: receiptData.location || businessInfo.location,
-                phone: receiptData.phone || businessInfo.phone,
-                footer_text: receiptData.footer_text || businessInfo.footer_text,
-                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-            });
-            
-            var printer = window.AndroidPrinter || window.NativePrinter || null;
-            
-            if (printer && typeof printer.printReceipt === 'function') {
-                console.log('[sendToPrinter] Using Android native printing');
-                try {
-                    printer.printReceipt(JSON.stringify(dataWithBusiness));
-                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-                } catch (e) {
-                    console.error('[sendToPrinter] Android print error:', e.message);
+        // sendToPrinter function is now loaded from ../receipt.php?js=true
+        // The function is defined in receipt.php and automatically handles Android printing
+        // The Android interceptor in MainActivity.java only listens to receipt.php calls
+        // This includes support for:
+        // - Tab balance receipts (is_tab_balance_receipt: true)
+        // - Payment receipts (is_payment_receipt: true)
+        // - Regular tab prints (tab_id/table_id)
+        // - All other receipt types
+        if (typeof sendToPrinter === 'undefined') {
+            console.warn('[admin/view-tab.php] sendToPrinter not loaded from receipt.php, using fallback');
+            function sendToPrinter(receiptData) {
+                // Ensure print_only flag is set for regular receipts
+                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                    receiptData.print_only = true;
                 }
+                
+                // Add business info to receipt data
+                var dataWithBusiness = Object.assign({}, receiptData, {
+                    business_name: receiptData.business_name || businessInfo.business_name,
+                    location: receiptData.location || businessInfo.location,
+                    phone: receiptData.phone || businessInfo.phone,
+                    footer_text: receiptData.footer_text || businessInfo.footer_text,
+                    vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                    vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+                });
+                
+                // Use fetch to receipt.php - the interceptor will catch this
+                return fetch('../receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) { 
+                    return r.json();
+                });
             }
-            
-            return fetch('../receipt.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataWithBusiness)
-            }).then(function(r) { return r.json(); });
         }
 
         // Edit Tab Name Modal functions

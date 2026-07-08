@@ -7,6 +7,7 @@ date_default_timezone_set('Africa/Harare');
 
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/recipe_stock_helper.php';
 
 // Create tabs and tab_items tables if they don't exist
 try {
@@ -79,9 +80,9 @@ try {
     $tab = $tabStmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$tab) {
-        // Create new tab for this table
+        // Create new tab for this table - store username for consistent tracking
         $createTabStmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, cashier_id) VALUES (?, 0, 0, ?)");
-        $createTabStmt->execute([$tableName, $_SESSION['user_id'] ?? null]);
+        $createTabStmt->execute([$tableName, $cashierUsername]);
         $tabId = $db->lastInsertId();
         
         // Fetch the newly created tab
@@ -145,13 +146,13 @@ try {
             // Merge quantities: update existing item
             $updateItemStmt->execute([$quantity, $existingItem['id']]);
         } else {
-            // Insert new item
+            // Insert new item - store username for consistent tracking
             $insertItemStmt->execute([
                 $tabId,
                 $item['name'],
                 $quantity,
                 $unitPrice, // Store unit price
-                $_SESSION['user_id'] ?? null
+                $cashierUsername
             ]);
         }
         
@@ -161,10 +162,11 @@ try {
             $stmtGetProductInfo->execute([$item['name']]);
             $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
             $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
+            $usedRecipeStock = deductRecipeStockByProductName($db, $item['name'], floatval($quantity));
             
             // Only decrease quantity if category is not "Food"
             $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-            if (!$isFood) {
+            if (!$isFood && !$usedRecipeStock) {
                 $stmtUpdateInventory->execute([$quantity, $item['name']]);
             }
         }

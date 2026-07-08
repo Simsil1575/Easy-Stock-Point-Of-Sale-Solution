@@ -6,6 +6,7 @@ header('Content-Type: application/json');
 date_default_timezone_set('Africa/Harare');
 
 $db = new PDO('sqlite:pos.db');
+require_once __DIR__ . '/recipe_stock_helper.php';
 
 try {
     $db->beginTransaction();
@@ -37,7 +38,7 @@ try {
         $total, 
         $dueDate,
         date('Y-m-d H:i:s'), // Current Namibia time
-        $_SESSION['username'] // Add cashier username from session
+        $_SESSION['username'] ?? 'Unknown'
     ]);
     $saleId = $db->lastInsertId();
 
@@ -86,7 +87,8 @@ try {
 
         // Only decrease quantity if category is not "Food"
         $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-        if (!$isFood) {
+        $usedRecipeStock = deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
+        if (!$isFood && !$usedRecipeStock) {
             $updateStmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE name = ?");
             $updateStmt->execute([$item['quantity'], $item['name']]);
         }

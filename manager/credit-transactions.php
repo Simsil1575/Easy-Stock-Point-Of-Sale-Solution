@@ -41,7 +41,7 @@ if (isset($_GET['pay_all']) && $_GET['pay_all'] == 1) {
         
         while ($txn = $unpaidTxns->fetch(PDO::FETCH_ASSOC)) {
             if ($txn['remaining_amount'] > 0) {
-                // Update credit sale record
+                
                 $updateStmt = $db->prepare("
                     UPDATE credit_sales 
                     SET paid_amount = total_amount, 
@@ -50,20 +50,18 @@ if (isset($_GET['pay_all']) && $_GET['pay_all'] == 1) {
                 ");
                 $updateStmt->execute([$isEft ? 'eft' : 'paid', $txn['id']]);
                 
-                // Record payment with timezone-aware timestamp
                 $paymentStmt = $db->prepare("
-                    INSERT INTO payments (sale_id, amount, payment_date) 
-                    VALUES (?, ?, ?)
+                    INSERT INTO payments (sale_id, amount, payment_date, cashier_id) 
+                    VALUES (?, ?, ?, ?)
                 ");
-                $paymentStmt->execute([$txn['id'], $txn['remaining_amount'], date('Y-m-d H:i:s')]);
+                $paymentStmt->execute([$txn['id'], $txn['remaining_amount'], date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
                 
-                // If EFT payment, also record in eft_payments table
                 if ($isEft && !empty($transactionRef) && !empty($walletProvider)) {
                     $eftStmt = $db->prepare("
-                        INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, payment_date) 
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) 
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ");
-                    $eftStmt->execute([$txn['id'], $transactionRef, $walletProvider, $txn['remaining_amount'], date('Y-m-d H:i:s')]);
+                    $eftStmt->execute([$txn['id'], $transactionRef, $walletProvider, $txn['remaining_amount'], $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
                 }
             }
         }
@@ -95,61 +93,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['payment_amount'])) {
         $saleId = $_POST['sale_id'];
         $paymentAmount = (float)$_POST['payment_amount'];
-        
-        // Get sale details for receipt
         $saleDetails = $db->prepare("
-            SELECT cs.*, c.name as creditor_name, 
-                   GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') AS items
-            FROM credit_sales cs
-            JOIN creditors c ON cs.creditor_id = c.id
-            LEFT JOIN credit_sale_items csi ON cs.id = csi.sale_id
-            WHERE cs.id = ?
-            GROUP BY cs.id
+            SELECT cs.*, c.name as creditor_name FROM credit_sales cs
+            JOIN creditors c ON cs.creditor_id = c.id WHERE cs.id = ?
         ");
         $saleDetails->execute([$saleId]);
         $sale = $saleDetails->fetch(PDO::FETCH_ASSOC);
-        
-        // Prepare items array
+        $db->beginTransaction();
+        try {
+            $db->prepare("UPDATE credit_sales SET paid_amount = paid_amount + ?, payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'paid' ELSE 'partial' END WHERE id = ?")->execute([$paymentAmount, $paymentAmount, $saleId]);
+            $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)")->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $db->commit();
+        } catch (Exception $e) {
+            $db->rollBack();
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => 'Failed to process payment: ' . $e->getMessage()]);
+            exit();
+        }
         $items = [];
         $saleItems = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
         $saleItems->execute([$saleId]);
         while ($item = $saleItems->fetch(PDO::FETCH_ASSOC)) {
-            $items[] = [
-                'name' => $item['product_name'],
-                'quantity' => $item['quantity'],
-                'price' => $item['price'] * $item['quantity']
-            ];
+            $items[] = ['name' => $item['product_name'], 'quantity' => $item['quantity'], 'price' => $item['price'] * $item['quantity']];
         }
-
-        // Update credit sale record
-        $stmt = $db->prepare("UPDATE credit_sales 
-                            SET paid_amount = paid_amount + ?, 
-                                payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'paid' ELSE 'partial' END
-                            WHERE id = ?");
-        $stmt->execute([$paymentAmount, $paymentAmount, $saleId]);
-        
-        // Record payment with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date) VALUES (?, ?, ?)");
-        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s')]);
-
-        // Prepare receipt data
-        $receiptData = [
-            'creditor_id' => $sale['creditor_id'],
-            'creditor_name' => $sale['creditor_name'],
-            'sale_id' => $saleId,
-            'items' => $items,
-            'total_amount' => $sale['total_amount'],
-            'cash_received' => $paymentAmount,
-            'payment_type' => 'cash',
-            'remaining_balance' => $sale['total_amount'] - ($sale['paid_amount'] + $paymentAmount),
-            'date' => date('Y-m-d H:i:s')
-        ];
-
-        // Return JSON with receipt data
         header('Content-Type: application/json');
         echo json_encode([
             'success' => true,
-            'receipt_data' => $receiptData
+            'receipt_data' => [
+                'creditor_id' => $sale['creditor_id'], 'creditor_name' => $sale['creditor_name'], 'sale_id' => $saleId, 'items' => $items,
+                'total_amount' => $sale['total_amount'], 'cash_received' => $paymentAmount, 'payment_type' => 'cash',
+                'remaining_balance' => $sale['total_amount'] - ($sale['paid_amount'] + $paymentAmount), 'date' => date('Y-m-d H:i:s')
+            ]
         ]);
         exit();
     }
@@ -160,67 +134,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $paymentAmount = (float)$_POST['eft_payment_amount'];
         $transactionRef = $_POST['transaction_ref'];
         $walletProvider = $_POST['wallet_provider'];
-        
-        // Get sale details for receipt
         $saleDetails = $db->prepare("
-            SELECT cs.*, c.name as creditor_name, 
-                   GROUP_CONCAT(csi.product_name || ' (' || csi.quantity || 'x N$' || csi.price || ')', ', ') AS items
-            FROM credit_sales cs
-            JOIN creditors c ON cs.creditor_id = c.id
-            LEFT JOIN credit_sale_items csi ON cs.id = csi.sale_id
-            WHERE cs.id = ?
-            GROUP BY cs.id
+            SELECT cs.*, c.name as creditor_name FROM credit_sales cs
+            JOIN creditors c ON cs.creditor_id = c.id WHERE cs.id = ?
         ");
         $saleDetails->execute([$saleId]);
         $sale = $saleDetails->fetch(PDO::FETCH_ASSOC);
-        
-        // Update credit sale record
-        $stmt = $db->prepare("UPDATE credit_sales 
-                            SET paid_amount = paid_amount + ?, 
-                                payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'eft' ELSE 'partial' END
-                            WHERE id = ?");
-        $stmt->execute([$paymentAmount, $paymentAmount, $saleId]);
-        
-        // Record payment with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date) VALUES (?, ?, ?)");
-        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s')]);
-        
-        // Record EFT payment details with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, payment_date) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, date('Y-m-d H:i:s')]);
-
-        // Prepare items array
+        $db->beginTransaction();
+        try {
+            $db->prepare("UPDATE credit_sales SET paid_amount = paid_amount + ?, payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'eft' ELSE 'partial' END WHERE id = ?")->execute([$paymentAmount, $paymentAmount, $saleId]);
+            $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)")->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)")->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
+            $db->commit();
+        } catch (Exception $e) {
+            $db->rollBack();
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => 'Failed to process payment: ' . $e->getMessage()]);
+            exit();
+        }
         $items = [];
         $saleItems = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
         $saleItems->execute([$saleId]);
         while ($item = $saleItems->fetch(PDO::FETCH_ASSOC)) {
-            $items[] = [
-                'name' => $item['product_name'],
-                'quantity' => $item['quantity'],
-                'price' => $item['price'] * $item['quantity']
-            ];
+            $items[] = ['name' => $item['product_name'], 'quantity' => $item['quantity'], 'price' => $item['price'] * $item['quantity']];
         }
-
-        // Prepare receipt data
-        $receiptData = [
-            'creditor_id' => $sale['creditor_id'],
-            'creditor_name' => $sale['creditor_name'],
-            'sale_id' => $saleId,
-            'items' => $items,
-            'total_amount' => $sale['total_amount'],
-            'payment_method' => 'e-wallet',
-            'wallet_provider' => $walletProvider,
-            'transaction_ref' => $transactionRef,
-            'payment_amount' => $paymentAmount,
-            'remaining_balance' => $sale['total_amount'] - ($sale['paid_amount'] + $paymentAmount),
-            'date' => date('Y-m-d H:i:s')
-        ];
-
-        // Return JSON with receipt data
         header('Content-Type: application/json');
         echo json_encode([
             'success' => true,
-            'receipt_data' => $receiptData
+            'receipt_data' => [
+                'creditor_id' => $sale['creditor_id'], 'creditor_name' => $sale['creditor_name'], 'sale_id' => $saleId, 'items' => $items,
+                'total_amount' => $sale['total_amount'], 'payment_method' => 'e-wallet', 'wallet_provider' => $walletProvider,
+                'transaction_ref' => $transactionRef, 'payment_amount' => $paymentAmount,
+                'remaining_balance' => $sale['total_amount'] - ($sale['paid_amount'] + $paymentAmount), 'date' => date('Y-m-d H:i:s')
+            ]
         ]);
         exit();
     }
@@ -298,6 +244,9 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../sweetalert2@11.js"></script>
+    <script src="../lucide.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="../receipt.php?js=true"></script>
     <style>
         .sidebar { position: fixed; height: 100%; }
         .content { margin-left: 250px; }
@@ -661,119 +610,167 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                     </div>
                 </div>
 
-                <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                    <table class="w-full">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="text-left p-4 text-sm font-medium text-gray-500">Date</th>
-                                <th class="text-left p-4 text-sm font-medium text-gray-500">Due Date</th>
-                                <th class="text-left p-4 text-sm font-medium text-gray-500">Items</th>
-                                <th class="text-left p-4 text-sm font-medium text-gray-500">Total</th>
-                                <th class="text-left p-4 text-sm font-medium text-gray-500">Progress</th>
-                                <th class="text-left p-4 text-sm font-medium text-gray-500">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($transactions as $transaction): 
-                                $progress = ($transaction['paid_amount'] / $transaction['total_amount']) * 100;
-                            ?>
-                            <tr class="border-t border-gray-100 hover:bg-gray-50">
-                                <td class="p-4 text-sm" data-label="Date"><?= date('d M Y', strtotime($transaction['created_at'])) ?></td>
-                                <td class="p-4 text-sm font-medium <?= (strtotime($transaction['due_date']) < time()) ? 'text-red-600' : 'text-gray-600' ?>" data-label="Due Date">
-                                    <?= date('d M Y', strtotime($transaction['due_date'])) ?>
-                                </td>
-                                <td class="p-4 text-sm max-w-[300px]" data-label="Items"><?= htmlspecialchars($transaction['items']) ?></td>
-                                <td class="p-4 text-sm font-medium" data-label="Total">
-                                    N$<?= number_format(
-                                        ($transaction['payment_status'] === 'partial') 
-                                            ? ($transaction['total_amount'] - $transaction['paid_amount']) 
-                                            : $transaction['total_amount'], 
-                                        2
-                                    ) ?>
-                                </td>
-                                <td class="p-4" data-label="Progress">
-                                    <span class="px-3 py-1 text-xs font-medium rounded-full border transition-colors
-                                        <?php
-                                            if ($transaction['payment_status'] === 'paid') {
-                                                echo 'bg-teal-100 text-teal-800 border-teal-200 hover:bg-teal-200';
-                                            } elseif ($transaction['payment_status'] === 'eft') {
-                                                echo 'bg-teal-100 text-teal-800 border-teal-200 hover:bg-teal-200';
-                                            } elseif ($transaction['payment_status'] === 'partial') {
-                                                echo 'bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200';
-                                            } else {
-                                                echo 'bg-red-100 text-red-800 border-red-200 hover:bg-red-200';
-                                            }
-                                        ?>">
-                                        <?php 
-                                            if ($transaction['payment_status'] === 'paid') {
-                                                echo 'Cash';
-                                            } elseif ($transaction['payment_status'] === 'eft') {
-                                                echo 'EFT';
-                                            } elseif ($transaction['payment_status'] === 'partial') {
-                                                echo 'Partial';
-                                            } else {
-                                                echo 'Unpaid';
-                                            }
-                                        ?>
-                                    </span>
-                                </td>
-                                <td class="p-4" data-label="Actions">
-                                    <?php if ($transaction['payment_status'] !== 'paid' && $transaction['payment_status'] !== 'eft'): ?>
-                                        <div class="flex flex-wrap items-center justify-center gap-2">
-                                            <button type="button" class="text-sm px-3 py-1.5 bg-teal-100 hover:bg-teal-200 text-teal-600 rounded-md cash-payment-btn flex items-center gap-1.5" 
-                                                data-sale-id="<?= $transaction['id'] ?>"
-                                                data-balance="<?= $transaction['total_amount'] - $transaction['paid_amount'] ?>">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
-                                                </svg>
-                                                Cash
-                                            </button>
-                                            <button type="button" class="text-sm px-3 py-1.5 bg-purple-100 hover:bg-purple-200 text-purple-600 rounded-md eft-payment-btn flex items-center gap-1.5"
-                                                data-sale-id="<?= $transaction['id'] ?>"
-                                                data-balance="<?= $transaction['total_amount'] - $transaction['paid_amount'] ?>">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
-                                                </svg>
-                                                EFT
-                                            </button>
-                                        </div>
-                                    <?php else: ?>
-                                        <div class="flex items-center justify-center w-full">
-                                            <div class="w-6 h-6 text-teal-500">
-                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                                                </svg>
+                <div class="flex flex-col">
+                    <div class="-m-1.5 overflow-x-auto">
+                        <div class="p-1.5 min-w-full inline-block align-middle">
+                            <div class="border rounded-lg divide-y divide-gray-200 dark:divide-gray-700 dark:divide-gray-700 bg-white">
+                                <!-- Search and Filters -->
+                                <div class="py-3 px-4">
+                                    <div class="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                                        <div class="relative max-w-xs w-full md:w-auto">
+                                            <label class="sr-only">Search</label>
+                                            <input type="text" id="hs-table-with-pagination-search" class="py-2 px-3 ps-9 block w-full border-gray-200 shadow-sm rounded-lg text-sm focus:z-10 focus:border-blue-500 focus:ring-blue-500 disabled:opacity-50 disabled:pointer-events-none dark:bg-slate-900 dark:border-gray-700 dark:text-gray-400 dark:focus:ring-gray-600" placeholder="Search for transactions">
+                                            <div class="absolute inset-y-0 start-0 flex items-center pointer-events-none ps-3">
+                                                <i data-lucide="search" class="w-4 h-4 text-gray-400"></i>
                                             </div>
                                         </div>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-
-                            <?php foreach ($partialPayments as $payment): ?>
-                            <tr class="border-t border-gray-100 hover:bg-gray-50">
-                                <td class="p-4 text-sm" data-label="Date"><?= date('d M Y', strtotime($payment['payment_date'])) ?></td>
-                                <td class="p-4 text-sm font-medium text-gray-600" data-label="Due Date">N/A</td>
-                                <td class="p-4 text-sm max-w-[300px]" data-label="Items"><?= htmlspecialchars($payment['items']) ?></td>
-                                <td class="p-4 text-sm font-medium" data-label="Total">N$<?= number_format($payment['amount'], 2) ?></td>
-                                <td class="p-4" data-label="Progress">
-                                    <span class="px-3 py-1 text-xs font-medium rounded-full border transition-colors bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200">
-                                        Partial Payment
-                                    </span>
-                                </td>
-                                <td class="p-4" data-label="Actions">
-                                    <div class="flex items-center justify-center w-full">
-                                        <div class="w-6 h-6 text-teal-500">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                                            </svg>
-                                        </div>
                                     </div>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
+                                </div>
+                                
+                                <!-- Table -->
+                                <div class="overflow-hidden">
+                                    <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                        <thead class="bg-gray-50 dark:bg-gray-700">
+                                            <tr>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(0)">
+                                                    Date <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(1)">
+                                                    Due Date <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">Items</th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(2)">
+                                                    Total <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">Progress</th>
+                                                <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="transactionsTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
+                                            <?php if (empty($transactions)): ?>
+                                                <tr>
+                                                    <td colspan="6" class="px-6 py-12 text-center">
+                                                        <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
+                                                        <p class="text-gray-500 text-lg">No transactions found.</p>
+                                                    </td>
+                                                </tr>
+                                            <?php else: ?>
+                                                <?php foreach ($transactions as $transaction): 
+                                                    $progress = ($transaction['paid_amount'] / $transaction['total_amount']) * 100;
+                                                ?>
+                                                <tr class="transaction-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" 
+                                                    data-date="<?= strtolower(date('Y-m-d', strtotime($transaction['created_at']))) ?>"
+                                                    data-due-date="<?= strtolower(date('Y-m-d', strtotime($transaction['due_date']))) ?>"
+                                                    data-total="<?= $transaction['total_amount'] ?>">
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= date('d M Y', strtotime($transaction['created_at'])) ?></td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium <?= (strtotime($transaction['due_date']) < time()) ? 'text-red-600' : 'text-gray-800 dark:text-gray-200' ?>" data-label="Due Date">
+                                                        <?= date('d M Y', strtotime($transaction['due_date'])) ?>
+                                                    </td>
+                                                    <td class="px-6 py-4 text-sm text-gray-800 dark:text-gray-200 max-w-[300px]">
+                                                        <span class="truncate block" title="<?= htmlspecialchars($transaction['items']) ?>">
+                                                            <?= htmlspecialchars($transaction['items']) ?>
+                                                        </span>
+                                                    </td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">
+                                                        N$<?= number_format(
+                                                            ($transaction['payment_status'] === 'partial') 
+                                                                ? ($transaction['total_amount'] - $transaction['paid_amount']) 
+                                                                : $transaction['total_amount'], 
+                                                            2
+                                                        ) ?>
+                                                    </td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                                        <span class="px-2 py-1 text-xs font-semibold rounded-full
+                                                            <?php
+                                                                if ($transaction['payment_status'] === 'paid') {
+                                                                    echo 'bg-green-100 text-green-800';
+                                                                } elseif ($transaction['payment_status'] === 'eft') {
+                                                                    echo 'bg-blue-100 text-blue-800';
+                                                                } elseif ($transaction['payment_status'] === 'partial') {
+                                                                    echo 'bg-yellow-100 text-yellow-800';
+                                                                } else {
+                                                                    echo 'bg-red-100 text-red-800';
+                                                                }
+                                                            ?>">
+                                                            <?php 
+                                                                if ($transaction['payment_status'] === 'paid') {
+                                                                    echo 'Cash';
+                                                                } elseif ($transaction['payment_status'] === 'eft') {
+                                                                    echo 'EFT';
+                                                                } elseif ($transaction['payment_status'] === 'partial') {
+                                                                    echo 'Partial';
+                                                                } else {
+                                                                    echo 'Unpaid';
+                                                                }
+                                                            ?>
+                                                        </span>
+                                                    </td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium">
+                                                        <?php if ($transaction['payment_status'] !== 'paid' && $transaction['payment_status'] !== 'eft'): ?>
+                                                            <div class="flex items-center justify-end gap-2">
+                                                                <button type="button" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-green-600 hover:text-green-800 disabled:opacity-50 disabled:pointer-events-none dark:text-green-500 dark:hover:text-green-400 cash-payment-btn" 
+                                                                    data-sale-id="<?= $transaction['id'] ?>"
+                                                                    data-balance="<?= $transaction['total_amount'] - $transaction['paid_amount'] ?>"
+                                                                    title="Cash Payment">
+                                                                    <i data-lucide="dollar-sign" class="w-4 h-4"></i>
+                                                                </button>
+                                                                <button type="button" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-purple-600 hover:text-purple-800 disabled:opacity-50 disabled:pointer-events-none dark:text-purple-500 dark:hover:text-purple-400 eft-payment-btn"
+                                                                    data-sale-id="<?= $transaction['id'] ?>"
+                                                                    data-balance="<?= $transaction['total_amount'] - $transaction['paid_amount'] ?>"
+                                                                    title="EFT Payment">
+                                                                    <i data-lucide="credit-card" class="w-4 h-4"></i>
+                                                                </button>
+                                                            </div>
+                                                        <?php else: ?>
+                                                            <div class="flex items-center justify-end">
+                                                                <i data-lucide="check-circle" class="w-5 h-5 text-green-500"></i>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                </tr>
+                                                <?php endforeach; ?>
+
+                                                <?php foreach ($partialPayments as $payment): ?>
+                                                <tr class="transaction-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= date('d M Y', strtotime($payment['payment_date'])) ?></td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">N/A</td>
+                                                    <td class="px-6 py-4 text-sm text-gray-800 dark:text-gray-200 max-w-[300px]">
+                                                        <span class="truncate block" title="<?= htmlspecialchars($payment['items']) ?>">
+                                                            <?= htmlspecialchars($payment['items']) ?>
+                                                        </span>
+                                                    </td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">N$<?= number_format($payment['amount'], 2) ?></td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                                                            Partial Payment
+                                                        </span>
+                                                    </td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium">
+                                                        <div class="flex items-center justify-end">
+                                                            <i data-lucide="check-circle" class="w-5 h-5 text-green-500"></i>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                
+                                <!-- Pagination -->
+                                <div class="py-1 px-4">
+                                    <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+                                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                                            Showing <span id="showingFrom">1</span> to <span id="showingTo"><?= min(10, count($transactions) + count($partialPayments)) ?></span> of <span id="totalRows"><?= count($transactions) + count($partialPayments) ?></span> entries
+                                        </div>
+                                        <nav class="flex items-center space-x-1" id="paginationNav">
+                                            <!-- Pagination buttons will be generated by JavaScript -->
+                                        </nav>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- EFT Payment History Section -->
@@ -855,34 +852,36 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
 
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
+    // sendToPrinter function is now loaded from ../receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[admin/credit-transactions.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
             }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+            // Use fetch to receipt.php - the interceptor will catch this
+            return fetch('../receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { 
+                return r.json();
+            });
         }
-        
-        return fetch('../receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
     }
 
     // Function to open cash drawer
@@ -939,11 +938,13 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                             </svg>
                         </div>
                         <p class="text-lg font-semibold text-gray-800 mb-4">Remaining Balance: N$${parseFloat(balance).toFixed(2)}</p>
-                        <div class="flex flex-col">
-                            <label class="text-left text-sm font-medium text-gray-700 mb-1">Payment Amount</label>
-                            <input id="paymentAmountInput" type="number" step="0.01" min="0.01" max="${parseFloat(balance)}" 
-                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                                placeholder="Enter amount to pay" value="${parseFloat(balance).toFixed(2)}">
+                        <div class="flex flex-col space-y-3">
+                            <div class="flex flex-col">
+                                <label class="text-left text-sm font-medium text-gray-700 mb-1">Payment Amount</label>
+                                <input id="paymentAmountInput" type="number" step="0.01" min="0.01" max="${parseFloat(balance)}" 
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                                    placeholder="Enter amount to pay" value="${parseFloat(balance).toFixed(2)}">
+                            </div>
                         </div>
                        </div>`,
                 showCancelButton: true,
@@ -968,12 +969,12 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                         Swal.showValidationMessage('Please enter a valid amount between 0.01 and ' + parseFloat(balance).toFixed(2));
                         return false;
                     }
-                    return amount;
+                    return { amount: amount };
                 }
             }).then((result) => {
                 if (result.isConfirmed) {
                     $('#cash_sale_id').val(saleId);
-                    $('#cash_payment_amount').val(result.value);
+                    $('#cash_payment_amount').val(result.value.amount);
                     
                     // Submit form and handle receipt
                     $.ajax({
@@ -1071,7 +1072,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
                             </svg>
                         </div>
-                        <p class="text-lg font-semibold text-gray-800 mb-4">N$${parseFloat(balance).toFixed(2)}</p>
+                        <p class="text-lg font-semibold text-gray-800 mb-4">Remaining Balance: N$${parseFloat(balance).toFixed(2)}</p>
                       </div>
                       <div class="space-y-4">
                         <div class="flex flex-col">
@@ -1109,7 +1110,6 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                         Swal.showValidationMessage('Please enter a valid amount between 0.01 and ' + parseFloat(balance).toFixed(2));
                         return false;
                     }
-                    // transactionRef is now optional
                     return { walletProvider, transactionRef, paymentAmount };
                 }
             }).then((result) => {
@@ -1229,49 +1229,37 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
             }))
         };
 
-        $.ajax({
-            url: '../receipt.php',
-            method: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify(receiptData),
-            success: function(response) {
-                if (response.success) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Receipt Printed',
-                        text: 'The total balance receipt has been printed successfully.',
-                        confirmButtonColor: '#3B82F6',
-                    });
-                } else {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Printing Failed',
-                        text: response.message + (response.details ? '\n\n' + response.details : ''),
-                        confirmButtonColor: '#3B82F6',
-                    });
-                }
-            },
-            error: function(xhr, status, error) {
-                let errorMessage = 'An error occurred while trying to print the receipt.';
-                try {
-                    const response = JSON.parse(xhr.responseText);
-                    if (response.message) {
-                        errorMessage = response.message;
-                    }
-                    if (response.details) {
-                        errorMessage += '\n\n' + response.details;
-                    }
-                } catch (e) {
-                    console.error('Error parsing response:', e);
-                }
-                
+        // Use sendToPrinter (routes to QZ Tray when enabled, receipt.php when disabled)
+        const printFn = (typeof window.sendToPrinter === 'function')
+            ? (d) => window.sendToPrinter(d)
+            : (d) => $.ajax({ url: '../receipt.php', method: 'POST', contentType: 'application/json', data: JSON.stringify(d) }).then(r => r);
+        printFn(receiptData)
+        .then(function(response) {
+            if (response && response.success) {
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Receipt Printed',
+                    text: 'The total balance receipt has been printed successfully.',
+                    confirmButtonColor: '#3B82F6',
+                });
+            } else {
                 Swal.fire({
                     icon: 'error',
                     title: 'Printing Failed',
-                    text: errorMessage,
+                    text: (response && response.message ? response.message : 'Unknown error') + (response && response.details ? '\n\n' + response.details : ''),
                     confirmButtonColor: '#3B82F6',
                 });
             }
+        })
+        .catch(function(error) {
+            let errorMessage = 'An error occurred while trying to print the receipt.';
+            if (error && error.message) errorMessage = error.message;
+            Swal.fire({
+                icon: 'error',
+                title: 'Printing Failed',
+                text: errorMessage,
+                confirmButtonColor: '#3B82F6',
+            });
         });
     }
 

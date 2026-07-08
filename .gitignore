@@ -1,0 +1,3 @@
+# Keep the products folder in the repo but do not upload its contents
+products/*
+!products/.gitkeep

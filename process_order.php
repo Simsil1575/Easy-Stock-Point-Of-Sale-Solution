@@ -9,6 +9,7 @@ date_default_timezone_set('Africa/Harare');
 
 // Database connection
 $db = new PDO('sqlite:pos.db');
+require_once __DIR__ . '/recipe_stock_helper.php';
 
 // Get the raw POST data
 $json = file_get_contents('php://input');
@@ -37,7 +38,7 @@ try {
         ':total' => $data['total'],
         ':cash_received' => $cashReceived,
         ':created_at' => date('Y-m-d H:i:s'), // Current Namibia time
-        ':cashier_id' => $_SESSION['username'] // Add cashier username from session
+        ':cashier_id' => $_SESSION['username'] ?? 'Unknown'
     ]);
 
     $orderId = $db->lastInsertId();
@@ -97,9 +98,10 @@ try {
 
         // Skip inventory updates and daily stock summary for EFT income items and Food category
         if ($item['name'] !== 'EFT Income') {
+            $usedRecipeStock = deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
             // Only decrease quantity if category is not "Food"
             $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-            if (!$isFood) {
+            if (!$isFood && !$usedRecipeStock) {
                 $stmtUpdateInventory->execute([
                     ':quantity' => $item['quantity'],
                     ':product_name' => $item['name']
@@ -135,7 +137,7 @@ try {
                 ':transaction_ref' => $data['transaction_ref'] ?? null,
                 ':wallet_provider' => $data['wallet_provider'] ?? null,
                 ':amount' => $eftAmount,
-                ':cashier_id' => $_SESSION['username'],
+                ':cashier_id' => $_SESSION['username'] ?? 'Unknown',
                 ':payment_date' => date('Y-m-d H:i:s')
             ]);
         }
@@ -161,7 +163,7 @@ try {
                 ':eft_amount' => $eftAmount,
                 ':eft_transaction_ref' => $data['transaction_ref'] ?? null,
                 ':eft_wallet_provider' => $data['wallet_provider'] ?? null,
-                ':cashier_id' => $_SESSION['username']
+                ':cashier_id' => $_SESSION['username'] ?? 'Unknown'
             ]);
         }
     }

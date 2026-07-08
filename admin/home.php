@@ -1,6 +1,8 @@
 <?php
-
-session_start();
+// Start session if not already started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 // Set timezone to Central Africa Time (CAT)
 date_default_timezone_set('Africa/Harare');
@@ -8,6 +10,15 @@ date_default_timezone_set('Africa/Harare');
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SESSION['role'])) {
     // Redirect to login page if not logged in
+    header("Location: ../");
+    exit();
+}
+
+// Check if user has the correct role (admin only)
+if (strtolower($_SESSION['role']) !== 'admin') {
+    // Clear session and log out user with wrong role
+    session_unset();
+    session_destroy();
     header("Location: ../");
     exit();
 }
@@ -37,9 +48,19 @@ try {
     $db = DatabaseManager::getConnection('../pos.db');
     $activationDb = DatabaseManager::getConnection('../active.db');
     $infoDb = DatabaseManager::getConnection('../info.db');
+    $userDb = DatabaseManager::getConnection('../user.db');
 } catch (PDOException $e) {
     echo "Connection failed: " . $e->getMessage();
     exit;
+}
+
+// Get all cashiers and waitresses for cash modal dropdown
+$allCashUpEmployees = [];
+try {
+    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress') ORDER BY username");
+    $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // If query fails, leave empty
 }
 
 // Check activation status
@@ -508,6 +529,8 @@ $outOfStock = [];
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/chart.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="../receipt.php?js=true"></script>
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <style>
@@ -752,6 +775,22 @@ $outOfStock = [];
                                         <?php echo count($lowStock) + count($outOfStock); ?>
                                     </span>
                                 </div>
+                                <!-- Cash Up Button -->
+                                <div class="relative">
+                                    <button onclick="openCashUpModal()" class="p-2 bg-gradient-to-br from-teal-200 to-teal-50 rounded-full hover:shadow-md transition-all duration-200 group" title="Cash Up">
+                                        <svg class="w-6 h-6 text-teal-600 group-hover:text-teal-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <!-- Cash-Up Records Button -->
+                                <div class="relative">
+                                    <a href="cashups" class="p-2 bg-gradient-to-br from-teal-100 to-cyan-50 rounded-full hover:shadow-md transition-all duration-200 group flex items-center justify-center" title="Cash-Up Records">
+                                        <svg class="w-6 h-6 text-teal-600 group-hover:text-teal-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                    </a>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -912,7 +951,8 @@ $outOfStock = [];
                                 // Total EFT payments (direct + credit EFT)
                                 $totalEftPayments = ($eftDirectTotal ?: 0) + ($eftCreditTotal ?: 0);
 
-                                // Calculate cash in till for today's business day
+                                // Calculate cash in till for today's business day using businessClosingTime (matching cash.php)
+                                // All components use business day WHERE clauses with closingTime and isAfterMidnight
                                 $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
                                 echo $cashInTill >= 0 ? 'text-blue-600' : 'text-red-600'; 
                             ?>">
@@ -2714,34 +2754,36 @@ if (!$businessInfo) {
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
 
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
+    // sendToPrinter function is now loaded from ../receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[admin/home.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
             }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+            // Use fetch to receipt.php - the interceptor will catch this
+            return fetch('../receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { 
+                return r.json();
+            });
         }
-        
-        return fetch('../receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
     }
 
     function toggleNotifications() {
@@ -2804,7 +2846,7 @@ if (!$businessInfo) {
             
             // Create modal
             const modal = document.createElement('div');
-            modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+            modal.className = 'fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[10000]';
             modal.id = 'orderDetailsModal';
             modal.onclick = function(e) {
                 if (e.target === modal) {
@@ -2829,18 +2871,28 @@ if (!$businessInfo) {
             }
             
             modal.innerHTML = `
-                <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden" onclick="event.stopPropagation()">
-                    <div class="flex items-center justify-between p-6 border-b border-gray-200 bg-gray-50">
-                        <h3 class="text-xl font-bold text-gray-800">Order Details #${orderId}</h3>
-                        <button onclick="document.getElementById('orderDetailsModal').remove()" class="text-gray-500 hover:text-gray-700 transition-colors">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden" onclick="event.stopPropagation()">
+                    <div class="flex items-center justify-between p-6 bg-gradient-to-r from-teal-600 to-teal-500 rounded-t-2xl">
+                        <div class="flex items-center gap-3">
+                            <div class="p-2 bg-white/20 rounded-xl">
+                                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-bold text-white">Order Details</h3>
+                                <p class="text-teal-100 text-sm">Order #${orderId}</p>
+                            </div>
+                        </div>
+                        <button onclick="document.getElementById('orderDetailsModal').remove()" class="p-2 hover:bg-white/20 rounded-lg transition-colors">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                             </svg>
                         </button>
                     </div>
                     <div class="p-6 overflow-y-auto max-h-[calc(90vh-12rem)]">
                         <div class="mb-6">
-                            <h4 class="text-lg font-semibold text-gray-700 mb-4">Order Information</h4>
+                            <h4 class="text-lg font-semibold text-teal-700 mb-4">Order Information</h4>
                             <div class="grid grid-cols-2 gap-4 mb-4">
                                 <div>
                                     <p class="text-sm text-gray-500">Order ID</p>
@@ -2867,15 +2919,15 @@ if (!$businessInfo) {
                         </div>
                         
                         <div class="mb-6">
-                            <h4 class="text-lg font-semibold text-gray-700 mb-4">Items</h4>
+                            <h4 class="text-lg font-semibold text-teal-700 mb-4">Items</h4>
                             <div class="overflow-x-auto">
                                 <table class="min-w-full divide-y divide-gray-200">
-                                    <thead class="bg-gray-50">
+                                    <thead class="bg-teal-50">
                                         <tr>
-                                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Product</th>
-                                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Quantity</th>
-                                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Price</th>
-                                            <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-teal-700 uppercase">Product</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-teal-700 uppercase">Quantity</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-teal-700 uppercase">Price</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-teal-700 uppercase">Total</th>
                                         </tr>
                                     </thead>
                                     <tbody class="bg-white divide-y divide-gray-200">
@@ -2887,20 +2939,20 @@ if (!$businessInfo) {
                                                 <td class="px-4 py-3 text-sm font-semibold text-gray-800 text-right">N$${parseFloat(item.price).toFixed(2)}</td>
                                             </tr>
                                         `).join('')}
-                                        <tr class="bg-gray-50">
-                                            <td colspan="3" class="px-4 py-3 text-right text-sm font-bold text-gray-800">Total:</td>
-                                            <td class="px-4 py-3 text-right text-sm font-bold text-teal-600">N$${parseFloat(data.order.total || 0).toFixed(2)}</td>
+                                        <tr class="bg-teal-50">
+                                            <td colspan="3" class="px-4 py-3 text-right text-sm font-bold text-teal-700">Total:</td>
+                                            <td class="px-4 py-3 text-right text-sm font-bold text-teal-700">N$${parseFloat(data.order.total || 0).toFixed(2)}</td>
                                         </tr>
                                     </tbody>
                                 </table>
                             </div>
                         </div>
                     </div>
-                    <div class="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
-                        <button onclick="document.getElementById('orderDetailsModal').remove()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors">
+                    <div class="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50 rounded-b-2xl">
+                        <button onclick="document.getElementById('orderDetailsModal').remove()" class="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 transition-colors font-medium">
                             Close
                         </button>
-                        <button onclick="printOrderReceipt(${orderId})" class="px-6 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center gap-2">
+                        <button onclick="printOrderReceipt(${orderId})" class="px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
                             <i class="fas fa-print"></i>
                             Print Receipt
                         </button>
@@ -2985,5 +3037,711 @@ if (!$businessInfo) {
             printBtn.innerHTML = originalText;
         });
     }
+
+    // ==========================================
+    // CASH UP MULTI-STEP MODAL
+    // ==========================================
+    
+    // Global variables for cash up modal
+    let cashUpCurrentStep = 1;
+    let cashUpTotalSteps = 5;
+    let cashUpSystemData = null;
+    
+    // 24-hour time from hour-only dropdowns (minutes fixed: start 00, end 59)
+    function getCashUpStartTime() {
+        const h = document.getElementById('cashup_start_hour');
+        return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':00' : '00:00';
+    }
+    function getCashUpEndTime() {
+        const h = document.getElementById('cashup_end_hour');
+        return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':59' : '23:59';
+    }
+    
+    // Open the cash up modal
+    function openCashUpModal() {
+        cashUpCurrentStep = 1;
+        cashUpSystemData = null;
+        
+        // Reset form values
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('cashup_start_date').value = today;
+        document.getElementById('cashup_start_hour').value = '0';
+        document.getElementById('cashup_end_date').value = today;
+        document.getElementById('cashup_end_hour').value = '23';
+        document.getElementById('cashup_cashier').value = 'all';
+        document.getElementById('cashup_cash_on_hand').value = '';
+        document.getElementById('cashup_cash_back').value = '';
+        document.getElementById('cashup_tips').value = '';
+        document.getElementById('cashup_hubbly').value = '';
+        document.getElementById('cashup_beerhouse').value = '';
+        document.getElementById('cashup_unpaid_credit').value = '';
+        document.getElementById('cashup_credit_returns').value = '';
+        
+        // Show modal
+        document.getElementById('cashUpModal').classList.remove('hidden');
+        document.body.classList.add('overflow-hidden');
+        
+        // Update step display
+        updateCashUpStepDisplay();
+    }
+    
+    // Close the cash up modal
+    function closeCashUpModal() {
+        document.getElementById('cashUpModal').classList.add('hidden');
+        document.body.classList.remove('overflow-hidden');
+    }
+    
+    // Update step display
+    function updateCashUpStepDisplay() {
+        // Hide all steps
+        for (let i = 1; i <= cashUpTotalSteps; i++) {
+            const stepContent = document.getElementById(`cashup_step_${i}`);
+            if (stepContent) stepContent.classList.add('hidden');
+        }
+        
+        // Show current step
+        const currentStepContent = document.getElementById(`cashup_step_${cashUpCurrentStep}`);
+        if (currentStepContent) currentStepContent.classList.remove('hidden');
+        
+        // Update step indicators
+        for (let i = 1; i <= cashUpTotalSteps; i++) {
+            const indicator = document.getElementById(`step_indicator_${i}`);
+            if (indicator) {
+                if (i < cashUpCurrentStep) {
+                    indicator.classList.remove('bg-gray-200', 'text-gray-600', 'bg-teal-400', 'ring-2', 'ring-teal-300');
+                    indicator.classList.add('bg-teal-500', 'text-white');
+                    indicator.innerHTML = '<i class="fas fa-check"></i>';
+                } else if (i === cashUpCurrentStep) {
+                    indicator.classList.remove('bg-gray-200', 'text-gray-600', 'bg-teal-500');
+                    indicator.classList.add('bg-teal-400', 'text-white', 'ring-2', 'ring-teal-300');
+                    indicator.textContent = i;
+                } else {
+                    indicator.classList.remove('bg-teal-400', 'bg-teal-500', 'text-white', 'ring-2', 'ring-teal-300');
+                    indicator.classList.add('bg-gray-200', 'text-gray-600');
+                    indicator.textContent = i;
+                }
+            }
+        }
+        
+        // Update buttons
+        document.getElementById('cashup_prev_btn').classList.toggle('invisible', cashUpCurrentStep === 1);
+        document.getElementById('cashup_next_btn').classList.toggle('hidden', cashUpCurrentStep === cashUpTotalSteps);
+        document.getElementById('cashup_submit_btn').classList.toggle('hidden', cashUpCurrentStep !== cashUpTotalSteps);
+        document.getElementById('cashup_view_btn').classList.toggle('hidden', cashUpCurrentStep !== cashUpTotalSteps);
+    }
+    
+    // View full cash up report in new page
+    function viewFullCashUpReport() {
+        const startDate = document.getElementById('cashup_start_date').value;
+        const startTime = getCashUpStartTime();
+        const endDate = document.getElementById('cashup_end_date').value;
+        const endTime = getCashUpEndTime();
+        const cashierId = document.getElementById('cashup_cashier').value;
+        const url = `cashupmaster.php?date=${encodeURIComponent(endDate)}&cashier_id=${encodeURIComponent(cashierId)}`;
+        window.open(url, '_blank');
+    }
+    
+    // Go to next step
+    async function cashUpNextStep() {
+        // Validate current step
+        if (cashUpCurrentStep === 1) {
+            const startDate = document.getElementById('cashup_start_date').value;
+            const startTime = getCashUpStartTime();
+            const endDate = document.getElementById('cashup_end_date').value;
+            const endTime = getCashUpEndTime();
+            if (!startDate || !endDate) {
+                showCashUpNotification('Please select starting and ending date and time', 'error');
+                return;
+            }
+            const startDt = new Date(startDate + 'T' + startTime);
+            const endDt = new Date(endDate + 'T' + endTime);
+            if (endDt <= startDt) {
+                showCashUpNotification('Ending date & time must be after starting date & time', 'error');
+                return;
+            }
+            
+            // Fetch system data for selected date range/cashier
+            const cashierId = document.getElementById('cashup_cashier').value;
+            try {
+                document.getElementById('cashup_loading').classList.remove('hidden');
+                const response = await fetch('get_cashup_data.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        start_date: startDate,
+                        start_time: startTime,
+                        end_date: endDate,
+                        end_time: endTime,
+                        cashier_id: cashierId
+                    })
+                });
+                cashUpSystemData = await response.json();
+                document.getElementById('cashup_loading').classList.add('hidden');
+                
+                if (!cashUpSystemData.success) {
+                    showCashUpNotification('Error loading data: ' + (cashUpSystemData.error || 'Unknown error'), 'error');
+                    return;
+                }
+                
+                // Pre-fill system values (user can override)
+                document.getElementById('cashup_cash_back').value = cashUpSystemData.cash_back_system?.toFixed(2) || '0.00';
+                document.getElementById('cashup_tips').value = cashUpSystemData.tips_system?.toFixed(2) || '0.00';
+                document.getElementById('cashup_unpaid_credit').value = cashUpSystemData.unpaid_credit_sales?.toFixed(2) ?? '';
+                document.getElementById('cashup_credit_returns').value = cashUpSystemData.credit_returns?.toFixed(2) ?? '';
+                document.getElementById('cashup_expenses').value = cashUpSystemData.expenses?.toFixed(2) ?? '';
+                
+                // Update Step 4 expected cash display
+                document.getElementById('step4_expected').textContent = 'N$ ' + (cashUpSystemData.cash_sales_expected || 0).toFixed(2);
+                
+            } catch (error) {
+                document.getElementById('cashup_loading').classList.add('hidden');
+                showCashUpNotification('Error loading data: ' + error.message, 'error');
+                return;
+            }
+        }
+        
+        if (cashUpCurrentStep === 4) {
+            const cashOnHand = document.getElementById('cashup_cash_on_hand').value;
+            if (!cashOnHand || isNaN(parseFloat(cashOnHand))) {
+                showCashUpNotification('Please enter a valid cash on hand amount', 'error');
+                return;
+            }
+            // Update review summary before showing step 5
+            updateCashUpReview();
+        }
+        
+        if (cashUpCurrentStep < cashUpTotalSteps) {
+            cashUpCurrentStep++;
+            updateCashUpStepDisplay();
+        }
+    }
+    
+    // Go to previous step
+    function cashUpPrevStep() {
+        if (cashUpCurrentStep > 1) {
+            cashUpCurrentStep--;
+            updateCashUpStepDisplay();
+        }
+    }
+    
+    // Update review summary
+    function updateCashUpReview() {
+        if (!cashUpSystemData) return;
+        
+        const cashOnHand = parseFloat(document.getElementById('cashup_cash_on_hand').value) || 0;
+        const cashBack = parseFloat(document.getElementById('cashup_cash_back').value) || 0;
+        const tips = parseFloat(document.getElementById('cashup_tips').value) || 0;
+        const hubbly = parseFloat(document.getElementById('cashup_hubbly').value) || 0;
+        const beerhouse = parseFloat(document.getElementById('cashup_beerhouse').value) || 0;
+        const unpaidCredit = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
+        const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
+        const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
+        
+        const cashSalesExpected = cashUpSystemData.cash_sales_expected || 0;
+        const overShort = cashOnHand - cashSalesExpected;
+        
+        // Update summary display
+        const startDate = document.getElementById('cashup_start_date').value;
+        const startTime = getCashUpStartTime();
+        const endDate = document.getElementById('cashup_end_date').value;
+        const endTime = getCashUpEndTime();
+        document.getElementById('review_date').textContent = startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime;
+        document.getElementById('review_cashier').textContent = document.getElementById('cashup_cashier').selectedOptions[0].text;
+        
+        document.getElementById('review_cash_expected').textContent = 'N$ ' + cashSalesExpected.toFixed(2);
+        document.getElementById('review_cash_on_hand').textContent = 'N$ ' + cashOnHand.toFixed(2);
+        document.getElementById('review_over_short').textContent = 'N$ ' + overShort.toFixed(2);
+        document.getElementById('review_over_short').className = overShort >= 0 ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
+        
+        document.getElementById('review_card_sales').textContent = 'N$ ' + (cashUpSystemData.card_sales_expected || 0).toFixed(2);
+        document.getElementById('review_unpaid_credit').textContent = 'N$ ' + unpaidCredit.toFixed(2);
+        document.getElementById('review_credit_returns').textContent = 'N$ ' + creditReturns.toFixed(2);
+        document.getElementById('review_open_tabs').textContent = 'N$ ' + (cashUpSystemData.open_tabs_balance || 0).toFixed(2);
+        
+        document.getElementById('review_expenses').textContent = 'N$ ' + expenses.toFixed(2);
+        document.getElementById('review_cash_back').textContent = 'N$ ' + cashBack.toFixed(2);
+        document.getElementById('review_tips').textContent = 'N$ ' + tips.toFixed(2);
+        
+        document.getElementById('review_hubbly').textContent = 'N$ ' + hubbly.toFixed(2);
+        document.getElementById('review_beerhouse').textContent = 'N$ ' + beerhouse.toFixed(2);
+        
+        document.getElementById('review_voids').textContent = 'N$ ' + (cashUpSystemData.voids || 0).toFixed(2);
+        document.getElementById('review_refunds').textContent = 'N$ ' + (cashUpSystemData.refunds || 0).toFixed(2);
+        document.getElementById('review_total_sold').textContent = 'N$ ' + (cashUpSystemData.total_items_sold || 0).toFixed(2);
+    }
+    
+    // Submit cash up and print receipt
+    async function submitCashUp() {
+        if (!cashUpSystemData) {
+            showCashUpNotification('No data loaded. Please start over.', 'error');
+            return;
+        }
+        
+        const startDate = document.getElementById('cashup_start_date').value;
+        const startTime = getCashUpStartTime();
+        const endDate = document.getElementById('cashup_end_date').value;
+        const endTime = getCashUpEndTime();
+        const cashierId = document.getElementById('cashup_cashier').value;
+        const cashierName = document.getElementById('cashup_cashier').selectedOptions[0].text;
+        const cashOnHand = parseFloat(document.getElementById('cashup_cash_on_hand').value) || 0;
+        const cashBack = parseFloat(document.getElementById('cashup_cash_back').value) || 0;
+        const tips = parseFloat(document.getElementById('cashup_tips').value) || 0;
+        const hubbly = parseFloat(document.getElementById('cashup_hubbly').value) || 0;
+        const beerhouse = parseFloat(document.getElementById('cashup_beerhouse').value) || 0;
+        const unpaidCreditSales = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
+        const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
+        const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
+        
+        const overShort = cashOnHand - (cashUpSystemData.cash_sales_expected || 0);
+        
+        // Prepare receipt data for printing
+        const receiptData = {
+            is_cashup_master_report: true,
+            print_only: true,
+            start_date: startDate,
+            start_time: startTime,
+            end_date: endDate,
+            end_time: endTime,
+            date: endDate,
+            cashier_username: '<?php echo htmlspecialchars($_SESSION['username'] ?? 'Admin'); ?>',
+            filter_cashier_id: cashierId,
+            filter_cashier_name: cashierName,
+            is_individual_cashout: cashierId !== 'all',
+            // CASH section
+            cash_sales_expected: cashUpSystemData.cash_sales_expected || 0,
+            cash_on_hand: cashOnHand,
+            over_short: overShort,
+            // CARD & CREDIT section (unpaid credit & credit returns from user input)
+            card_sales_expected: cashUpSystemData.card_sales_expected || 0,
+            unpaid_credit_sales: unpaidCreditSales,
+            open_tabs_balance: cashUpSystemData.open_tabs_balance || 0,
+            unpaid_tabs: cashUpSystemData.unpaid_tabs || 0,
+            credit_returns: creditReturns,
+            // DEDUCTIONS section (expenses from modal input)
+            expenses: expenses,
+            cash_back: cashBack,
+            tips: tips,
+            // SALES SOURCES (INFO) section
+            hubbly: hubbly,
+            beerhouse: beerhouse,
+            // ADJUSTMENTS section
+            voids: cashUpSystemData.voids || 0,
+            refunds: cashUpSystemData.refunds || 0,
+            // TOTAL VALUE OF ITEMS SOLD section
+            total_items_sold: cashUpSystemData.total_items_sold || 0
+        };
+        
+        console.log('[CashUpModal] Printing receipt:', receiptData);
+        
+        // Show loading
+        const submitBtn = document.getElementById('cashup_submit_btn');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Printing...';
+        
+        try {
+            // Use sendToPrinter (routes to QZ Tray when enabled) or fallback to direct fetch
+            const printFn = (typeof window.sendToPrinter === 'function')
+                ? (data) => window.sendToPrinter(data)
+                : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+            const result = await printFn(receiptData);
+            
+            console.log('[CashUpModal] Print result:', result);
+            
+            if (result && result.success) {
+                // Save to database after successful print
+                const saveData = {
+                    start_date: startDate,
+                    start_time: startTime,
+                    end_date: endDate,
+                    end_time: endTime,
+                    date: endDate,
+                    cashier_id: cashierId,
+                    cashier_name: cashierName,
+                    cash_sales_expected: cashUpSystemData.cash_sales_expected || 0,
+                    cash_on_hand: cashOnHand,
+                    over_short: overShort,
+                    card_sales_expected: cashUpSystemData.card_sales_expected || 0,
+                    unpaid_credit_sales: unpaidCreditSales,
+                    open_tabs_balance: cashUpSystemData.open_tabs_balance || 0,
+                    unpaid_tabs: cashUpSystemData.unpaid_tabs || 0,
+                    credit_returns: creditReturns,
+                    expenses: expenses,
+                    cash_back: cashBack,
+                    tips: tips,
+                    hubbly: hubbly,
+                    beerhouse: beerhouse,
+                    voids: cashUpSystemData.voids || 0,
+                    refunds: cashUpSystemData.refunds || 0,
+                    total_items_sold: cashUpSystemData.total_items_sold || 0
+                };
+                
+                try {
+                    const saveResponse = await fetch('save_cashup.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(saveData)
+                    });
+                    const saveResult = await saveResponse.json();
+                    console.log('[CashUpModal] Save result:', saveResult);
+                    
+                    if (saveResult.success) {
+                        showCashUpNotification('Cash-up printed and saved successfully!', 'success');
+                    } else {
+                        showCashUpNotification('Printed but failed to save: ' + (saveResult.error || 'Unknown error'), 'error');
+                    }
+                } catch (saveError) {
+                    console.error('[CashUpModal] Save error:', saveError);
+                    showCashUpNotification('Printed but failed to save to database', 'error');
+                }
+                
+                setTimeout(() => {
+                    closeCashUpModal();
+                }, 1500);
+            } else {
+                showCashUpNotification('Print failed: ' + (result?.message || result?.error || 'Unknown error'), 'error');
+            }
+        } catch (error) {
+            console.error('[CashUpModal] Print error:', error);
+            showCashUpNotification('Print error: ' + error.message, 'error');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
+    }
+    
+    // Show notification
+    function showCashUpNotification(message, type) {
+        const notification = document.createElement('div');
+        notification.className = `fixed top-4 right-4 px-6 py-4 rounded-xl shadow-2xl z-[10001] transform transition-all duration-300 ${type === 'success' ? 'bg-teal-500 text-white' : 'bg-red-500 text-white'}`;
+        notification.innerHTML = `
+            <div class="flex items-center gap-3">
+                <i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'} text-xl"></i>
+                <span class="font-medium">${message}</span>
+            </div>
+        `;
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.classList.add('opacity-0', 'translate-y-[-10px]');
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    }
+    
+    // Calculate over/short in real-time
+    document.addEventListener('DOMContentLoaded', function() {
+        const cashOnHandInput = document.getElementById('cashup_cash_on_hand');
+        if (cashOnHandInput) {
+            cashOnHandInput.addEventListener('input', function() {
+                if (cashUpSystemData) {
+                    const cashOnHand = parseFloat(this.value) || 0;
+                    const expected = cashUpSystemData.cash_sales_expected || 0;
+                    const overShort = cashOnHand - expected;
+                    const display = document.getElementById('step4_over_short');
+                    if (display) {
+                        display.textContent = 'N$ ' + overShort.toFixed(2);
+                        display.className = overShort >= 0 ? 'text-2xl font-bold text-green-600' : 'text-2xl font-bold text-red-600';
+                    }
+                }
+            });
+        }
+    });
 </script>
+
+<!-- Cash Up Multi-Step Modal -->
+<div id="cashUpModal" class="hidden fixed inset-0 z-[10000] overflow-y-auto">
+    <!-- Backdrop -->
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity" onclick="closeCashUpModal()"></div>
+    
+    <!-- Modal Content -->
+    <div class="flex min-h-full items-center justify-center p-4">
+        <div class="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl transform transition-all">
+            <!-- Header -->
+            <div class="bg-gradient-to-r from-teal-600 to-teal-500 rounded-t-2xl px-6 py-5">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2 bg-white/20 rounded-xl">
+                            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-xl font-bold text-white">Cash Up</h2>
+                            <p class="text-teal-100 text-sm">Complete the daily cash reconciliation</p>
+                        </div>
+                    </div>
+                    <button onclick="closeCashUpModal()" class="p-2 hover:bg-white/20 rounded-lg transition-colors">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <!-- Step Indicators -->
+                <div class="flex items-center justify-center gap-2 mt-6">
+                    <div id="step_indicator_1" class="w-8 h-8 rounded-full bg-teal-400 text-white flex items-center justify-center text-sm font-semibold ring-2 ring-teal-300">1</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_2" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">2</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_3" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">3</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_4" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">4</div>
+                    <div class="w-8 h-1 bg-white/30 rounded"></div>
+                    <div id="step_indicator_5" class="w-8 h-8 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-sm font-semibold">5</div>
+                </div>
+            </div>
+            
+            <!-- Loading Overlay -->
+            <div id="cashup_loading" class="hidden absolute inset-0 bg-white/80 rounded-2xl flex items-center justify-center z-10">
+                <div class="text-center">
+                    <div class="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                    <p class="text-gray-600 font-medium">Loading data...</p>
+                </div>
+            </div>
+            
+            <!-- Body -->
+            <div class="p-6">
+                <!-- Step 1: Select Date Range & Cashier -->
+                <div id="cashup_step_1">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Select Date Range & Staff Member</h3>
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Starting Date & Hour (24-hour)</label>
+                                <div class="flex gap-2 flex-wrap items-center">
+                                    <input type="date" id="cashup_start_date" class="flex-1 min-w-0 px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100" value="<?php echo date('Y-m-d'); ?>">
+                                    <select id="cashup_start_hour" class="w-20 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Hour (24h)"><?php for ($h = 0; $h < 24; $h++) { echo '<option value="'.$h.'"'.($h===0?' selected':'').'>'.str_pad($h,2,'0',STR_PAD_LEFT).':00</option>'; } ?></select>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Ending Date & Hour (24-hour)</label>
+                                <div class="flex gap-2 flex-wrap items-center">
+                                    <input type="date" id="cashup_end_date" class="flex-1 min-w-0 px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100" value="<?php echo date('Y-m-d'); ?>">
+                                    <select id="cashup_end_hour" class="w-20 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Hour (24h)"><?php for ($h = 0; $h < 24; $h++) { echo '<option value="'.$h.'"'.($h===23?' selected':'').'>'.str_pad($h,2,'0',STR_PAD_LEFT).':00</option>'; } ?></select>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Cashier / Waitress (Optional)</label>
+                            <select id="cashup_cashier" class="w-full px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100">
+                                <option value="all">All Staff</option>
+                                <?php foreach ($allCashUpEmployees as $employee): ?>
+                                <option value="<?php echo htmlspecialchars($employee['username']); ?>">
+                                    <?php echo htmlspecialchars($employee['username']); ?> (<?php echo ucfirst($employee['role']); ?>)
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="text-sm text-gray-500 mt-2">Select a specific staff member or "All Staff" for combined totals</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 2: Deductions & Sources -->
+                <div id="cashup_step_2" class="hidden">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Deductions & Sales Sources</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-red-50 rounded-xl p-4">
+                            <h4 class="font-semibold text-red-800 mb-3 flex items-center gap-2">
+                                <i class="fas fa-minus-circle"></i> Deductions
+                            </h4>
+                            <div class="space-y-3">
+                                <div>
+                                    <label for="cashup_cash_back" class="block text-sm font-medium text-gray-700 mb-1">Cash Back</label>
+                                    <div class="relative">
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">N$</span>
+                                        <input type="number" id="cashup_cash_back" step="0.01" min="0" placeholder="0.00" class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-right">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="cashup_tips" class="block text-sm font-medium text-gray-700 mb-1">Tips</label>
+                                    <div class="relative">
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">N$</span>
+                                        <input type="number" id="cashup_tips" step="0.01" min="0" placeholder="0.00" class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-right">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-blue-50 rounded-xl p-4">
+                            <h4 class="font-semibold text-blue-800 mb-3 flex items-center gap-2">
+                                <i class="fas fa-store"></i> Sales Sources
+                            </h4>
+                            <div class="space-y-3">
+                                <div>
+                                    <label for="cashup_hubbly" class="block text-sm font-medium text-gray-700 mb-1">Hubbly</label>
+                                    <div class="relative">
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">N$</span>
+                                        <input type="number" id="cashup_hubbly" step="0.01" min="0" placeholder="0.00" class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-right">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="cashup_beerhouse" class="block text-sm font-medium text-gray-700 mb-1">Beerhouse</label>
+                                    <div class="relative">
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">N$</span>
+                                        <input type="number" id="cashup_beerhouse" step="0.01" min="0" placeholder="0.00" class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-right">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-purple-50 rounded-xl p-4 md:col-span-2">
+                            <h4 class="font-semibold text-purple-800 mb-3 flex items-center gap-2">
+                                <i class="fas fa-credit-card"></i> Credit (enter amounts)
+                            </h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="cashup_unpaid_credit" class="block text-sm font-medium text-gray-700 mb-1">Unpaid Credit Sales</label>
+                                    <div class="relative">
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">N$</span>
+                                        <input type="number" id="cashup_unpaid_credit" step="0.01" min="0" placeholder="0.00" class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-right">
+                                    </div>
+                                    <p class="text-xs text-gray-500 mt-1">Enter from count; system value pre-filled if loaded</p>
+                                </div>
+                                <div>
+                                    <label for="cashup_credit_returns" class="block text-sm font-medium text-gray-700 mb-1">Credit Returns</label>
+                                    <div class="relative">
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">N$</span>
+                                        <input type="number" id="cashup_credit_returns" step="0.01" min="0" placeholder="0.00" class="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-right">
+                                    </div>
+                                    <p class="text-xs text-gray-500 mt-1">Enter from count; system value pre-filled if loaded</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 3: Expenses -->
+                <div id="cashup_step_3" class="hidden">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Expenses</h3>
+                    <div class="bg-red-50 rounded-xl p-5">
+                        <p class="text-sm text-gray-600 mb-4">Enter total expenses (cash-outs) for this period. System value is pre-filled when data is loaded; you can adjust from your count.</p>
+                        <div>
+                            <label for="cashup_expenses" class="block text-sm font-medium text-gray-700 mb-2">Total Expenses (N$)</label>
+                            <div class="relative">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">N$</span>
+                                <input type="number" id="cashup_expenses" step="0.01" min="0" placeholder="0.00" class="w-full pl-12 pr-4 py-4 border-2 border-red-200 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-xl font-semibold text-right transition-all bg-white">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 4: Enter Cash On Hand -->
+                <div id="cashup_step_4" class="hidden">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Enter Cash On Hand</h3>
+                    <div class="bg-gradient-to-br from-teal-50 to-cyan-50 rounded-xl p-5 mb-5">
+                        <div class="flex justify-between items-center mb-3">
+                            <span class="text-gray-600 font-medium">Cash Sales (Expected)</span>
+                            <span id="step4_expected" class="text-xl font-bold text-teal-700">N$ 0.00</span>
+                        </div>
+                        <div class="border-t border-teal-200 pt-3">
+                            <label for="cashup_cash_on_hand" class="block text-sm font-medium text-gray-700 mb-2">Actual Cash On Hand</label>
+                            <div class="relative">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">N$</span>
+                                <input type="number" id="cashup_cash_on_hand" step="0.01" min="0" placeholder="0.00" class="w-full pl-12 pr-4 py-4 border-2 border-teal-300 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 text-xl font-semibold text-right transition-all">
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center mt-4 pt-3 border-t border-teal-200">
+                            <span class="text-gray-600 font-medium">Over / Short</span>
+                            <span id="step4_over_short" class="text-2xl font-bold text-teal-700">N$ 0.00</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 5: Review & Print -->
+                <div id="cashup_step_5" class="hidden">
+                    <h3 class="text-lg font-semibold text-teal-700 mb-4">Review & Print Receipt</h3>
+                    
+                    <div class="bg-gray-50 rounded-xl p-4 mb-4">
+                        <div class="flex justify-between text-sm mb-2">
+                            <span class="text-gray-600">Date:</span>
+                            <span id="review_date" class="font-semibold">-</span>
+                        </div>
+                        <div class="flex justify-between text-sm">
+                            <span class="text-gray-600">Staff:</span>
+                            <span id="review_cashier" class="font-semibold">-</span>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-3 max-h-64 overflow-y-auto pr-2">
+                        <!-- CASH Section -->
+                        <div class="border-l-4 border-teal-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">CASH</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Expected:</span><span id="review_cash_expected" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">On Hand:</span><span id="review_cash_on_hand" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Over/Short:</span><span id="review_over_short" class="font-semibold">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- CARD & CREDIT Section -->
+                        <div class="border-l-4 border-blue-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">CARD & CREDIT</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Card Sales:</span><span id="review_card_sales" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Unpaid Credit Sales:</span><span id="review_unpaid_credit" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Credit Returns:</span><span id="review_credit_returns" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Open Tabs:</span><span id="review_open_tabs" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- DEDUCTIONS Section -->
+                        <div class="border-l-4 border-red-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">DEDUCTIONS</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Expenses:</span><span id="review_expenses" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Cash Back:</span><span id="review_cash_back" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Tips:</span><span id="review_tips" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- SALES SOURCES Section -->
+                        <div class="border-l-4 border-purple-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">SALES SOURCES</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Hubbly:</span><span id="review_hubbly" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Beerhouse:</span><span id="review_beerhouse" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- ADJUSTMENTS Section -->
+                        <div class="border-l-4 border-orange-500 pl-3">
+                            <h4 class="font-semibold text-gray-700 text-sm mb-2">ADJUSTMENTS</h4>
+                            <div class="space-y-1 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-600">Voids:</span><span id="review_voids" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Refunds:</span><span id="review_refunds" class="font-medium">N$ 0.00</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- TOTAL Section -->
+                        <div class="border-l-4 border-teal-700 pl-3 bg-teal-50 rounded-r-lg py-2">
+                            <div class="flex justify-between text-sm">
+                                <span class="font-semibold text-teal-700">Total Items Sold:</span>
+                                <span id="review_total_sold" class="font-bold text-teal-700">N$ 0.00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="px-6 py-4 bg-gray-50 rounded-b-2xl flex justify-between">
+                <button id="cashup_prev_btn" onclick="cashUpPrevStep()" class="invisible px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 transition-colors font-medium flex items-center gap-2">
+                    <i class="fas fa-arrow-left"></i> Previous
+                </button>
+                <div class="flex gap-3">
+                    <button onclick="closeCashUpModal()" class="px-5 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 transition-colors font-medium">
+                        Cancel
+                    </button>
+                    <button id="cashup_next_btn" onclick="cashUpNextStep()" class="px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
+                        Next <i class="fas fa-arrow-right"></i>
+                    </button>
+                    <button id="cashup_submit_btn" onclick="submitCashUp()" class="hidden px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
+                        <i class="fas fa-print"></i> Print Receipt
+                    </button>
+                    <button id="cashup_view_btn" onclick="viewFullCashUpReport()" class="hidden px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium flex items-center gap-2" title="View Full Report">
+                        <i class="fas fa-external-link-alt"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 

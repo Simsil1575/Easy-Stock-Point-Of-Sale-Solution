@@ -11,6 +11,8 @@ if ($activationStatus == 0) {
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
+require_once __DIR__ . '/../void_transaction_helper.php';
+
 header('Content-Type: application/json');
 
 try {
@@ -41,7 +43,14 @@ try {
                 ]);
             }
 
+            recordVoidForDeletedOrder($db, (int) $id);
+
             // Delete all related records (order doesn't matter with foreign keys disabled)
+            try {
+                $db->prepare("DELETE FROM mixed_payments WHERE order_id = ?")->execute([$id]);
+            } catch (PDOException $e) {
+            }
+
             $stmt = $db->prepare("DELETE FROM eft_payments WHERE order_id = ?");
             $stmt->execute([$id]);
             
@@ -260,6 +269,8 @@ try {
                         ':product_name' => $item['product_name']
                     ]);
                 }
+
+                recordVoidForDeletedCreditSale($db, (int) $id);
                 
                 // Delete all related records
                 $stmt = $db->prepare("DELETE FROM payment_logs WHERE sale_id = ?");

@@ -4,6 +4,29 @@ use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 
 try {
+    // If QZ Tray enabled, return receipt_data so frontend uses sendToPrinter -> QZ.
+    $use_qz_tray = 0;
+    try {
+        $dbPos = new PDO('sqlite:../pos.db');
+        $dbPos->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        try { $dbPos->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0"); } catch (PDOException $e) {}
+        $row = $dbPos->query("SELECT use_qz_tray FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $use_qz_tray = (int)($row['use_qz_tray'] ?? 0);
+    } catch (Exception $e) {
+        $use_qz_tray = 0;
+    }
+
+    if ($use_qz_tray) {
+        header('Content-Type: application/json');
+        echo json_encode([
+            'success' => true,
+            'message' => 'Drawer open requested via QZ Tray',
+            'receipt_data' => ['open_drawer_only' => true],
+            'order_data' => ['open_drawer_only' => true],
+        ]);
+        exit;
+    }
+
     // Set timezone to Namibia
     date_default_timezone_set('Africa/Harare');
 

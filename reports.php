@@ -37,6 +37,13 @@ if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 
+// Ensure tab tips column exists (ignore if already added)
+try {
+    $db->exec("ALTER TABLE tab_payments ADD COLUMN tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column may already exist
+}
+
 // Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId) {
     if (empty($userId)) return 'Unknown';
@@ -377,14 +384,19 @@ $ordersQuery = $db->prepare("
         FROM order_items oi
         GROUP BY oi.order_id
     ), order_tab_info AS (
-        SELECT tp.order_id, t.tab_name, tp.cashier_id as tab_cashier_id
+        SELECT
+            tp.order_id,
+            t.tab_name,
+            MIN(tp.cashier_id) as tab_cashier_id,
+            COALESCE(SUM(tp.tip_amount), 0) as tips
         FROM tab_payments tp
         JOIN tabs t ON tp.tab_id = t.id
+        GROUP BY tp.order_id, t.tab_name
     ), order_splits AS (
         SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
                MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
                MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
-               oti.tab_name, oti.tab_cashier_id
+               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips
         FROM orders o
         LEFT JOIN order_sums os ON os.order_id = o.id
         LEFT JOIN order_products op ON op.order_id = o.id
@@ -395,11 +407,11 @@ $ordersQuery = $db->prepare("
         )
         GROUP BY o.id
     )
-    SELECT id, cash_amount AS total, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
     FROM order_splits
     WHERE cash_amount > 0
     UNION ALL
-    SELECT id, eft_amount AS total, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
     FROM order_splits
     WHERE eft_amount > 0
     ORDER BY created_at DESC
@@ -454,6 +466,7 @@ $creditQuery = $db->prepare("
     SELECT 
         sale_id as id,
         COALESCE(amount, total_amount) as total,
+        0 as tips,
         COALESCE(payment_date, created_at) as created_at,
         products,
         sale_type,
@@ -593,6 +606,8 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
     <link href="src/output.css" rel="stylesheet">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="src/jquery-3.6.0.min.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="receipt.php?js=true"></script>
 
 
     <style>
@@ -672,6 +687,22 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
         .mobile-overlay.active {
             opacity: 1;
             visibility: visible;
+        }
+        
+        /* Ensure sidebar is above overlay on mobile */
+        @media (max-width: 1023px) {
+            #sidebar {
+                z-index: 10000 !important;
+            }
+        }
+        
+        @media (min-width: 1024px) {
+            .hamburger {
+                display: none;
+            }
+            .mobile-overlay {
+                display: none;
+            }
         }
         
         /* Mobile responsive adjustments */
@@ -1341,6 +1372,9 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <?php if (isset($row['creditor_name']) && $row['creditor_name']): ?>
                                 <span class="text-xs text-orange-500 font-medium">(<?= htmlspecialchars($row['creditor_name']) ?>)</span>
                                 <?php endif; ?>
+                                <?php if (floatval($row['tips'] ?? 0) > 0): ?>
+                                <span class="text-xs text-emerald-600 font-medium">(Tip: N$<?= number_format(floatval($row['tips']), 2) ?>)</span>
+                                <?php endif; ?>
                                 <?php if (isset($row['tab_name']) && $row['tab_name']): ?>
                                 <span class="text-xs text-blue-500 font-medium">(Tab: <?= htmlspecialchars($row['tab_name']) ?>)</span>
                                 <?php if (isset($row['tab_cashier_id']) && $row['tab_cashier_id']): ?>
@@ -1649,45 +1683,42 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             vat_rate: <?= json_encode(floatval($businessInfoForPrint['vat_rate'] ?? 15.0)) ?>
         };
 
-        // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
-            console.log('[sendToPrinter] Input receiptData:', JSON.stringify(receiptData).substring(0, 500));
-            console.log('[sendToPrinter] Items in input:', receiptData.items ? receiptData.items.length : 'missing');
-            
-            // Preserve items array explicitly
-            var dataWithBusiness = Object.assign({}, receiptData, {
-                business_name: receiptData.business_name || businessInfo.business_name,
-                location: receiptData.location || businessInfo.location,
-                phone: receiptData.phone || businessInfo.phone,
-                footer_text: receiptData.footer_text || businessInfo.footer_text,
-                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-                vat_rate: receiptData.vat_rate || businessInfo.vat_rate,
-                items: receiptData.items || [] // Explicitly preserve items array
-            });
-            
-            console.log('[sendToPrinter] Output dataWithBusiness items:', dataWithBusiness.items ? dataWithBusiness.items.length : 'missing');
-            console.log('[sendToPrinter] Full data keys:', Object.keys(dataWithBusiness).join(', '));
-            
-            var printer = window.AndroidPrinter || window.NativePrinter || null;
-            
-            if (printer && typeof printer.printReceipt === 'function') {
-                console.log('[sendToPrinter] Using Android native printing');
-                try {
-                    var jsonString = JSON.stringify(dataWithBusiness);
-                    console.log('[sendToPrinter] JSON string length:', jsonString.length);
-                    console.log('[sendToPrinter] JSON preview:', jsonString.substring(0, 300));
-                    printer.printReceipt(jsonString);
-                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-                } catch (e) {
-                    console.error('[sendToPrinter] Android print error:', e.message);
+        // sendToPrinter function is now loaded from receipt.php?js=true
+        // The function is defined in receipt.php and automatically handles Android printing
+        // The Android interceptor in MainActivity.java only listens to receipt.php calls
+        if (typeof sendToPrinter === 'undefined') {
+            console.warn('[reports.php] sendToPrinter not loaded from receipt.php, using fallback');
+            function sendToPrinter(receiptData) {
+                console.log('[sendToPrinter] Input receiptData:', JSON.stringify(receiptData).substring(0, 500));
+                console.log('[sendToPrinter] Items in input:', receiptData.items ? receiptData.items.length : 'missing');
+                
+                // Ensure print_only flag is set for regular receipts
+                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                    receiptData.print_only = true;
                 }
+                
+                // Preserve items array explicitly
+                var dataWithBusiness = Object.assign({}, receiptData, {
+                    business_name: receiptData.business_name || businessInfo.business_name,
+                    location: receiptData.location || businessInfo.location,
+                    phone: receiptData.phone || businessInfo.phone,
+                    footer_text: receiptData.footer_text || businessInfo.footer_text,
+                    vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                    vat_rate: receiptData.vat_rate || businessInfo.vat_rate,
+                    items: receiptData.items || [] // Explicitly preserve items array
+                });
+                
+                console.log('[sendToPrinter] Output dataWithBusiness items:', dataWithBusiness.items ? dataWithBusiness.items.length : 'missing');
+                
+                // Use fetch to receipt.php - the interceptor will catch this
+                return fetch('receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) { 
+                    return r.json();
+                });
             }
-            
-            return fetch('receipt.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataWithBusiness)
-            }).then(function(r) { return r.json(); });
         }
     // Function to update report data via form submission
     function updateReport() {

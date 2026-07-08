@@ -130,11 +130,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         <option value="cashier">Cashier</option>
                                         <option value="manager">Manager</option>
                                         <option value="admin">Admin</option>
+                                        <option value="waitress">Waitress</option>
                                     </select>
                                 </div>
 
                                 <div>
-                                    <label for="email" class="block text-sm font-medium text-gray-7 00 mb-2">Email (Optional)</label>
+                                    <label for="email" class="block text-sm font-medium text-gray-700 mb-2">Email (Optional)</label>
                                     <input type="email" name="email" id="email"
                                         placeholder="Enter email address"
                                         class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm 

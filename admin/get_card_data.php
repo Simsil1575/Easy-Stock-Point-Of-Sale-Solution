@@ -370,8 +370,9 @@ if (isset($_GET['view'])) {
         // Net Revenue should match Net Profit in sales.php: Gross Profit + Cash In - Cash Out
         $netRevenue = $grossProfit + $totalCashIn - $totalCashOut;
         
-        // Cash in till calculation using period-specific data (matching home.php)
+        // Cash in till calculation using period-specific data with businessClosingTime (matching cash.php)
         // Uses cashSalesFromOrders (orders minus EFT, no payments) to avoid double-counting with creditPayments
+        // All components (totalCashIn, cashSalesFromOrders, totalCreditPayments, totalCashOut) use business day logic
         $cashInTill = $totalCashIn + $cashSalesFromOrders + $totalCreditPayments - $totalCashOut;
         
         // Total deposits calculation using period-specific data (matching home.php)

@@ -36,7 +36,13 @@ try {
     $startDate = '';
     $endDate = date('Y-m-d');
     
+    $noFilter = false;
     switch($period) {
+        case 'all':
+            $startDate = '1970-01-01';
+            $endDate = '2099-12-31';
+            $noFilter = true;
+            break;
         case 'today':
             $startDate = date('Y-m-d');
             $endDate = date('Y-m-d');
@@ -53,9 +59,15 @@ try {
             $startDate = date('Y-01-01');
             $endDate = date('Y-12-31');
             break;
+        default:
+            $startDate = date('Y-m-d');
+            $endDate = date('Y-m-d');
+            break;
     }
     
     // Get creditor analytics data
+    $dateFilter = $noFilter ? "1=1" : "DATE(cs.created_at) BETWEEN :startDate AND :endDate";
+    
     $analytics = $db->prepare("
         SELECT 
             c.id,
@@ -68,7 +80,7 @@ try {
             COUNT(CASE WHEN cs.payment_status = 'unpaid' THEN 1 END) as unpaid_transactions
         FROM creditors c
         LEFT JOIN credit_sales cs ON c.id = cs.creditor_id 
-            AND DATE(cs.created_at) BETWEEN :startDate AND :endDate
+            AND ($dateFilter)
         WHERE c.active = 1
         GROUP BY c.id, c.name
         HAVING total_transactions > 0 OR outstanding_balance > 0
@@ -76,7 +88,11 @@ try {
         LIMIT 10
     ");
     
-    $analytics->execute([':startDate' => $startDate, ':endDate' => $endDate]);
+    if ($noFilter) {
+        $analytics->execute();
+    } else {
+        $analytics->execute([':startDate' => $startDate, ':endDate' => $endDate]);
+    }
     $creditors = $analytics->fetchAll(PDO::FETCH_ASSOC);
     
     // Get summary statistics
@@ -89,19 +105,24 @@ try {
             COALESCE(SUM(cs.total_amount - cs.paid_amount), 0) as total_outstanding
         FROM creditors c
         LEFT JOIN credit_sales cs ON c.id = cs.creditor_id 
-            AND DATE(cs.created_at) BETWEEN :startDate AND :endDate
+            AND ($dateFilter)
         WHERE c.active = 1
     ");
     
-    $summary->execute([':startDate' => $startDate, ':endDate' => $endDate]);
+    if ($noFilter) {
+        $summary->execute();
+    } else {
+        $summary->execute([':startDate' => $startDate, ':endDate' => $endDate]);
+    }
     $summaryData = $summary->fetch(PDO::FETCH_ASSOC);
     
+    $dateRangeDisplay = $noFilter ? 'All Time' : "$startDate to $endDate";
     echo json_encode([
         'success' => true,
         'creditors' => $creditors,
         'summary' => $summaryData,
         'period' => $period,
-        'dateRange' => "$startDate to $endDate"
+        'dateRange' => $dateRangeDisplay
     ]);
 } catch (Exception $e) {
     http_response_code(500);

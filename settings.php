@@ -227,7 +227,24 @@ require_once 'activation_helper.php';
                 <?php
 try {
     $pdo = new PDO('sqlite:pos.db');
-    $stmt = $pdo->query("SELECT show_all_products FROM product_settings LIMIT 1");
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    // Ensure table exists
+    $pdo->exec("CREATE TABLE IF NOT EXISTS product_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        show_all_products BOOLEAN NOT NULL DEFAULT 0,
+        hide_available_quantity BOOLEAN NOT NULL DEFAULT 0,
+        default_print_receipt BOOLEAN NOT NULL DEFAULT 0
+    )");
+    
+    // Check if row exists, if not create it
+    $checkStmt = $pdo->query("SELECT COUNT(*) FROM product_settings WHERE id = 1");
+    $rowExists = $checkStmt->fetchColumn();
+    if ($rowExists == 0) {
+        $pdo->exec("INSERT INTO product_settings (id, show_all_products, hide_available_quantity, default_print_receipt) VALUES (1, 0, 0, 0)");
+    }
+    
+    $stmt = $pdo->query("SELECT show_all_products FROM product_settings WHERE id = 1");
     $setting = $stmt->fetch(PDO::FETCH_ASSOC);
     $show_all_products = $setting['show_all_products'] ?? 0; // Default to 0 if not set
     $show_all_products_checked = $show_all_products ? 'checked' : '';
@@ -244,13 +261,14 @@ try {
             <input type="checkbox" name="show_all_products" id="show_all_products" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $show_all_products_checked; ?>>
         </div>
         <div class="ml-2 text-sm">
-            <label for="show_all_products" class="font-medium text-gray-700 flex items-center">
+            <label for="show_all_products" class="font-medium text-gray-700 flex items-center cursor-pointer">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
                     <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
                 </svg>
                 Show all products on dashboard (including unavailable products)
             </label>
+            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, all products will be displayed on the dashboard regardless of availability</p>
         </div>
     </div>
 </div>
@@ -269,10 +287,19 @@ try {
                             })
                             .then(response => response.json())
                             .then(data => {
-
+                                if (data.success) {
+                                    // Optionally show a success message
+                                    console.log('Setting updated successfully');
+                                } else {
+                                    console.error('Failed to update setting:', data.error);
+                                    checkbox.checked = !checkbox.checked; // Revert on error
+                                    alert('Failed to update setting. Please try again.');
+                                }
                             })
                             .catch(error => {
-
+                                console.error('Error updating setting:', error);
+                                checkbox.checked = !checkbox.checked; // Revert on error
+                                alert('Error updating setting. Please try again.');
                             });
                         });
                     });
@@ -435,6 +462,10 @@ try {
                     <div class="bg-white shadow-xl rounded-xl p-4 lg:p-8 mb-6 lg:mb-8 relative z-10">
                     <h2 class="text-xl lg:text-2xl font-bold mb-4 lg:mb-6">Software Activation</h2>
                     <form action="" method="POST" class="space-y-4">
+                        <!-- CSRF Token for security -->
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(generateActivationCSRFToken()) ?>">
+                        <input type="hidden" name="activate_software" value="1">
+                        
                         <div class="relative">
                             <label for="key" class="block text-sm font-medium text-gray-700 mb-2">Activation Key</label>
                             <div class="relative rounded-md shadow-sm">
@@ -444,6 +475,7 @@ try {
                                     </svg>
                                 </div>
                                         <input type="text" name="key" id="key" placeholder="Enter Your Activation Key" required
+                                    maxlength="64" autocomplete="off"
                                     class="block w-full pl-8 lg:pl-10 pr-3 py-2 lg:py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm placeholder-gray-400 text-sm lg:text-base">
                             </div>
                         </div>
@@ -455,13 +487,11 @@ try {
                         </button>
                     </form>
 
-
-
-
                     <?php
-                    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['key'])) {
+                    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['activate_software']) && isset($_POST['key'])) {
                         $submittedKey = trim($_POST['key']);
-                        $result = activateKey($submittedKey);
+                        $csrfToken = $_POST['csrf_token'] ?? '';
+                        $result = activateKey($submittedKey, $csrfToken);
                         
                         if ($result['success']) {
                             echo "<div class='mt-4 p-4 bg-teal-100 text-teal-700 rounded fade-in z-20' role='alert'>

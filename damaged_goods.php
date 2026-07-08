@@ -7,7 +7,7 @@ date_default_timezone_set('Africa/Harare');
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SESSION['role'])) {
     // Redirect to login page if not logged in
-    header("Location: ../");
+    header("Location: ");
     exit();
 }
 
@@ -19,13 +19,32 @@ if ($activationStatus == 0) {
     exit();
 }
 
-$db = new PDO('sqlite:pos.db');
+// Use path relative to this script so we always use the same pos.db
+$posDb = __DIR__ . '/pos.db';
+$db = new PDO('sqlite:' . $posDb);
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+function ensureDamagedGoodsTable(PDO $db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS damaged_goods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        reason TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP
+    )");
+}
+ensureDamagedGoodsTable($db);
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $product_id = $_POST['product_id'];
     $quantity = $_POST['quantity'];
     $reason = $_POST['reason'];
+    $damageDate = isset($_POST['date']) ? preg_replace('/[^0-9\-]/', '', $_POST['date']) : '';
+    if ($damageDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $damageDate)) {
+        $damageDate = date('Y-m-d');
+    }
+    $damageDateTime = $damageDate . ' 10:00:00';
 
     try {
         $db->beginTransaction();
@@ -40,9 +59,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception("Cannot damage more items than are available in stock");
         }
         
-        // Insert into damaged goods
-        $stmt = $db->prepare("INSERT INTO damaged_goods (product_id, quantity, reason) VALUES (?, ?, ?)");
-        $stmt->execute([$product_id, $quantity, $reason]);
+        // Insert into damaged goods with selected date at 10:00
+        $stmt = $db->prepare("INSERT INTO damaged_goods (product_id, quantity, reason, date) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$product_id, $quantity, $reason, $damageDateTime]);
         
         // Update product quantity
         $stmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE id = ?");
@@ -83,12 +102,22 @@ if (isset($_SESSION['error'])) {
 
 // Get products and damaged goods records
 $products = $db->query("SELECT id, name FROM products")->fetchAll(PDO::FETCH_ASSOC);
-$damagedGoods = $db->query("
-    SELECT d.*, p.name as product_name 
-    FROM damaged_goods d
-    JOIN products p ON d.product_id = p.id
-    ORDER BY d.date DESC
-")->fetchAll(PDO::FETCH_ASSOC);
+try {
+    $damagedGoods = $db->query("
+        SELECT d.*, p.name as product_name 
+        FROM damaged_goods d
+        JOIN products p ON d.product_id = p.id
+        ORDER BY d.date DESC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    ensureDamagedGoodsTable($db);
+    $damagedGoods = $db->query("
+        SELECT d.*, p.name as product_name 
+        FROM damaged_goods d
+        JOIN products p ON d.product_id = p.id
+        ORDER BY d.date DESC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+}
 ?>
 
 <!DOCTYPE html>
@@ -123,15 +152,20 @@ $damagedGoods = $db->query("
                         <div class="bg-blue-50 px-4 py-2 rounded-lg">
                             <span class="text-blue-700 font-medium">Total Damaged Items:</span>
                             <?php 
-                                $total = $db->query("SELECT SUM(quantity) FROM damaged_goods")->fetchColumn();
+                                try {
+                                    $total = $db->query("SELECT SUM(quantity) FROM damaged_goods")->fetchColumn();
+                                } catch (PDOException $e) {
+                                    ensureDamagedGoodsTable($db);
+                                    $total = $db->query("SELECT SUM(quantity) FROM damaged_goods")->fetchColumn();
+                                }
                                 echo '<span class="ml-2 text-blue-800">'.($total ?: 0).'</span>';
                             ?>
                         </div>
-                        <a href="settings" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
+                        <a href="cashier-center" class="inline-flex items-center px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors">
                             <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
                             </svg>
-                            Go Back
+                            back
                         </a>
                     </div>
                 </div>
@@ -161,7 +195,12 @@ $damagedGoods = $db->query("
                 <div class="bg-white rounded-xl shadow-sm p-6 mb-8 border border-gray-100">
                     <h2 class="text-lg font-semibold text-gray-900 mb-6">Record Damaged Goods</h2>
                     <form method="POST">
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                            <div class="space-y-2">
+                                <label class="block text-sm font-medium text-gray-700">Date <span class="text-red-500">*</span></label>
+                                <input type="date" name="date" value="<?= date('Y-m-d') ?>"
+                                    class="mt-1 block w-full rounded-lg border border-gray-400 shadow-sm focus:border-teal-500 focus:ring-teal-500 h-8" required>
+                            </div>
                             <div class="space-y-2">
                                 <label class="block text-sm font-medium text-gray-700">Product <span class="text-red-500">*</span></label>
                                 <select name="product_id" class="mt-1 block w-full rounded-lg border border-gray-400 shadow-sm focus:border-teal-500 focus:ring-teal-500 h-8">

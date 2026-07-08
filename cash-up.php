@@ -200,6 +200,7 @@ $availableDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
     <link href="src/output.css" rel="stylesheet">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="src/jquery-3.6.0.min.js"></script>
+    <script src="receipt.php?js=true"></script>
 
     <style>
         /* Main Layout Structure - Match reports.php */
@@ -286,6 +287,22 @@ $availableDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
         .mobile-overlay.active {
             opacity: 1;
             visibility: visible;
+        }
+
+        /* Ensure sidebar is above overlay on mobile */
+        @media (max-width: 1023px) {
+            #sidebar {
+                z-index: 10000 !important;
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .hamburger {
+                display: none;
+            }
+            .mobile-overlay {
+                display: none;
+            }
         }
         
         /* Mobile responsive adjustments */
@@ -528,6 +545,12 @@ $availableDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm no-print">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
+                        <a href="cashier-center" class="inline-flex items-center px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            back
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>
@@ -726,7 +749,7 @@ $availableDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
         };
 
         // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
+        function sendToPrinterLegacy(receiptData) {
             var dataWithBusiness = Object.assign({}, receiptData, {
                 business_name: receiptData.business_name || businessInfo.business_name,
                 location: receiptData.location || businessInfo.location,
@@ -1017,7 +1040,8 @@ $availableDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
                 };
                 
                 // Send to printer (Android native or server)
-                const result = await sendToPrinter(receiptData);
+                const printFn = (typeof window.sendToPrinter === 'function') ? window.sendToPrinter : sendToPrinterLegacy;
+                const result = await printFn(receiptData);
                 
                 if (result.success) {
                     alert('Cash-up receipt printed successfully!');

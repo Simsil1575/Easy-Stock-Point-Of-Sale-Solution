@@ -8,7 +8,7 @@ if (ob_get_level()) {
     ob_clean();
 }
 
-require __DIR__ . '/vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php';
 
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
@@ -68,7 +68,7 @@ try {
     $printer->setEmphasis(true);
     $printer->text("KITCHEN ORDER TICKET\n");
     $printer->setEmphasis(false);
-    $printer->feed();
+    // Removed feed() - meta info comes next
 
     // Meta info: table or takeaway, order id, cashier
     $printer->setJustification(Printer::JUSTIFY_LEFT);
@@ -120,11 +120,12 @@ try {
     }
 
     $printer->text(str_repeat('-', 32) . "\n");
-    $printer->feed(2);
+    // Reduced from feed(2) to feed(1) to save paper
+    $printer->feed(1);
 
     $printer->setJustification(Printer::JUSTIFY_CENTER);
 
-    $printer->feed(2);
+    // Removed feed(2) - cut immediately to save paper
 
     $printer->cut();
     $printer->close();

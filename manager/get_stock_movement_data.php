@@ -58,24 +58,16 @@ try {
             stock_in AS (
                 SELECT strftime('%Y-%m', changed_at) AS period, COALESCE(SUM(quantity_change), 0) AS qty
                 FROM stock_changes
-                WHERE quantity_change > 0
-                  AND action NOT IN ('Sale','sale','Sell','sell','Damage','damage','Damaged','damaged')
+                WHERE action IN ('Restock','restock','Add','add')
                   AND strftime('%Y', changed_at) = strftime('%Y', 'now')
                 GROUP BY strftime('%Y-%m', changed_at)
             ),
             damages AS (
-                SELECT period, COALESCE(SUM(qty), 0) AS qty FROM (
-                    SELECT strftime('%Y-%m', changed_at) AS period, COALESCE(SUM(ABS(quantity_change)), 0) AS qty
-                    FROM stock_changes
-                    WHERE action IN ('Damage','damage','Damaged','damaged')
-                      AND strftime('%Y', changed_at) = strftime('%Y', 'now')
-                    GROUP BY strftime('%Y-%m', changed_at)
-                    UNION ALL
-                    SELECT strftime('%Y-%m', date) AS period, COALESCE(SUM(quantity), 0) AS qty
-                    FROM damaged_goods
-                    WHERE strftime('%Y', date) = strftime('%Y', 'now')
-                    GROUP BY strftime('%Y-%m', date)
-                ) t GROUP BY period
+                SELECT strftime('%Y-%m', changed_at) AS period, COALESCE(SUM(ABS(quantity_change)), 0) AS qty
+                FROM stock_changes
+                WHERE action IN ('Damage','damage','Damaged','damaged')
+                  AND strftime('%Y', changed_at) = strftime('%Y', 'now')
+                GROUP BY strftime('%Y-%m', changed_at)
             ),
             sales AS (
                 SELECT period, COALESCE(SUM(qty),0) AS qty FROM (
@@ -118,41 +110,25 @@ try {
                     END AS week_num,
                     COALESCE(SUM(quantity_change), 0) AS qty
                 FROM stock_changes
-                WHERE quantity_change > 0
-                  AND action NOT IN ('Sale','sale','Sell','sell','Damage','damage','Damaged','damaged')
+                WHERE action IN ('Restock','restock','Add','add')
                   AND date(changed_at) >= date('now','start of month')
                   AND date(changed_at) <= date('now','start of month','+1 month','-1 day')
                 GROUP BY week_num
             ),
             damages AS (
-                SELECT week_num, COALESCE(SUM(qty), 0) AS qty FROM (
-                    SELECT 
-                        CASE 
-                            WHEN date(changed_at) BETWEEN date('now', 'start of month') AND date('now', 'start of month', '+6 days') THEN 1
-                            WHEN date(changed_at) BETWEEN date('now', 'start of month', '+7 days') AND date('now', 'start of month', '+13 days') THEN 2
-                            WHEN date(changed_at) BETWEEN date('now', 'start of month', '+14 days') AND date('now', 'start of month', '+20 days') THEN 3
-                            ELSE 4
-                        END AS week_num,
-                        COALESCE(SUM(ABS(quantity_change)), 0) AS qty
-                    FROM stock_changes
-                    WHERE action IN ('Damage','damage','Damaged','damaged')
-                      AND date(changed_at) >= date('now','start of month')
-                      AND date(changed_at) <= date('now','start of month','+1 month','-1 day')
-                    GROUP BY week_num
-                    UNION ALL
-                    SELECT 
-                        CASE 
-                            WHEN date(date) BETWEEN date('now', 'start of month') AND date('now', 'start of month', '+6 days') THEN 1
-                            WHEN date(date) BETWEEN date('now', 'start of month', '+7 days') AND date('now', 'start of month', '+13 days') THEN 2
-                            WHEN date(date) BETWEEN date('now', 'start of month', '+14 days') AND date('now', 'start of month', '+20 days') THEN 3
-                            ELSE 4
-                        END AS week_num,
-                        COALESCE(SUM(quantity), 0) AS qty
-                    FROM damaged_goods
-                    WHERE date(date) >= date('now','start of month')
-                      AND date(date) <= date('now','start of month','+1 month','-1 day')
-                    GROUP BY week_num
-                ) t GROUP BY week_num
+                SELECT 
+                    CASE 
+                        WHEN date(changed_at) BETWEEN date('now', 'start of month') AND date('now', 'start of month', '+6 days') THEN 1
+                        WHEN date(changed_at) BETWEEN date('now', 'start of month', '+7 days') AND date('now', 'start of month', '+13 days') THEN 2
+                        WHEN date(changed_at) BETWEEN date('now', 'start of month', '+14 days') AND date('now', 'start of month', '+20 days') THEN 3
+                        ELSE 4
+                    END AS week_num,
+                    COALESCE(SUM(ABS(quantity_change)), 0) AS qty
+                FROM stock_changes
+                WHERE action IN ('Damage','damage','Damaged','damaged')
+                  AND date(changed_at) >= date('now','start of month')
+                  AND date(changed_at) <= date('now','start of month','+1 month','-1 day')
+                GROUP BY week_num
             ),
             sales AS (
                 SELECT week_num, COALESCE(SUM(qty),0) AS qty FROM (
@@ -206,24 +182,16 @@ try {
             stock_in AS (
                 SELECT date(changed_at) AS period, COALESCE(SUM(quantity_change),0) AS qty
                 FROM stock_changes
-                WHERE quantity_change > 0
-                  AND action NOT IN ('Sale','sale','Sell','sell','Damage','damage','Damaged','damaged')
+                WHERE action IN ('Restock','restock','Add','add')
                   AND date(changed_at) >= '$startDate' AND date(changed_at) <= '$endDate'
                 GROUP BY date(changed_at)
             ),
             damages AS (
-                SELECT period, COALESCE(SUM(qty),0) AS qty FROM (
-                    SELECT date(changed_at) AS period, COALESCE(SUM(ABS(quantity_change)),0) AS qty
-                    FROM stock_changes
-                    WHERE action IN ('Damage','damage','Damaged','damaged')
-                      AND date(changed_at) >= '$startDate' AND date(changed_at) <= '$endDate'
-                    GROUP BY date(changed_at)
-                    UNION ALL
-                    SELECT date(date) AS period, COALESCE(SUM(quantity),0) AS qty
-                    FROM damaged_goods
-                    WHERE date(date) >= '$startDate' AND date(date) <= '$endDate'
-                    GROUP BY date(date)
-                ) t GROUP BY period
+                SELECT date(changed_at) AS period, COALESCE(SUM(ABS(quantity_change)),0) AS qty
+                FROM stock_changes
+                WHERE action IN ('Damage','damage','Damaged','damaged')
+                  AND date(changed_at) >= '$startDate' AND date(changed_at) <= '$endDate'
+                GROUP BY date(changed_at)
             ),
             sales AS (
                 SELECT period, COALESCE(SUM(qty),0) AS qty FROM (
@@ -266,6 +234,7 @@ try {
         $in = (int)$row['stock_in_qty'];
         $outSales = (int)$row['sales_qty'];
         $outDamage = (int)$row['damage_qty'];
+        $labelsRaw[] = $row['period'];
         $stockIn[] = $in;
         $salesOut[] = $outSales;
         $damages[] = $outDamage;

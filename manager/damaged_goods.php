@@ -28,6 +28,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $product_id = $_POST['product_id'];
     $quantity = $_POST['quantity'];
     $reason = $_POST['reason'];
+    $damageDate = isset($_POST['date']) ? preg_replace('/[^0-9\-]/', '', $_POST['date']) : '';
+    if ($damageDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $damageDate)) {
+        $damageDate = date('Y-m-d');
+    }
+    $damageDateTime = $damageDate . ' 10:00:00';
 
     try {
         $db->beginTransaction();
@@ -39,12 +44,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Check if requested quantity is available
         if ($quantity > $old_quantity) {
-            throw new Exception("Not enough stock available. Current stock: " . $old_quantity);
+            throw new Exception("Cannot damage more items than are available in stock");
         }
         
-        // Insert into damaged goods
-        $stmt = $db->prepare("INSERT INTO damaged_goods (product_id, quantity, reason) VALUES (?, ?, ?)");
-        $stmt->execute([$product_id, $quantity, $reason]);
+        // Insert into damaged goods with selected date at 10:00
+        $stmt = $db->prepare("INSERT INTO damaged_goods (product_id, quantity, reason, date) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$product_id, $quantity, $reason, $damageDateTime]);
         
         // Update product quantity
         $stmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE id = ?");
@@ -105,7 +110,9 @@ $damagedGoods = $db->query("
     <script src="../src/chart.js"></script>
     <meta name="google" content="notranslate">
     <link rel="icon" href="favicon.ico" type="image/png">
-    <link rel="stylesheet" href="../src/font-awesome/css/all.min.css"></head>
+    <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
+    <script src="../lucide.js"></script>
+</head>
 <body class="bg-gray-50">
     <div class="flex">
         <div class="sidebar fixed h-full">
@@ -114,9 +121,17 @@ $damagedGoods = $db->query("
         <div class="flex-1 ml-64 content">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 <div class="flex justify-between items-center mb-8 border-b border-gray-200 pb-6">
-                    <div>
-                        <h1 class="text-3xl font-bold text-gray-900">Damaged Goods Tracking</h1>
-                        <p class="mt-2 text-sm text-gray-500">Manage and track damaged inventory items</p>
+                    <div class="flex items-center gap-3">
+                        <a href="manager-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm flex-shrink-0">
+                            <svg class="w-5 h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">back</span>
+                        </a>
+                        <div>
+                            <h1 class="text-3xl font-bold text-gray-900">Damaged Goods Tracking</h1>
+                            <p class="mt-2 text-sm text-gray-500">Manage and track damaged inventory items</p>
+                        </div>
                     </div>
                     <div class="flex items-center gap-4">
                         <div class="bg-blue-50 px-4 py-2 rounded-lg">
@@ -160,7 +175,12 @@ $damagedGoods = $db->query("
                 <div class="bg-white rounded-xl shadow-sm p-6 mb-8 border border-gray-100">
                     <h2 class="text-lg font-semibold text-gray-900 mb-6">Record Damaged Goods</h2>
                     <form method="POST">
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                            <div class="space-y-2">
+                                <label class="block text-sm font-medium text-gray-700">Date <span class="text-red-500">*</span></label>
+                                <input type="date" name="date" value="<?= date('Y-m-d') ?>"
+                                    class="mt-1 block w-full rounded-lg border border-gray-400 shadow-sm focus:border-teal-500 focus:ring-teal-500 h-8" required>
+                            </div>
                             <div class="space-y-2">
                                 <label class="block text-sm font-medium text-gray-700">Product <span class="text-red-500">*</span></label>
                                 <select name="product_id" class="mt-1 block w-full rounded-lg border border-gray-400 shadow-sm focus:border-teal-500 focus:ring-teal-500 h-8">
@@ -171,7 +191,9 @@ $damagedGoods = $db->query("
                             </div>
                             <div class="space-y-2">
                                 <label class="block text-sm font-medium text-gray-700">Quantity <span class="text-red-500">*</span></label>
-                                <input type="number" name="quantity" min="1" class="mt-1 block w-full rounded-lg border border-gray-400 shadow-sm focus:border-teal-500 focus:ring-teal-500 h-8" required>
+                                <input type="number" name="quantity" min="1" class="mt-1 block w-full rounded-lg border border-gray-400 shadow-sm focus:border-teal-500 focus:ring-teal-500 h-8" required
+                                    oninput="checkQuantity(this)">
+                                <p id="quantity-error" class="text-red-500 text-sm hidden">Cannot damage more items than are available in stock</p>
                             </div>
                             <div class="space-y-2">
                                 <label class="block text-sm font-medium text-gray-700">Reason</label>
@@ -187,46 +209,333 @@ $damagedGoods = $db->query("
                     </form>
                 </div>
 
-                <div class="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
-                    <div class="px-6 py-4 border-b border-gray-100 bg-gray-50">
-                        <h3 class="text-lg font-medium text-gray-900">Damage History</h3>
-                    </div>
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-300">
-                                <tr>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
-                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-200">
-                                <?php foreach($damagedGoods as $record): ?>
-                                    <tr class="hover:bg-gray-50 transition-colors">
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"><?= htmlspecialchars($record['product_name']) ?></td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-center text-gray-500"><?= $record['quantity'] ?></td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate"><?= htmlspecialchars($record['reason']) ?></td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><?= date('M j, Y H:i', strtotime($record['date'])) ?></td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
-                                            <form method="POST" action="delete_damaged.php" class="inline">
-                                                <input type="hidden" name="id" value="<?= $record['id'] ?>">
-                                                <button type="submit" class="text-red-400 hover:text-red-600 transition-colors duration-200" onclick="return confirm('Are you sure?')">
-                                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                    </svg>
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                <div class="flex flex-col">
+                    <div class="-m-1.5 overflow-x-auto">
+                        <div class="p-1.5 min-w-full inline-block align-middle">
+                            <div class="border rounded-lg divide-y divide-gray-200 dark:divide-gray-700 dark:divide-gray-700 bg-white">
+                                <!-- Search and Filters -->
+                                <div class="py-3 px-4">
+                                    <div class="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                                        <div class="relative max-w-xs w-full md:w-auto">
+                                            <label class="sr-only">Search</label>
+                                            <input type="text" id="hs-table-with-pagination-search" class="py-2 px-3 ps-9 block w-full border-gray-200 shadow-sm rounded-lg text-sm focus:z-10 focus:border-blue-500 focus:ring-blue-500 disabled:opacity-50 disabled:pointer-events-none dark:bg-slate-900 dark:border-gray-700 dark:text-gray-400 dark:focus:ring-gray-600" placeholder="Search for items">
+                                            <div class="absolute inset-y-0 start-0 flex items-center pointer-events-none ps-3">
+                                                <i data-lucide="search" class="w-4 h-4 text-gray-400"></i>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Table -->
+                                <div class="overflow-hidden">
+                                    <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                        <thead class="bg-gray-50 dark:bg-gray-700">
+                                            <tr>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(0)">
+                                                    Product <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(1)">
+                                                    Quantity <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(2)">
+                                                    Reason <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(3)">
+                                                    Date <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="damagedTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
+                                            <?php if (empty($damagedGoods)): ?>
+                                                <tr>
+                                                    <td colspan="5" class="px-6 py-12 text-center">
+                                                        <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
+                                                        <p class="text-gray-500 text-lg">No damaged goods records found.</p>
+                                                    </td>
+                                                </tr>
+                                            <?php else: ?>
+                                                <?php foreach($damagedGoods as $record): ?>
+                                                    <tr class="damaged-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" 
+                                                        data-product="<?= htmlspecialchars(strtolower($record['product_name'])) ?>"
+                                                        data-quantity="<?= $record['quantity'] ?>"
+                                                        data-reason="<?= htmlspecialchars(strtolower($record['reason'])) ?>"
+                                                        data-date="<?= strtolower(date('Y-m-d H:i', strtotime($record['date']))) ?>">
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200"><?= htmlspecialchars($record['product_name']) ?></td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= $record['quantity'] ?></td>
+                                                        <td class="px-6 py-4 text-sm text-gray-800 dark:text-gray-200 max-w-xs">
+                                                            <span class="truncate block" title="<?= htmlspecialchars($record['reason']) ?>">
+                                                                <?= htmlspecialchars($record['reason']) ?>
+                                                            </span>
+                                                        </td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= date('M j, Y H:i', strtotime($record['date'])) ?></td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium">
+                                                            <form method="POST" action="delete_damaged.php" class="inline" onsubmit="return confirm('Are you sure you want to delete this record?');">
+                                                                <input type="hidden" name="id" value="<?= $record['id'] ?>">
+                                                                <button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-600 hover:text-red-800 disabled:opacity-50 disabled:pointer-events-none dark:text-red-500 dark:hover:text-red-400" title="Delete">
+                                                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                                </button>
+                                                            </form>
+                                                        </td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                
+                                <!-- Pagination -->
+                                <div class="py-1 px-4">
+                                    <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+                                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                                            Showing <span id="showingFrom">1</span> to <span id="showingTo"><?= min(10, count($damagedGoods)) ?></span> of <span id="totalRows"><?= count($damagedGoods) ?></span> entries
+                                        </div>
+                                        <nav class="flex items-center space-x-1" id="paginationNav">
+                                            <!-- Pagination buttons will be generated by JavaScript -->
+                                        </nav>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
+    <script>
+        // Table management variables
+        let currentPage = 1;
+        let rowsPerPage = 10;
+        let currentSortColumn = -1;
+        let sortDirection = 'asc';
+        let allRows = [];
+        let filteredRows = [];
+
+        // Initialize Lucide icons
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+
+            // Get all table rows
+            const tableBody = document.getElementById('damagedTableBody');
+            allRows = Array.from(tableBody.querySelectorAll('.damaged-row'));
+            filteredRows = [...allRows];
+
+            // Initialize table
+            initializeTable();
+
+            // Search functionality
+            const searchInput = document.getElementById('hs-table-with-pagination-search');
+            if (searchInput) {
+                searchInput.addEventListener('input', function(e) {
+                    filterTable();
+                });
+            }
+        });
+
+        // Initialize table with pagination
+        function initializeTable() {
+            filterTable();
+        }
+
+        // Filter table based on search
+        function filterTable() {
+            const searchInput = document.getElementById('hs-table-with-pagination-search');
+            
+            const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
+
+            filteredRows = allRows.filter(row => {
+                const product = row.getAttribute('data-product') || '';
+                const reason = row.getAttribute('data-reason') || '';
+                const date = row.getAttribute('data-date') || '';
+
+                // Search filter
+                const matchesSearch = searchTerm === '' || 
+                    product.includes(searchTerm) || 
+                    reason.includes(searchTerm) ||
+                    date.includes(searchTerm);
+
+                return matchesSearch;
+            });
+
+            currentPage = 1;
+            renderTable();
+        }
+
+        // Sort table
+        function sortTable(columnIndex) {
+            if (currentSortColumn === columnIndex) {
+                sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSortColumn = columnIndex;
+                sortDirection = 'asc';
+            }
+
+            filteredRows.sort((a, b) => {
+                let aValue, bValue;
+
+                switch(columnIndex) {
+                    case 0: // Product
+                        aValue = a.getAttribute('data-product') || '';
+                        bValue = b.getAttribute('data-product') || '';
+                        break;
+                    case 1: // Quantity
+                        aValue = parseInt(a.getAttribute('data-quantity') || 0);
+                        bValue = parseInt(b.getAttribute('data-quantity') || 0);
+                        break;
+                    case 2: // Reason
+                        aValue = a.getAttribute('data-reason') || '';
+                        bValue = b.getAttribute('data-reason') || '';
+                        break;
+                    case 3: // Date
+                        aValue = a.getAttribute('data-date') || '';
+                        bValue = b.getAttribute('data-date') || '';
+                        break;
+                    default:
+                        return 0;
+                }
+
+                if (typeof aValue === 'number') {
+                    return sortDirection === 'asc' ? aValue - bValue : bValue - aValue;
+                } else {
+                    return sortDirection === 'asc' 
+                        ? aValue.localeCompare(bValue)
+                        : bValue.localeCompare(aValue);
+                }
+            });
+
+            renderTable();
+        }
+
+        // Render table with pagination
+        function renderTable() {
+            const tableBody = document.getElementById('damagedTableBody');
+            const totalRows = filteredRows.length;
+            const totalPages = Math.ceil(totalRows / rowsPerPage);
+            const startIndex = (currentPage - 1) * rowsPerPage;
+            const endIndex = startIndex + rowsPerPage;
+            const pageRows = filteredRows.slice(startIndex, endIndex);
+
+            // Clear table body
+            tableBody.innerHTML = '';
+
+            // Add rows for current page
+            if (pageRows.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="5" class="px-6 py-12 text-center"><i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i><p class="text-gray-500 text-lg">No records found matching your criteria.</p></td></tr>';
+            } else {
+                pageRows.forEach(row => {
+                    tableBody.appendChild(row);
+                });
+            }
+
+            // Update pagination info
+            document.getElementById('showingFrom').textContent = totalRows === 0 ? 0 : startIndex + 1;
+            document.getElementById('showingTo').textContent = Math.min(endIndex, totalRows);
+            document.getElementById('totalRows').textContent = totalRows;
+
+            // Render pagination
+            renderPagination(totalPages);
+
+            // Reinitialize icons
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+        }
+
+        // Render pagination buttons
+        function renderPagination(totalPages) {
+            const paginationNav = document.getElementById('paginationNav');
+            paginationNav.innerHTML = '';
+
+            if (totalPages <= 1) return;
+
+            // Previous button
+            const prevButton = document.createElement('button');
+            prevButton.type = 'button';
+            prevButton.className = 'p-2.5 inline-flex items-center gap-x-2 text-sm rounded-full text-gray-800 hover:bg-gray-100 disabled:opacity-50 disabled:pointer-events-none dark:text-white dark:hover:bg-white/10 dark:focus:outline-none dark:focus:ring-1 dark:focus:ring-gray-600';
+            prevButton.disabled = currentPage === 1;
+            prevButton.innerHTML = '<span aria-hidden="true">«</span><span class="sr-only">Previous</span>';
+            prevButton.onclick = () => {
+                if (currentPage > 1) {
+                    currentPage--;
+                    renderTable();
+                }
+            };
+            paginationNav.appendChild(prevButton);
+
+            // Page number buttons
+            for (let i = 1; i <= totalPages; i++) {
+                if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {
+                    const pageButton = document.createElement('button');
+                    pageButton.type = 'button';
+                    pageButton.className = `min-w-[40px] flex justify-center items-center text-gray-800 hover:bg-gray-100 py-2.5 text-sm rounded-full disabled:opacity-50 disabled:pointer-events-none dark:text-white dark:hover:bg-white/10 ${i === currentPage ? 'bg-gray-100 dark:bg-white/10' : ''}`;
+                    pageButton.textContent = i;
+                    pageButton.onclick = () => {
+                        currentPage = i;
+                        renderTable();
+                    };
+                    paginationNav.appendChild(pageButton);
+                } else if (i === currentPage - 3 || i === currentPage + 3) {
+                    const ellipsis = document.createElement('span');
+                    ellipsis.className = 'px-2 text-gray-500';
+                    ellipsis.textContent = '...';
+                    paginationNav.appendChild(ellipsis);
+                }
+            }
+
+            // Next button
+            const nextButton = document.createElement('button');
+            nextButton.type = 'button';
+            nextButton.className = 'p-2.5 inline-flex items-center gap-x-2 text-sm rounded-full text-gray-800 hover:bg-gray-100 disabled:opacity-50 disabled:pointer-events-none dark:text-white dark:hover:bg-white/10 dark:focus:outline-none dark:focus:ring-1 dark:focus:ring-gray-600';
+            nextButton.disabled = currentPage === totalPages;
+            nextButton.innerHTML = '<span class="sr-only">Next</span><span aria-hidden="true">»</span>';
+            nextButton.onclick = () => {
+                if (currentPage < totalPages) {
+                    currentPage++;
+                    renderTable();
+                }
+            };
+            paginationNav.appendChild(nextButton);
+        }
+
+        function checkQuantity(input) {
+            const productId = document.querySelector('select[name="product_id"]').value;
+            const quantity = input.value;
+            const errorMessage = document.getElementById('quantity-error');
+            
+            // Fetch current stock for selected product
+            fetch(`../get_stock.php?product_id=${productId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (quantity > data.stock) {
+                        errorMessage.classList.remove('hidden');
+                        input.setCustomValidity('Quantity exceeds available stock');
+                    } else {
+                        errorMessage.classList.add('hidden');
+                        input.setCustomValidity('');
+                    }
+                })
+                .catch(() => {
+                    // If API fails, just hide error message
+                    errorMessage.classList.add('hidden');
+                    input.setCustomValidity('');
+                });
+        }
+
+        // Add event listener to product select
+        document.addEventListener('DOMContentLoaded', function() {
+            const productSelect = document.querySelector('select[name="product_id"]');
+            if (productSelect) {
+                productSelect.addEventListener('change', function() {
+                    const quantityInput = document.querySelector('input[name="quantity"]');
+                    if (quantityInput) {
+                        checkQuantity(quantityInput);
+                    }
+                });
+            }
+        });
+    </script>
 </body>
 </html> 

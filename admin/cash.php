@@ -100,8 +100,13 @@ $currentTime = date('H:i');
 // If current time is after closing time, show today's data
 $defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
 
-// Handle date selection
-$selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
+// Handle date selection (prefer GET date when returning from error redirect)
+$selectedDate = $defaultDate;
+if (isset($_POST['date'])) {
+    $selectedDate = $_POST['date'];
+} elseif (isset($_GET['date']) && in_array($_GET['date'], $distinctDates)) {
+    $selectedDate = $_GET['date'];
+}
 
 // Determine current business date
 $currentTime = date('H:i');
@@ -232,13 +237,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
                 // Redirect back with error message if not ajax
-                header('Location: cash.php?error=insufficient_funds&available=' . $cashInTill);
+                header('Location: cash.php?error=insufficient_funds&available=' . $cashInTill . '&date=' . urlencode($selectedDate));
                 exit;
             }
         }
         
-        $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, created_at) VALUES (?, ?, ?, datetime('now', '+2 hours'))");
-        $stmt->execute([$_POST['action'], $_POST['amount'], $_POST['description']]);
+        // Use selected date for created_at so the transaction is saved on the chosen date
+        $transactionDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
+        $currentTime = $db->query("SELECT strftime('%H:%M:%S', 'now', '+2 hours')")->fetchColumn();
+        $createdAt = $transactionDate . ' ' . $currentTime;
+        
+        $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$_POST['action'], $_POST['amount'], $_POST['description'], $_SESSION['username'] ?? 'Unknown', $createdAt]);
         
         if(isset($_POST['ajax'])) {
             $id = $db->lastInsertId();
@@ -257,6 +267,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         header('Location: cash.php');
+        exit;
+    } elseif (isset($_POST['bulk_delete_transactions']) && isset($_POST['transaction_ids'])) {
+        // Handle bulk deletion
+        $transactionIds = $_POST['transaction_ids'];
+        
+        // Validate that transaction_ids is an array
+        if (!is_array($transactionIds)) {
+            if(isset($_POST['ajax'])) {
+                echo json_encode(['status' => 'error', 'message' => 'Invalid transaction IDs']);
+                exit;
+            }
+            header('Location: cash.php?error=invalid_ids');
+            exit;
+        }
+        
+        // Sanitize IDs - ensure they are integers
+        $validIds = array_filter(array_map('intval', $transactionIds));
+        
+        if (empty($validIds)) {
+            if(isset($_POST['ajax'])) {
+                echo json_encode(['status' => 'error', 'message' => 'No valid transaction IDs']);
+                exit;
+            }
+            header('Location: cash.php?error=no_ids');
+            exit;
+        }
+        
+        // Create placeholders for IN clause
+        $placeholders = str_repeat('?,', count($validIds) - 1) . '?';
+        $stmt = $db->prepare("DELETE FROM cash_transactions WHERE id IN ($placeholders)");
+        $stmt->execute($validIds);
+        
+        if(isset($_POST['ajax'])) {
+            echo json_encode(['status' => 'success', 'deleted' => count($validIds)]);
+            exit;
+        }
+        header('Location: cash.php?success=bulk_deleted');
         exit;
     }
 }
@@ -315,10 +362,10 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
         .sidebar {
             position: fixed;
             height: 100%;
-            z-index: 9999 !important; /* Prevent overlay from overlapping sidebar */
+            z-index: 10000 !important; /* Prevent overlay from overlapping sidebar */
         }
         #sidebar {
-            z-index: 9999 !important; /* Ensure sidebar stays above overlay */
+            z-index: 10000 !important; /* Ensure sidebar stays above overlay */
         }
         .content {
             margin-left: 250px;
@@ -692,7 +739,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                         </svg>
                         <h3 class="text-xl font-bold text-gray-900">Confirm Deletion</h3>
                     </div>
-                    <p class="text-gray-700 mb-6">Are you sure you want to delete this transaction? This action cannot be undone.</p>
+                    <p class="text-gray-700 mb-6" id="deleteModalMessage">Are you sure you want to delete this transaction? This action cannot be undone.</p>
                     <div class="flex justify-end space-x-3">
                         <button id="cancelDelete" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400">
                             Cancel
@@ -714,7 +761,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
             
             <div class="container mx-auto p-6">
                 <!-- Alert Notification Container -->
-                <div id="alertContainer" class="fixed top-4 right-4 z-50 w-80 transform transition-transform duration-300 translate-x-full"></div>
+                <div id="alertContainer" class="fixed top-4 right-4 z-[100] w-80 transform transition-transform duration-300 translate-x-full"></div>
                 
                 <?php if (isset($_GET['error']) && $_GET['error'] === 'insufficient_funds'): ?>
                 <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded shadow-md" role="alert">
@@ -964,6 +1011,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                         <form id="cashInForm" method="POST" class="p-6">
                             <input type="hidden" name="action" value="cash-in">
                             <input type="hidden" name="ajax" value="1">
+                            <input type="hidden" name="date" value="<?= htmlspecialchars($selectedDate) ?>">
                             
                             <div class="space-y-4">
                                 <div class="relative">
@@ -1034,6 +1082,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                         <form id="cashOutForm" method="POST" class="p-6">
                             <input type="hidden" name="action" value="cash-out">
                             <input type="hidden" name="ajax" value="1">
+                            <input type="hidden" name="date" value="<?= htmlspecialchars($selectedDate) ?>">
                             
                             <div class="space-y-4">
                                 <div class="relative">
@@ -1105,20 +1154,34 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                             </svg>
                             Daily Cash Transactions (<?= htmlspecialchars($selectedDate) ?>)
                         </h2>
-                        <div class="relative max-w-72">
-                            <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                <svg class="w-4 h-4 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
-                                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
+                        <div class="flex items-center gap-3">
+                            <button id="bulkDeleteBtn" class="hidden inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 shadow-sm" disabled>
+                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                 </svg>
+                                Delete Selected (<span id="selectedCount">0</span>)
+                            </button>
+                            <div class="relative max-w-72">
+                                <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
+                                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
+                                    </svg>
+                                </div>
+                                <input type="text" id="transactionSearch" onkeyup="filterTransactions()" placeholder="Search transactions..." 
+                                       class="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500 shadow-sm transition duration-200">
                             </div>
-                            <input type="text" id="transactionSearch" onkeyup="filterTransactions()" placeholder="Search transactions..." 
-                                   class="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500 shadow-sm transition duration-200">
                         </div>
                     </div>
                     <div class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-50">
                                 <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        <div class="flex items-center">
+                                            <input type="checkbox" id="selectAllCheckbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer" onchange="toggleSelectAll()">
+                                            <label for="selectAllCheckbox" class="ml-2 cursor-pointer">Select All</label>
+                                        </div>
+                                    </th>
                                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortTransactionsTable(0)">
                                         <div class="flex items-center">
                                             <span>ID</span>
@@ -1167,6 +1230,11 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                             <tbody class="bg-white divide-y divide-gray-200" id="transactionsTableBody">
                                 <?php foreach ($transactions as $transaction): ?>
                                 <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <input type="checkbox" class="transaction-checkbox w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer" 
+                                               value="<?= $transaction['id'] ?>" 
+                                               onchange="updateBulkDeleteButton()">
+                                    </td>
                                     <td data-label="ID" class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                         <?= $transaction['id'] ?>
                                     </td>
@@ -1200,7 +1268,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                             <?php endforeach; ?>
                                 <?php if (count($transactions) === 0): ?>
                                 <tr>
-                                    <td colspan="6" class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500">
+                                    <td colspan="7" class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500">
                                         No transactions found for selected date
                                 </td>
                             </tr>
@@ -1257,6 +1325,52 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
     </div>
 
     <script>
+        // Checkbox selection functions
+        function toggleSelectAll() {
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            const checkboxes = document.querySelectorAll('.transaction-checkbox:not([style*="display: none"])');
+            
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = selectAllCheckbox.checked;
+            });
+            
+            updateBulkDeleteButton();
+        }
+        
+        function updateBulkDeleteButton() {
+            const selectedIds = getSelectedTransactionIds();
+            const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
+            const selectedCount = document.getElementById('selectedCount');
+            
+            if (selectedIds.length > 0) {
+                bulkDeleteBtn.classList.remove('hidden');
+                bulkDeleteBtn.disabled = false;
+                selectedCount.textContent = selectedIds.length;
+            } else {
+                bulkDeleteBtn.classList.add('hidden');
+                bulkDeleteBtn.disabled = true;
+                selectedCount.textContent = '0';
+            }
+            
+            // Update select all checkbox state
+            const checkboxes = document.querySelectorAll('.transaction-checkbox:not([style*="display: none"])');
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            if (checkboxes.length > 0) {
+                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                const someChecked = Array.from(checkboxes).some(cb => cb.checked);
+                selectAllCheckbox.checked = allChecked;
+                selectAllCheckbox.indeterminate = someChecked && !allChecked;
+            } else {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            }
+        }
+        
+        function getSelectedTransactionIds() {
+            const checkboxes = document.querySelectorAll('.transaction-checkbox:checked');
+            return Array.from(checkboxes).map(cb => parseInt(cb.value));
+        }
+        
         // Mobile sidebar functions
         function toggleSidebar() {
             const sidebar = document.getElementById('sidebar');
@@ -1315,6 +1429,9 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                 return;
             }
             
+            // Adjust column index for checkbox column (checkbox is column 0, so add 1)
+            const actualColumnIndex = columnIndex + 1;
+            
             // Determine sort direction
             if (currentSortColumn === columnIndex) {
                 currentSortDirection *= -1; // Toggle direction if same column
@@ -1331,8 +1448,8 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                     return 0;
                 }
                 
-                let aValue = a.cells[columnIndex].textContent.trim();
-                let bValue = b.cells[columnIndex].textContent.trim();
+                let aValue = a.cells[actualColumnIndex].textContent.trim();
+                let bValue = b.cells[actualColumnIndex].textContent.trim();
                 
                 if (isNumeric) {
                     // Extract numeric value (for amounts with currency symbol)
@@ -1340,7 +1457,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                     bValue = parseFloat(bValue.replace(/[^0-9.-]+/g, '')) || 0;
                     return (aValue - bValue) * currentSortDirection;
                 } else if (columnIndex === 4) {
-                    // Special handling for dates
+                    // Special handling for dates (column index 4 = date column)
                     return new Date(aValue) > new Date(bValue) ? 
                         currentSortDirection : 
                         currentSortDirection * -1;
@@ -1355,6 +1472,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
             
             // Reset to first page after sorting
             showPage(1);
+            updateBulkDeleteButton();
         }
         
         // Function to filter transactions based on search input
@@ -1378,8 +1496,8 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                 const cells = row.querySelectorAll('td');
                 let rowVisible = false;
                 
-                // Only check text content columns (skip the actions column)
-                Array.from(cells).slice(0, -1).forEach(cell => {
+                // Only check text content columns (skip checkbox column 0 and actions column)
+                Array.from(cells).slice(1, -1).forEach(cell => {
                     if (cell.textContent.toLowerCase().indexOf(filter) > -1) {
                         rowVisible = true;
                     }
@@ -1410,6 +1528,9 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
             
             // Show first page of filtered results
             showFilteredPage(1, matchingRows);
+            
+            // Update bulk delete button state
+            updateBulkDeleteButton();
         }
         
         // Function to show a specific page of filtered results
@@ -1435,6 +1556,9 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
             document.getElementById('lastPage').disabled = page >= maxPage;
             
             currentPage = page;
+            
+            // Update bulk delete button state
+            updateBulkDeleteButton();
         }
         
         // Function to update pagination controls based on filtered rows
@@ -1501,6 +1625,9 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
             document.getElementById('lastPage').disabled = page >= maxPage;
             
             currentPage = page;
+            
+            // Update bulk delete button state
+            updateBulkDeleteButton();
         }
 
         $(document).ready(function() {
@@ -1610,6 +1737,10 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                 
                 // Store the transaction ID for later use
                 $('#confirmDelete').data('id', transactionId);
+                $('#confirmDelete').data('ids', null); // Clear bulk delete data
+                
+                // Update modal message for single deletion
+                $('#deleteModalMessage').text('Are you sure you want to delete this transaction? This action cannot be undone.');
                 
                 // Show confirmation modal with animation
                 $('#confirmationModal').removeClass('hidden');
@@ -1670,6 +1801,93 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                         $('#confirmationModal').addClass('hidden');
                     }, 300);
                 }
+            });
+            
+            // Bulk delete button click handler
+            $('#bulkDeleteBtn').on('click', function() {
+                const selectedIds = getSelectedTransactionIds();
+                if (selectedIds.length === 0) {
+                    showAlert('Please select at least one transaction to delete', 'error');
+                    return;
+                }
+                
+                // Store the transaction IDs for bulk deletion
+                $('#confirmDelete').data('ids', selectedIds);
+                $('#confirmDelete').data('id', null); // Clear single delete data
+                
+                // Update modal message for bulk deletion
+                const count = selectedIds.length;
+                $('#deleteModalMessage').text('Are you sure you want to delete ' + count + ' transaction(s)? This action cannot be undone.');
+                
+                // Show confirmation modal
+                $('#confirmationModal').removeClass('hidden');
+                setTimeout(() => {
+                    $('#modalContent').removeClass('scale-95 opacity-0').addClass('scale-100 opacity-100');
+                }, 10);
+            });
+            
+            // Update confirm delete handler to support bulk deletion
+            $('#confirmDelete').off('click').on('click', function() {
+                const transactionId = $(this).data('id');
+                const transactionIds = $(this).data('ids');
+                
+                // Hide modal
+                $('#modalContent').removeClass('scale-100 opacity-100').addClass('scale-95 opacity-0');
+                setTimeout(() => {
+                    $('#confirmationModal').addClass('hidden');
+                    
+                    // Determine if single or bulk delete
+                    if (transactionIds && transactionIds.length > 0) {
+                        // Bulk delete
+                        $.ajax({
+                            url: 'cash.php',
+                            method: 'POST',
+                            data: {
+                                bulk_delete_transactions: 1,
+                                transaction_ids: transactionIds,
+                                ajax: 1
+                            },
+                            dataType: 'json',
+                            success: function(response) {
+                                if (response.status === 'success') {
+                                    showAlert(response.deleted + ' transaction(s) deleted successfully', 'success');
+                                    setTimeout(() => {
+                                        location.reload();
+                                    }, 1500);
+                                } else {
+                                    showAlert('Error deleting transactions: ' + (response.message || 'Unknown error'), 'error');
+                                }
+                            },
+                            error: function() {
+                                showAlert('Error deleting transactions', 'error');
+                            }
+                        });
+                    } else if (transactionId) {
+                        // Single delete
+                        $.ajax({
+                            url: 'cash.php',
+                            method: 'POST',
+                            data: {
+                                delete_transaction_id: transactionId,
+                                ajax: 1
+                            },
+                            dataType: 'json',
+                            success: function(response) {
+                                if (response.status === 'success') {
+                                    showAlert('Transaction deleted successfully', 'success');
+                                    setTimeout(() => {
+                                        location.reload();
+                                    }, 1500);
+                                } else {
+                                    showAlert('Error deleting transaction', 'error');
+                                }
+                            },
+                            error: function() {
+                                showAlert('Error deleting transaction', 'error');
+                            }
+                        });
+                    }
+                }, 300);
             });
             
             // Initialize pagination and sorting for transactions

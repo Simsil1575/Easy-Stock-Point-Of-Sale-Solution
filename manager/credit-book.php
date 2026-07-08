@@ -134,6 +134,11 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../sweetalert2@11.js"></script>
+    <!-- Lucide Icons CDN -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="../receipt.php?js=true"></script>
+   
 
     <style>
         .fade-in {
@@ -153,6 +158,19 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         table tbody tr {
             height: 48px; /* Fixed height for all rows */
             line-height: 1.5;
+        }
+        /* Clickable row styles */
+        table tbody tr.creditor-row {
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+        }
+        table tbody tr.creditor-row:hover {
+            background-color: #f3f4f6 !important;
+            transform: translateX(2px);
+        }
+        table tbody tr.creditor-row:active {
+            transform: translateX(0);
+            background-color: #e5e7eb !important;
         }
         table tbody td {
             padding: 8px 12px;
@@ -350,6 +368,17 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 align-items: center;
                 gap: 0.5rem;
             }
+
+            /* Make sure absolute-position Actions stays visible */
+            table tbody tr {
+                position: relative;
+            }
+
+            /* Prevent clipping of the absolute-position Actions cell */
+            .border.rounded-lg.divide-y.divide-gray-200,
+            .border.rounded-lg.divide-y.divide-gray-200 > .overflow-hidden {
+                overflow: visible !important;
+            }
             
             table tbody td[data-label="Actions"]::before {
                 display: none; /* Hide label for Actions column */
@@ -523,6 +552,12 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
+                        <a href="manager-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm flex-shrink-0">
+                            <svg class="w-5 h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">back</span>
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>
@@ -716,141 +751,121 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 </div>
 
                 <!-- Creditors List -->
-                <div class="bg-white rounded-lg shadow-md overflow-hidden">
-                    <div class="px-6 py-1 border-b border-gray-200 bg-gray-300 flex justify-between items-center">
-                        <h3 class="text-lg font-semibold text-gray-700 flex items-center">
-                            <i class="fas fa-users mr-2 text-gray-600"></i>Registered Creditors
-                        </h3>
-                        <!-- Search Input -->
-                        <div class="relative max-w-72">
-                            <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                <svg class="w-4 h-4 text-gray-400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
-                                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
-                                </svg>
-                            </div>
-                            <input type="text" id="searchInput" onkeyup="filterCreditors()" placeholder="Search creditors..." 
-                                   class="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-400 focus:outline-none focus:border-gray-400 shadow-sm transition duration-200 bg-white placeholder-gray-300">
-                        </div>
-                    </div>
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(0, true)">
-                                        <div class="flex items-center">
-                                            <span>ID</span>
-                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
-                                            </svg>
+                <div class="flex flex-col">
+                    <div class="-m-1.5 overflow-x-auto">
+                        <div class="p-1.5 min-w-full inline-block align-middle">
+                            <div class="border rounded-lg divide-y divide-gray-200 dark:divide-gray-700 dark:divide-gray-700 bg-white">
+                                <!-- Search and Filters -->
+                                <div class="py-3 px-4">
+                                    <div class="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                                        <div class="relative max-w-xs w-full md:w-auto">
+                                            <label class="sr-only">Search</label>
+                                            <input type="text" id="searchInput" onkeyup="filterCreditors()" class="py-2 px-3 ps-9 block w-full border-gray-200 shadow-sm rounded-lg text-sm focus:z-10 focus:border-blue-500 focus:ring-blue-500 disabled:opacity-50 disabled:pointer-events-none dark:bg-slate-900 dark:border-gray-700 dark:text-gray-400 dark:focus:ring-gray-600" placeholder="Search for creditors">
+                                            <div class="absolute inset-y-0 start-0 flex items-center pointer-events-none ps-3">
+                                                <i data-lucide="search" class="w-4 h-4 text-gray-400"></i>
+                                            </div>
                                         </div>
-                                    </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(1)">
-                                        <div class="flex items-center">
-                                            <span>Name</span>
-                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
-                                            </svg>
+                                        <!-- Status Filter -->
+                                        <div class="flex gap-2 items-center">
+                                            <select id="statusFilter" class="py-2 px-3 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500">
+                                                <option value="">All Status</option>
+                                                <option value="new">New</option>
+                                                <option value="unpaid">Unpaid</option>
+                                                <option value="paid">Paid</option>
+                                            </select>
                                         </div>
-                                    </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(2)">
-                                        <div class="flex items-center">
-                                            <span>Contact</span>
-                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
-                                            </svg>
-                                        </div>
-                                    </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(3)">
-                                        <div class="flex items-center">
-                                            <span>Status</span>
-                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
-                                            </svg>
-                                        </div>
-                                    </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(4, true)">
-                                        <div class="flex items-center">
-                                            <i class="fas fa-balance-scale mr-1"></i>
-                                            <span>Balance</span>
-                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
-                                            </svg>
-                                        </div>
-                                    </th>
-                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        
-                                    </th>
-                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Actions
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-200">
+                                    </div>
+                                </div>
+                                
+                                <!-- Table -->
+                                <div class="overflow-hidden">
+                                    <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                        <thead class="bg-gray-50 dark:bg-gray-700">
+                                            <tr>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(0, true)">
+                                                    ID <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(1)">
+                                                    Name <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(2)">
+                                                    Contact <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(3)">
+                                                    Status <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(4, true)">
+                                                    Balance <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                                                    
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
                                 <?php foreach ($creditors as $creditor): 
                                     // Get creditor's balance from creditSales data
                                     $saleData = $salesByCreditor[$creditor['id']] ?? null;
                                     $creditorBalance = $saleData ? ($saleData['total_amount'] - $saleData['paid_amount']) : 0;
                                 ?>
-                                <tr class="hover:bg-gray-50 transition-colors creditor-row" data-creditor-id="<?= htmlspecialchars($creditor['id']) ?>">
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900" data-label="ID">
+                                <tr class="creditor-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer" data-creditor-id="<?= htmlspecialchars($creditor['id']) ?>" onclick="viewCreditor(<?= $creditor['id'] ?>)">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">
                                         <?= htmlspecialchars($creditor['id']) ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900" data-label="Name">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">
                                         <?= htmlspecialchars($creditor['name']) ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-gray-500" data-label="Contact">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200">
                                         <?= !empty($creditor['phone']) ? htmlspecialchars($creditor['phone']) : 'N/A' ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm" data-label="Status">
-                                        <span class="px-3 py-1 text-xs font-medium rounded-full border transition-colors
-                                            <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'bg-gray-100 text-gray-800 border-gray-200 hover:bg-gray-200' : 
-                                               ($creditorBalance > 0 ? 'bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200' : 
-                                               'bg-teal-100 text-teal-800 border-teal-200 hover:bg-teal-200') ?>">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                        <span class="px-2 py-1 text-xs font-semibold rounded-full
+                                            <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'bg-gray-100 text-gray-800' : 
+                                               ($creditorBalance > 0 ? 'bg-yellow-100 text-yellow-800' : 
+                                               'bg-green-100 text-green-800') ?>">
                                             <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'New' : ($creditorBalance > 0 ? 'Unpaid' : 'Paid') ?>
                                         </span>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm 
-                                        <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'text-gray-500 font-medium' : ($creditorBalance > 0 ? 'text-teal-500 font-medium' : 'text-teal-600 font-medium') ?>" data-label="Balance">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold 
+                                        <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'text-gray-800' : ($creditorBalance > 0 ? 'text-red-600' : 'text-teal-600') ?>">
                                         N$<?= number_format($creditorBalance, 2) ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Quick Actions">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-center" onclick="event.stopPropagation()">
                                         <?php if (isset($salesByCreditor[$creditor['id']]) && ($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount']) > 0): ?>
                                         <div class="flex gap-2 justify-center">
-                                            <button onclick="printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
-                                                class="inline-flex items-center px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors font-medium text-sm">
-                                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
-                                                </svg>
-                                                Print
+                                            <button onclick="event.stopPropagation(); printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
+                                                class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-gray-600 hover:text-gray-800 disabled:opacity-50 disabled:pointer-events-none dark:text-gray-400 dark:hover:text-gray-300"
+                                                title="Print">
+                                                <i data-lucide="printer" class="w-4 h-4"></i>
                                             </button>
                                             <a href="javascript:void(0);" 
-                                               onclick="confirmPayAll(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
-                                               class="inline-flex items-center px-3 py-1.5 rounded-md bg-teal-100 text-teal-700 hover:bg-teal-100 transition-colors font-medium text-sm">
-                                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
-                                                </svg>
-                                                Pay
+                                               onclick="event.stopPropagation(); confirmPayAll(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
+                                               class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-green-600 hover:text-green-800 disabled:opacity-50 disabled:pointer-events-none dark:text-green-500 dark:hover:text-green-400"
+                                               title="Pay">
+                                                <i data-lucide="credit-card" class="w-4 h-4"></i>
                                             </a>
                                         </div>
                                         <?php endif; ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Actions">
-                                        <div class="flex items-center justify-center gap-2">
+                                    <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium" onclick="event.stopPropagation()">
+                                        <div class="flex items-center justify-end gap-2">
                                             <a href="credit-transactions.php?creditor_id=<?= $creditor['id'] ?>" 
-                                               class="inline-flex items-center justify-center px-3 py-1.5 text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200 text-sm font-medium"
-                                               title="View Transactions">
-                                                <i class="ti ti-file-invoice mr-1"></i> View
+                                               onclick="event.stopPropagation()"
+                                               class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:pointer-events-none dark:text-blue-500 dark:hover:text-blue-400 dark:focus:outline-none dark:focus:ring-1 dark:focus:ring-gray-600"
+                                               title="View">
+                                                <i data-lucide="eye" class="w-4 h-4"></i>
                                             </a>
-
                                             <a href="credit-book.php?edit=<?= $creditor['id'] ?>" 
-                                               class="inline-flex items-center justify-center px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200 text-sm font-medium"
-                                               title="Edit Creditor">
-                                                <i class="fas fa-edit"></i>
+                                               onclick="event.stopPropagation()"
+                                               class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:pointer-events-none dark:text-blue-500 dark:hover:text-blue-400"
+                                               title="Edit">
+                                                <i data-lucide="pencil" class="w-4 h-4"></i>
                                             </a>
-                                            <button onclick="deleteCreditor(<?= $creditor['id'] ?>)" 
-                                               class="inline-flex items-center justify-center px-3 py-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300 shadow-sm border border-red-200 text-sm font-medium"
-                                               title="Delete Creditor">
-                                                <i class="fas fa-trash-alt"></i>
+                                            <button onclick="event.stopPropagation(); deleteCreditor(<?= $creditor['id'] ?>)" 
+                                               class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-600 hover:text-red-800 disabled:opacity-50 disabled:pointer-events-none dark:text-red-500 dark:hover:text-red-400"
+                                               title="Delete">
+                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
                                             </button>
                                         </div>
                                     </td>
@@ -866,7 +881,22 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                             </tbody>
                         </table>
                     </div>
+                    
+                    <!-- Pagination -->
+                    <div class="py-1 px-4">
+                        <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+                            <div class="text-sm text-gray-700 dark:text-gray-300">
+                                Showing <span id="showingFrom">1</span> to <span id="showingTo"><?= min(10, count($creditors)) ?></span> of <span id="totalRows"><?= count($creditors) ?></span> entries
+                            </div>
+                            <nav class="flex items-center space-x-1" id="paginationNav">
+                                <!-- Pagination buttons will be generated by JavaScript -->
+                            </nav>
+                        </div>
+                    </div>
                 </div>
+            </div>
+        </div>
+    </div>
 
                 <!-- New Credit Sales Section -->
          
@@ -902,34 +932,36 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
 
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
+    // sendToPrinter function is now loaded from ../receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[manager/credit-book.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
             }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+            // Use fetch to receipt.php - the interceptor will catch this
+            return fetch('../receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { 
+                return r.json();
+            });
         }
-        
-        return fetch('../receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
     }
 
     // Global variables for sorting and pagination
@@ -942,6 +974,11 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
 
     // Initialize the table when document is ready
     document.addEventListener('DOMContentLoaded', function() {
+        // Initialize Lucide icons
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+        
         // Store all rows initially
         const tableBody = document.querySelector('tbody');
         allRows = Array.from(tableBody.querySelectorAll('tr')).filter(row => !row.querySelector('td[colspan]'));
@@ -1121,6 +1158,11 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
             // Re-attach the original row elements (do not clone)
             filteredRows.forEach(row => tableBody.appendChild(row));
         }
+        
+        // Re-initialize Lucide icons after table update
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
     }
 
     function showPage(page) {
@@ -1164,6 +1206,10 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         if (nextPage) nextPage.disabled = currentPage >= maxPage;
         if (firstPage) firstPage.disabled = currentPage === 1;
         if (lastPage) lastPage.disabled = currentPage >= maxPage;
+    }
+
+    function viewCreditor(creditorId) {
+        window.location.href = `credit-transactions.php?creditor_id=${creditorId}`;
     }
 
     function deleteCreditor(id) {
@@ -1239,7 +1285,10 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                         </svg>
                     </div>
                     <p class="mb-2">Payment for <strong>${creditorName}</strong></p>
-                    <p class="text-lg font-semibold text-gray-800 mb-4">N$${totalBalance.toFixed(2)}</p>
+                    <p class="text-lg font-semibold text-gray-800 mb-2">N$${totalBalance.toFixed(2)}</p>
+                    <div class="text-xs text-gray-500 mb-4">
+                        <span>Total: N$${totalBalance.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div class="space-y-4">
                     <div class="flex flex-col">

@@ -23,9 +23,14 @@ if ($activationStatus == 0) {
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-// Helper function to get username from user_id with caching
+// Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
     if (empty($userId)) return 'Unknown';
+    
+    // If it's already a username (not numeric), return it as is
+    if (!is_numeric($userId)) {
+        return $userId;
+    }
     
     // Check cache first
     if (isset($usernameCache[$userId])) {
@@ -231,9 +236,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: credit-tabs');
         exit();
     } elseif (isset($_POST['close_id'])) {
-        // Close tab
+        // Close tab - store username for consistent tracking
+        $closedByUsername = $_SESSION['username'] ?? 'Unknown';
         $stmt = $db->prepare("UPDATE tabs SET status = 'closed', closed_at = CURRENT_TIMESTAMP, closed_by = ? WHERE id = ?");
-        $stmt->execute([$_SESSION['user_id'] ?? null, $_POST['close_id']]);
+        $stmt->execute([$closedByUsername, $_POST['close_id']]);
         $_SESSION['success'] = 'Tab closed successfully';
         header('Location: credit-tabs');
         exit();
@@ -250,12 +256,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tab_name = $_POST['tab_name'];
         $opening_balance = isset($_POST['opening_balance']) ? floatval($_POST['opening_balance']) : 0.00;
         $notes = $_POST['notes'] ?? '';
-        $cashier_id = $_SESSION['user_id'] ?? null;
+        $cashierUsername = $_SESSION['username'] ?? 'Unknown';
 
         if (empty($_POST['id'])) {
-            // Add new tab
+            // Add new tab - store username for consistent tracking
             $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashier_id]);
+            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername]);
             $newTabId = $db->lastInsertId();
             // Recalculate balance to ensure accuracy (will be same as opening_balance for new tab, but ensures consistency)
             recalculateTabBalance($db, $newTabId);
@@ -276,7 +282,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Get view parameter from URL
 $currentView = isset($_GET['view']) ? $_GET['view'] : '';
 
-// Fetch all tabs - admin version shows all tabs
+// Get current user info for filtering
+$currentUsername = $_SESSION['username'] ?? '';
+$currentUserId = $_SESSION['user_id'] ?? '';
+
+// Fetch tabs - only show tabs placed by the logged-in user
 $tabsStmt = $db->prepare("
     SELECT 
         t.id,
@@ -295,9 +305,10 @@ $tabsStmt = $db->prepare("
         c.phone as creditor_phone
     FROM tabs t
     LEFT JOIN creditors c ON t.creditor_id = c.id
+    WHERE t.cashier_id = ? OR t.cashier_id = ?
     ORDER BY t.opened_at DESC
 ");
-$tabsStmt->execute();
+$tabsStmt->execute([$currentUsername, $currentUserId]);
 $tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Add usernames to tabs using getUsernameById (with caching)
@@ -322,6 +333,7 @@ $totalOpenBalance = array_sum(array_column($openTabs, 'current_balance'));
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tab Management</title>
+    <script src="../receipt.php?js=true"></script>
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/jquery-3.6.0.min.js"></script>
@@ -959,11 +971,7 @@ th[onclick]:hover {
                                                                         title="Print Balance">
                                                                         <i data-lucide="printer" class="w-4 h-4"></i>
                                                                     </button>
-                                                                    <a href="view-tab.php?id=<?= $tab['id'] ?>&pay_all=1&amount=<?= number_format($tab['current_balance'], 2, '.', '') ?>"
-                                                                       class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-green-600 hover:text-green-800 disabled:opacity-50 disabled:pointer-events-none dark:text-green-500 dark:hover:text-green-400"
-                                                                       title="Pay Now">
-                                                                        <i data-lucide="credit-card" class="w-4 h-4"></i>
-                                                                    </a>
+                                                                    
                                                                 <?php endif; ?>
                                                                 
                                                                 <?php if ($tab['status'] === 'closed'): ?>

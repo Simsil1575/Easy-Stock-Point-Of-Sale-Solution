@@ -1,0 +1,632 @@
+PS C:\xampp\htdocs>
+Oops, something went wrong.  Please report this bug with the details below.
+Report on GitHub: https://github.com/lzybkr/PSReadLine/issues/new
+-----------------------------------------------------------------------
+Last 1 Keys:
+ Ctrl+v
+
+Exception:
+System.ArgumentOutOfRangeException: The value must be greater than or equal to zero and less than the console's buffer size in that dimension.
+Actual value was -1.
+   at System.Console.SetCursorPosition(Int32 left, Int32 top)
+   at Microsoft.PowerShell.PSConsoleReadLine.ReallyRender(RenderData renderData, String defaultColor)
+   at Microsoft.PowerShell.PSConsoleReadLine.ForceRender()
+   at Microsoft.PowerShell.PSConsoleReadLine.Paste(Nullable`1 key, Object arg)
+   at Microsoft.PowerShell.PSConsoleReadLine.ProcessOneKey(ConsoleKeyInfo key, Dictionary`2 dispatchTable, Boolean ignoreIfNoAction, Object arg)
+   at Microsoft.PowerShell.PSConsoleReadLine.InputLoop()
+   at Microsoft.PowerShell.PSConsoleReadLine.ReadLine(Runspace runspace, EngineIntrinsics engineIntrinsics)
+-----------------------------------------------------------------------
+PS C:\xampp\htdocs> cd C:\xampp\htdocs\Android\android; $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"; $env:PATH = "$env:ANDROID_HOME\platform-tools;$env:PATH"; adb logcat
+--------- beginning of main
+01-21 00:12:28.429   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-4ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:30.952  7863  7863 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:12:31.444   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-4ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:32.407   634   748 I PowerWrap: PowerHal_TouchBoost
+01-21 00:12:32.408   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:15, data:10000
+01-21 00:12:32.411   274   293 I libPerfService: 15: legacy set freq: 1105000 -1
+01-21 00:12:32.415   274   293 I libPerfService: 15: legacy set: 3 -1
+01-21 00:12:32.473   634   748 I PowerWrap: PowerHal_TouchBoost
+01-21 00:12:32.473   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:15, data:0
+01-21 00:12:32.474   274   293 I libPerfService: 15: legacy set: -1 -1
+01-21 00:12:32.474   274   293 I libPerfService: 15: legacy set freq: -1 -1
+01-21 00:12:32.477   279   965 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:12:32.478   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:32.479   318  7021 D APM_AudioPolicyManager: startOutput() output 13, stream 1, session 49
+01-21 00:12:32.479   318  7021 V APM::AudioOutputDescriptor: changeRefCount() stream 1, count 1
+01-21 00:12:32.482  1318  1388 D GraphicBuffer: register, handle(0x97849800) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:32.482   265  2143 D AudioALSAStreamManager: +syncSharedOutDevice(), routingSharedOutDevice: 2
+01-21 00:12:32.483   265  2143 D AudioALSAStreamManager: -syncSharedOutDevice()
+--------- beginning of system
+01-21 00:12:32.482   634  2527 I ActivityManager: START u0 {act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x10200000 cmp=co.median.android.nmmzmok/co.median.android.LaunchActivity bnds=[360,381][526,610]} from uid 10018
+01-21 00:12:32.483   265  2143 D AudioALSAVolumeController: AudioALSAVolumeController getMasterVolume
+01-21 00:12:32.483   265  2143 D AudioALSAStreamManager: setMasterVolume(), volume = 1.000000
+01-21 00:12:32.483   265  2143 D AudioALSAVolumeController: AudioALSAVolumeController setMasterVolume v = 1.000000 mode = 0 devices = 
+0x2
+01-21 00:12:32.483   265  2143 D AudioALSAVolumeController: ApplyExtAmpHeadPhoneGain  Gain = 256 mode= 0 device = 3
+01-21 00:12:32.483   265  2143 D AudioALSAVolumeController: DegradedBGain   = 0
+01-21 00:12:32.483   265  2143 D AudioALSAVolumeController: SetHeadPhoneLGain = 0
+01-21 00:12:32.483   265  2143 D AudioALSAVolumeController: SetHeadPhoneRGain = 0
+01-21 00:12:32.483   265  2143 D AudioALSAStreamOut: open(), flags 6
+01-21 00:12:32.483   265  2143 D AudioUtility: power_hal_hint - custPowerHint 0, data 268435455
+01-21 00:12:32.484   265  2143 D AudioALSAStreamManager: +createPlaybackHandler(), mAudioMode = 0, output_devices = 0x2
+01-21 00:12:32.484   265  2143 D NVRAM   : QueryFeatureSupportInfo(), feature support bit 0x12090055
+01-21 00:12:32.484   265  2143 D AudioALSAPlaybackHandlerNormal: AudioALSAPlaybackHandlerNormal()
+01-21 00:12:32.484   265  2143 D AudioALSAPlaybackHandlerNormal: +setFilterMng() mAudioFilterManagerHandler [0xa68961a0]
+01-21 00:12:32.484   265  2143 D AudioALSAStreamManager: -createPlaybackHandler(), mPlaybackHandlerVector.size() = 1
+01-21 00:12:32.484   265  2143 D AudioALSAPlaybackHandlerNormal: +open(), flag 6, mDevice = 0x2
+01-21 00:12:32.484   265  2143 D AudioALSAHardwareResourceManager: EnableAudBufClk(), bEanble = 1, mStartOutputDevicesCount 0
+01-21 00:12:32.484   265  2143 D AudioALSADeviceParser: compare pcm success = 8, stringpair = I2S0DL1_PLayback
+01-21 00:12:32.485   265  2143 D AudioALSAPlaybackHandlerNormal: ChooseTargetSampleRate SampleRate = 48000 outputdevice = 2
+01-21 00:12:32.485   265  2143 D         : -AssignDRAM() retval 0
+01-21 00:12:32.486   265  2143 D AudioALSAPlaybackHandlerBase: transferAudioFormatToPcmFormat(), audio_format(0x1) => pcm_format(0x0) 
+01-21 00:12:32.486   265  2143 D AudioALSAPlaybackHandlerNormal: open(), mConfig: channels = 2, rate = 48000, period_size = 256, period_count = 2, format = 0 avail_min = 256
+01-21 00:12:32.486   265  2143 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode() bEanble = 1 SampleRate = 48000
+01-21 00:12:32.486   265  2143 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:12:32.486   265  2143 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode(), bypass low jitter mode = 1
+01-21 00:12:32.486   265  2143 D AudioALSAPlaybackHandlerBase: +openPcmDriverWithFlag(), pcm device = 8 flag = 0x8
+01-21 00:12:32.488   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkCusPowerHint hint:0, data:268435455
+01-21 00:12:32.488   265  2143 D AudioALSAPlaybackHandlerBase: -openPcmDriverWithFlag(), mPcm = 0xa68a8b60
+01-21 00:12:32.489   265  2143 D AudioALSAHardwareResourceManager: +startOutputDevice(), new_devices = 0x2, mOutputDevices = 0x0, mStartOutputDevicesCount = 0 SampleRate = 48000
+01-21 00:12:32.490   274   293 I powerd  : [powerd_req] POWER_MSG_MTK_CUS_HINT: hint:0, hdl:36, data:268435455
+01-21 00:12:32.490   265  2143 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:12:32.490   274   293 I libPerfService: perfCusUserScnEnable - handle:36
+01-21 00:12:32.490   265  2143 D AudioALSADeviceConfigManager: ApplyDeviceTurnonSequenceByName() DeviceName = headphone_output descriptor->DeviceStatusCounte = 0
+01-21 00:12:32.490   274   293 I libPerfService: 36: legacy set: 2 -1
+01-21 00:12:32.495   274  3178 I vendor.mediatek.hardware.power@1.1-impl: PowerHint hint:8, data:1
+01-21 00:12:32.495   274   293 I libPerfService: 8: legacy set freq: 1300000 -1
+01-21 00:12:32.496   274   293 I libPerfService: 8: legacy set: 4 -1
+01-21 00:12:32.496   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:0.232602,dur:4299.20,max:4299.20,min:4299.20
+01-21 00:12:32.500   634   733 E ResourceType: Style contains key with bad entry: 0x01010586
+01-21 00:12:32.500   265  2143 D AudioALSADeviceConfigManager: ApplyDeviceTurnonSequenceByName() DeviceName = ext_speaker_output descriptor->DeviceStatusCounte = 0
+01-21 00:12:32.501   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:12:32.504   634   733 E ResourceType: Style contains key with bad entry: 0x01010586
+01-21 00:12:32.509   279   965 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:12:32.510   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:32.513  1318  1388 D GraphicBuffer: register, handle(0x9784a280) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:32.515   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:12:32.517   634   679 D DuraSpeed/DSPolicyBase: [setCurrentLauncher] = com.android.launcher3
+01-21 00:12:32.522   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:10, data:2000
+01-21 00:12:32.527   634   679 D DuraSpeed/AWSManager: [setCurrentLauncher] = com.android.launcher3
+01-21 00:12:32.528   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState currentPackage = co.median.android.nmmzmok, event =1004
+01-21 00:12:32.529   634   679 D DuraSpeed/DuraSpeedInternalManager: skip doSuppression
+01-21 00:12:32.532   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState end
+01-21 00:12:32.542   634   733 D WindowClient: Add to mViews: DecorView@7c18ab8[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:12:32.542   265  2143 D AudioALSAHardwareResourceManager: -startOutputDevice(), mOutputDevices = 0x2, mStartOutputDevicesCount = 1
+01-21 00:12:32.543   265  2143 D AudioVoiceUIDL: [GetSRCInputParameter] mOutputSampleRate 16000,  mInputSampleRate 48000, mInChannel 2, mOutChannel, 0 format 1
+01-21 00:12:32.543   265  2143 D AudioVoiceUIDL: [GetSRCInputParameter] create SRC handle fail
+01-21 00:12:32.543   265  2143 D AudioALSAPlaybackHandlerNormal: -open()
+01-21 00:12:32.543   634   733 D ViewRootImpl[nmmzmok]: hardware acceleration = false , fakeHwAccelerated = true, sRendererDisabled = 
+true, forceHwAccelerated = false, sSystemRendererDisabled = true
+01-21 00:12:32.546   634  2527 I ActivityManager: Start proc 7864:co.median.android.nmmzmok/u0a75 for activity co.median.android.nmmzmok/co.median.android.LaunchActivity
+01-21 00:12:32.546   265  2143 D AudioMTKFilter: AudioMTKFilter::start() type 0 mode 8 bFirstDataWrite 0
+01-21 00:12:32.547   265  2143 D MtkAudioLoud: setWorkMode(), chNum 2, sampleRate 48000, workMode 8 RampupEnable 1
+01-21 00:12:32.547   265  2143 D MtkAudioLoud: setParameter 376 mInitParam.Initial_State 2
+01-21 00:12:32.547   265  2143 D MtkAudioLoud: +open()
+01-21 00:12:32.547   265  2143 D MtkAudioLoud: -open() result 0
+01-21 00:12:32.571   279   279 E DumpTunnel: finding regDump() failed
+01-21 00:12:32.572   279   279 I BufferQueueConsumer: [unnamed-279-260](this:0xb111e000,id:260,api:0,p:-1,c:279) setConsumerName: unnamed-279-260
+01-21 00:12:32.572   279   279 I BufferQueueConsumer: [Splash Screen co.median.android.nmmzmok#0](this:0xb111e000,id:260,api:0,p:-1,c:279) setConsumerName: Splash Screen co.median.android.nmmzmok#0
+01-21 00:12:32.572   279   279 I BufferQueueProducer: [](this:0xb111e000,id:260,api:0,p:-1,c:279) setMaxDequeuedBufferCount: maxDequeuedBuffers = 2
+01-21 00:12:32.574   634   733 V WindowManager: Changing focus from Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher} to null Callers=com.android.server.wm.WindowManagerService.relayoutWindow:2202 com.android.server.wm.Session.relayout:239 android.view.ViewRootImpl.relayoutWindow:6319 android.view.ViewRootImpl.performTraversals:1972
+01-21 00:12:32.575   634   733 D WindowManager: Input focus has changed to null
+01-21 00:12:32.589   634   675 I WindowManager: Focus moving from Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher} to null
+01-21 00:12:32.598   634   733 D Surface : Surface::connect(this=0x8faad000,api=2)
+01-21 00:12:32.603   274  3178 I [Gralloc]: usage1: 0x933, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:32.604   274  3178 D vndksupport: Loading /vendor/lib/hw/gralloc.mt6580.so from current namespace instead of sphal namespace.
+01-21 00:12:32.609   634   733 D GraphicBuffer: register, handle(0x98203600) (w:720 h:1280 s:720 f:0x1 u:933)
+01-21 00:12:32.616   634  2527 V WindowManager: Set focused app to: AppWindowToken{925bf7 token=Token{57b8fd2 ActivityRecord{dff2a5d u0 co.median.android.nmmzmok/co.median.android.LaunchActivity t379}}} old focus=AppWindowToken{dcf59a8 token=Token{421dff4 ActivityRecord{f317306 u0 com.android.launcher3/.Launcher t342}}} moveFocusNow=true
+01-21 00:12:32.623   274   274 I merged_hal_serv: type=1400 audit(0.0:527): avc: denied { search } for name="thermal" dev="proc" ino=4026533567 scontext=u:r:merged_hal_service:s0 tcontext=u:object_r:proc_thermal:s0 tclass=dir permissive=1
+01-21 00:12:32.623   274  3178 I vendor.mediatek.hardware.power@1.1-impl: notifyAppState pack:co.median.android.nmmzmok, act:co.median.android.LaunchActivity, pid:7864, state:1
+01-21 00:12:32.624   274   293 D powerd  : [powerd_req] POWER_MSG_NOTIFY_STATE
+01-21 00:12:32.624   274   293 I libPerfService: [perfNotifyAppState] foreground:co.median.android.nmmzmok, pid:7864
+01-21 00:12:32.625   274   293 E libPerfService: Could not open '/proc/driver/thermal/ta_fg_pid'
+01-21 00:12:32.625   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:12:32.625   274   293 E libPerfService: Could not open '/sys/module/ged/parameters/gx_top_app_pid'
+01-21 00:12:32.625   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:12:32.625   274   293 I libPerfService: perfUserGetCapability - cmd:7, id:0, val:-1
+01-21 00:12:32.677  1318  1388 E [EGL-ERROR]: __egl_platform_cancel_buffers:644: surface->num_buffers(4)
+01-21 00:12:32.677  7864  7864 I MultiDex: VM with version 2.1.0 has multidex support
+01-21 00:12:32.677  7864  7864 I MultiDex: Installing application
+01-21 00:12:32.677  7864  7864 I MultiDex: VM has multidex support, MultiDex support library is disabled.
+01-21 00:12:32.678  1318  1388 D Surface : Surface::disconnect(this=0x97564800,api=1)
+01-21 00:12:32.678   790   790 D StatusBar: setSystemUiVisibility vis=a618 mask=ffffffff oldVal=a718 newVal=a618 diff=100
+01-21 00:12:32.680  1318  1388 D GraphicBuffer: unregister, handle(0x9784a280) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:32.680  1318  1388 D GraphicBuffer: unregister, handle(0x97849800) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:32.681  1318  1388 D GraphicBuffer: unregister, handle(0x978495c0) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:32.681  1318  1388 D GraphicBuffer: unregister, handle(0x97848480) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:32.698   279   444 I SurfaceFlinger: EventThread Client Pid (7864) created
+01-21 00:12:32.699   279   445 I SurfaceFlinger: EventThread Client Pid (7864) created
+01-21 00:12:32.722   318   436 D APM_AudioPolicyManager: stopOutput() output 13, stream 1, session 49
+01-21 00:12:32.723   318   436 V APM::AudioOutputDescriptor: changeRefCount() stream 1, count 0
+01-21 00:12:32.779  1135  7760 I NearbyMediums: No BLE Fast/GATT advertisements found in the latest cycle.
+01-21 00:12:32.780  7864  7864 D AndroidRuntime: Shutting down VM
+--------- beginning of crash
+01-21 00:12:32.783  7864  7864 E AndroidRuntime: FATAL EXCEPTION: main
+01-21 00:12:32.783  7864  7864 E AndroidRuntime: Process: co.median.android.nmmzmok, PID: 7864
+01-21 00:12:32.783  7864  7864 E AndroidRuntime: java.lang.RuntimeException: Unable to create application co.median.android.GoNativeApplication: java.lang.NullPointerException: Attempt to invoke interface method 'java.util.Iterator java.util.List.iterator()' on a null object reference
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.app.ActivityThread.handleBindApplication(ActivityThread.java:5784) 
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.app.ActivityThread.-wrap1(Unknown Source:0)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.app.ActivityThread$H.handleMessage(ActivityThread.java:1690)       
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.os.Handler.dispatchMessage(Handler.java:106)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.os.Looper.loop(Looper.java:164)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.app.ActivityThread.main(ActivityThread.java:6548)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at java.lang.reflect.Method.invoke(Native Method)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:438)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:864)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime: Caused by: java.lang.NullPointerException: Attempt to invoke interface method 'java.util.Iterator java.util.List.iterator()' on a null object reference
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at i0.T.b(SourceFile:242)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at co.median.android.F.d(SourceFile:9)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at co.median.android.GoNativeApplication.onCreate(SourceFile:75)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.app.Instrumentation.callApplicationOnCreate(Instrumentation.java:1119)
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        at android.app.ActivityThread.handleBindApplication(ActivityThread.java:5781) 
+01-21 00:12:32.783  7864  7864 E AndroidRuntime:        ... 8 more
+01-21 00:12:32.785  1135  7760 I NearbyMediums: Current Tracked Scanning Clients are : {NearbyConnections.EnvironmentMonitor, NearbySharing}
+01-21 00:12:32.790   634  2653 W ActivityManager:   Force finishing activity co.median.android.nmmzmok/co.median.android.LaunchActivity
+01-21 00:12:32.790  7864  7879 D NetworkSecurityConfig: Using Network Security Config from resource network_security_config debugBuild: false
+01-21 00:12:32.794   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:12:32.795   634  7880 W AES     : Exception Log handling...
+01-21 00:12:32.795   634  7880 W AES     : Skipped - do not care third party apk
+01-21 00:12:32.805   634   650 I ActivityManager: Showing crash dialog for package co.median.android.nmmzmok u0
+01-21 00:12:32.805   634   679 D DuraSpeed/DSPolicyBase: [setCurrentLauncher] = com.android.launcher3
+01-21 00:12:32.808   634   679 D DuraSpeed/AWSManager: [setCurrentLauncher] = com.android.launcher3
+01-21 00:12:32.808   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState currentPackage = com.android.launcher3, event =1004  
+01-21 00:12:32.810   634   649 W BroadcastQueue: Background execution not allowed: receiving Intent { act=android.intent.action.DROPBOX_ENTRY_ADDED flg=0x10 (has extras) } to com.google.android.gms/.stats.service.DropBoxEntryAddedReceiver
+01-21 00:12:32.828  7864  7879 I System.out: isEmailSend:POST
+01-21 00:12:32.852  7864  7879 I System.out: port:443
+01-21 00:12:32.866   634   650 D WindowClient: Add to mViews: DecorView@16d2e39[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:12:32.867   634   650 D ViewRootImpl[nmmzmok]: hardware acceleration = false , fakeHwAccelerated = false, sRendererDisabled = true, forceHwAccelerated = false, sSystemRendererDisabled = true
+01-21 00:12:32.874   634   650 V WindowManager: Changing focus from null to Window{98455df u0 Application Error: co.median.android.nmmzmok} Callers=com.android.server.wm.WindowManagerService.addWindow:1609 com.android.server.wm.Session.addToDisplay:202 android.view.ViewRootImpl.setView:735 android.view.WindowManagerGlobal.addView:359
+01-21 00:12:32.876   634   650 D WindowManager: Input focus has changed to Window{98455df u0 Application Error: co.median.android.nmmzmok}
+01-21 00:12:32.877   634   675 I WindowManager: Focus moving from null to Window{98455df u0 Application Error: co.median.android.nmmzmok}
+01-21 00:12:32.886   634   648 I ProcessStatsService: Pruning old procstats: /data/system/procstats/state-2020-01-20-19-47-51.bin     
+01-21 00:12:32.902   279   279 E DumpTunnel: finding regDump() failed
+01-21 00:12:32.902   279   279 I BufferQueueConsumer: [unnamed-279-261](this:0xb1111000,id:261,api:0,p:-1,c:279) setConsumerName: unnamed-279-261
+01-21 00:12:32.902   279   279 I BufferQueueConsumer: [Application Error: co.median.android.nmmzmok#0](this:0xb1111000,id:261,api:0,p:-1,c:279) setConsumerName: Application Error: co.median.android.nmmzmok#0
+01-21 00:12:32.902   279   279 I BufferQueueProducer: [](this:0xb1111000,id:261,api:0,p:-1,c:279) setMaxDequeuedBufferCount: maxDequeuedBuffers = 2
+01-21 00:12:32.916   634   650 D Surface : Surface::connect(this=0x8f421000,api=2)
+01-21 00:12:32.916   790   790 D StatusBar: setSystemUiVisibility vis=8018 mask=ffffffff oldVal=a618 newVal=8018 diff=2600
+01-21 00:12:32.919   274  3178 I [Gralloc]: usage1: 0x933, format: 1 stride: 816 vertical_stride: 557 size: 1818048
+01-21 00:12:32.920   274  3178 D vndksupport: Loading /vendor/lib/hw/gralloc.mt6580.so from current namespace instead of sphal namespace.
+01-21 00:12:32.925   634   650 D GraphicBuffer: register, handle(0x98203900) (w:812 h:557 s:816 f:0x1 u:933)
+01-21 00:12:32.949   274  3178 I [Gralloc]: usage1: 0x933, format: 1 stride: 816 vertical_stride: 557 size: 1818048
+01-21 00:12:32.951   274  3178 D vndksupport: Loading /vendor/lib/hw/gralloc.mt6580.so from current namespace instead of sphal namespace.
+01-21 00:12:32.956   634   650 D GraphicBuffer: register, handle(0x982039c0) (w:812 h:557 s:816 f:0x1 u:933)
+01-21 00:12:32.994   634   679 D DuraSpeed/DSPolicyFactory: Application = com.android.launcher3 (50MB), FreeMemory = 499MB
+01-21 00:12:32.998   790   790 D StatusBar: setSystemUiVisibility vis=8008 mask=ffffffff oldVal=8018 newVal=8008 diff=10
+01-21 00:12:33.141   634   679 V DuraSpeed/AWSManager: Killing process, pid:1422, (com.google.process.gservices), adj:902
+01-21 00:12:33.142   634   679 V DuraSpeed/AWSManager: Killing process, pid:2444, (com.google.android.partnersetup), adj:900
+01-21 00:12:33.142   634   679 V DuraSpeed/AWSManager: Killing process, pid:3143, (com.mediatek.engineermode), adj:904
+01-21 00:12:33.144   634   679 V DuraSpeed/AWSManager: Killing process, pid:2667, (com.mediatek.duraspeed), adj:906
+01-21 00:12:33.144   634   679 V DuraSpeed/AWSManager: Killing process, pid:1840, (com.sr.app:filedownloader), adj:800
+01-21 00:12:33.145   634   679 V DuraSpeed/AWSManager: kill end[com.google.process.gservices, com.google.android.partnersetup, com.mediatek.engineermode, com.mediatek.duraspeed, com.sr.app:filedownloader]
+01-21 00:12:33.146   634   679 V DuraSpeed/AWSManager: suppress start []
+01-21 00:12:33.146   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState end
+01-21 00:12:33.181   790   790 D NetworkController.WifiSignalController: Change in state from: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=false,activityOut=false,rssi=-55,lastModified=01-21 12:12:28,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:33.181   790   790 D NetworkController.WifiSignalController:        to: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=true,activityOut=true,rssi=-55,lastModified=01-21 12:12:28,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:33.266  7864  7879 I System.out: Check isMmsSendPdu
+01-21 00:12:33.268  7864  7879 I System.out: [OkHttp] sendRequest>>
+01-21 00:12:33.268  7864  7879 I System.out: [OkHttp] sendRequest<<
+01-21 00:12:33.295   634   649 W ActivityManager: Activity pause timeout for ActivityRecord{dff2a5d u0 co.median.android.nmmzmok/co.median.android.LaunchActivity t379 f}
+01-21 00:12:33.313   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:12:33.315   634   733 D View    : [Warning] assignParent to null: this = DecorView@7c18ab8[nmmzmok]
+01-21 00:12:33.316   634   649 V WindowManager: Set focused app to: AppWindowToken{dcf59a8 token=Token{421dff4 ActivityRecord{f317306 
+u0 com.android.launcher3/.Launcher t342}}} old focus=AppWindowToken{925bf7 token=Token{57b8fd2 ActivityRecord{dff2a5d u0 co.median.android.nmmzmok/co.median.android.LaunchActivity t379}}} moveFocusNow=true
+01-21 00:12:33.317   274  3178 I vendor.mediatek.hardware.power@1.1-impl: notifyAppState pack:com.android.launcher3, act:com.android.launcher3.Launcher, pid:1318, state:1
+01-21 00:12:33.317   274   293 D powerd  : [powerd_req] POWER_MSG_NOTIFY_STATE
+01-21 00:12:33.317   274   293 I libPerfService: [perfNotifyAppState] foreground:com.android.launcher3, pid:1318
+01-21 00:12:33.318   274   293 E libPerfService: Could not open '/proc/driver/thermal/ta_fg_pid'
+01-21 00:12:33.318   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:12:33.317   274   274 I merged_hal_serv: type=1400 audit(0.0:528): avc: denied { search } for name="thermal" dev="proc" ino=4026533567 scontext=u:r:merged_hal_service:s0 tcontext=u:object_r:proc_thermal:s0 tclass=dir permissive=1
+01-21 00:12:33.318   274   293 E libPerfService: Could not open '/sys/module/ged/parameters/gx_top_app_pid'
+01-21 00:12:33.318   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:12:33.318   274   293 I libPerfService: perfUserGetCapability - cmd:7, id:0, val:-1
+01-21 00:12:33.319   634   679 D DuraSpeed/DSPolicyBase: [setCurrentLauncher] = com.android.launcher3
+01-21 00:12:33.320   634   733 D Surface : Surface::disconnect(this=0x8faad000,api=2)
+01-21 00:12:33.321   634   733 D GraphicBuffer: unregister, handle(0x98203600) (w:720 h:1280 s:720 f:0x1 u:933)
+01-21 00:12:33.321   634   679 D DuraSpeed/AWSManager: [setCurrentLauncher] = com.android.launcher3
+01-21 00:12:33.321   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState currentPackage = com.android.launcher3, event =1004  
+01-21 00:12:33.322   634   733 D WindowClient: Remove from mViews: DecorView@7c18ab8[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:12:33.351   634  4687 I WindowManager: Relayout Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher}: oldVis=8 newVis=0 focusMayChange = true
+01-21 00:12:33.368  1318  1318 D Surface : Surface::allocateBuffers(this=0x97564800)
+01-21 00:12:33.369   274  3178 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:33.369  1318  1388 D Surface : Surface::connect(this=0x97564800,api=1)
+01-21 00:12:33.371   274  3178 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:33.372   274  3178 I chatty  : uid=1000(system) HwBinder:274_4 identical 1 line
+01-21 00:12:33.374   274  3178 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:33.376  1318  1388 D Surface : Surface::setBufferCount(this=0x97564800,bufferCount=4)
+01-21 00:12:33.376   279   964 I BufferQueueProducer: [com.android.launcher3/com.android.launcher3.Launcher#0](this:0xb1109000,id:257,api:1,p:1318,c:279) setMaxDequeuedBufferCount: maxDequeuedBuffers = 3
+01-21 00:12:33.379  1318  1318 V PhoneWindow: DecorView setVisiblity: visibility = 0, Parent = ViewRoot{3832407 com.android.launcher3/com.android.launcher3.Launcher,ident = 0}, this = DecorView@1473621[Launcher]
+01-21 00:12:33.397   634   679 D DuraSpeed/DSPolicyFactory: Application = com.android.launcher3 (50MB), FreeMemory = 498MB
+01-21 00:12:33.413   279   445 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:12:33.414   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:33.418  1318  1388 D GraphicBuffer: register, handle(0x978495c0) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:33.421   274  3178 I vendor.mediatek.hardware.power@1.1-impl: PowerHint hint:8, data:0
+01-21 00:12:33.426   634  4687 D IdleScreen: activityIdleScreen: android.app.ContextImpl@b10530a mNotifyNeeded: false idleIntent: Intent { act=android.intent.action.MAIN cat=[android.intent.category.HOME] flg=0x10000100 cmp=com.android.launcher3/.Launcher }
+01-21 00:12:33.428   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:0
+01-21 00:12:33.429   274   293 I libPerfService: 11: legacy set: 2 -1
+01-21 00:12:33.429   274   293 I libPerfService: 11: legacy set freq: -1 -1
+01-21 00:12:33.430   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:10, data:0
+01-21 00:12:33.463   634   679 V DuraSpeed/AWSManager: Killing process, pid:1422, (com.google.process.gservices), adj:902
+01-21 00:12:33.464   634   679 V DuraSpeed/AWSManager: Killing process, pid:2444, (com.google.android.partnersetup), adj:900
+01-21 00:12:33.464   634   679 V DuraSpeed/AWSManager: Killing process, pid:3143, (com.mediatek.engineermode), adj:904
+01-21 00:12:33.464   634   679 V DuraSpeed/AWSManager: Killing process, pid:2667, (com.mediatek.duraspeed), adj:906
+01-21 00:12:33.464   634   679 V DuraSpeed/AWSManager: Killing process, pid:1840, (com.sr.app:filedownloader), adj:800
+01-21 00:12:33.464   634   679 V DuraSpeed/AWSManager: kill end[com.google.process.gservices, com.google.android.partnersetup, com.mediatek.engineermode, com.mediatek.duraspeed, com.sr.app:filedownloader]
+01-21 00:12:33.464   634   679 V DuraSpeed/AWSManager: suppress start []
+01-21 00:12:33.464   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState end
+01-21 00:12:33.510   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:54.218529,dur:1014.41,max:34.86,min:14.97
+01-21 00:12:33.944  1318  1388 W OpenGLRenderer: Incorrectly called buildLayer on View: ShortcutAndWidgetContainer, destroying layer...
+01-21 00:12:33.944  1318  1388 W OpenGLRenderer: Incorrectly called buildLayer on View: ShortcutAndWidgetContainer, destroying layer...
+01-21 00:12:33.945   279   444 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:12:33.945   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:12:33.950  1318  1388 D GraphicBuffer: register, handle(0x97848480) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:12:34.462   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-4ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:34.473   634   920 D BatteryService: liuyang--BATTERY_STATUS_CHARGING,level=32
+01-21 00:12:34.482   790   790 I hct_torch: [onReceive]intent=Intent { act=android.intent.action.BATTERY_CHANGED flg=0x60000010 (has extras) }
+01-21 00:12:34.487   790   790 D PowerUI : mBatteryProps.batteryTemperature=430,mLastBatteryTemperature =430
+01-21 00:12:34.487   790   790 D PowerUI : oldTempBucket=0,tempBucket =0
+01-21 00:12:34.512   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:19.976706,dur:1001.17,max:532.92,min:17.22
+01-21 00:12:35.185   790   790 D NetworkController.WifiSignalController: Change in state from: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=true,activityOut=true,rssi=-55,lastModified=01-21 12:12:33,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:35.185   790   790 D NetworkController.WifiSignalController:        to: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=false,activityOut=false,rssi=-55,lastModified=01-21 12:12:33,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:35.695   265   532 D AudioALSAStreamOut: standby()
+01-21 00:12:35.695   265   532 D AudioALSAStreamOut: standbyStreamOut()
+01-21 00:12:35.695   265   532 D AudioALSAStreamOut: close(), flags 6, mMixerOutInUse 0
+01-21 00:12:35.695   265   532 D AudioALSAPlaybackHandlerNormal: +close()
+01-21 00:12:35.695   265   532 D AudioVoiceUIDL: [SetInputStandBy] ReadRefFromRing to exit? (0)
+01-21 00:12:35.695   265   532 D AudioALSAHardwareResourceManager: +stopOutputDevice(), mOutputDevices = 0x2, mStartOutputDevicesCount = 1
+01-21 00:12:35.695   265   532 D AudioALSADeviceConfigManager: ApplyDeviceTurnoffSequenceByName(), DeviceName = ext_speaker_output descriptor->DeviceStatusCounter = 1
+01-21 00:12:35.696   265   532 D AudioALSADeviceConfigManager: ApplyDeviceTurnoffSequenceByName(), DeviceName = headphone_output descriptor->DeviceStatusCounter = 1
+01-21 00:12:35.696   265   532 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:12:35.696   265   532 D AudioALSAHardwareResourceManager: -stopOutputDevice(), mOutputDevices = 0x0, mStartOutputDevicesCount = 0
+01-21 00:12:35.696   265   532 D AudioALSAPlaybackHandlerBase: +closePcmDriver(), mPcm = 0xa68a8b60
+01-21 00:12:35.697   265   532 D AudioALSAPlaybackHandlerBase: -closePcmDriver(), mPcm = 0x0
+01-21 00:12:35.697   265   532 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode() bEanble = 0 SampleRate = 48000
+01-21 00:12:35.697   265   532 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:12:35.697   265   532 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode(), bypass low jitter mode = 0
+01-21 00:12:35.697   265   532 D AudioMTKFilter: AudioMTKFilter::stop() type 0 mode 8
+01-21 00:12:35.697   265   532 D MtkAudioLoud: +close()
+01-21 00:12:35.697   265   532 D MtkAudioLoud: -close()
+01-21 00:12:35.697   265   532 D AudioALSAPlaybackHandlerBase: DeinitDataPending
+01-21 00:12:35.697   265   532 D AudioALSAHardwareResourceManager: EnableAudBufClk(), bEanble = 0, mStartOutputDevicesCount 0
+01-21 00:12:35.698   265   532 D AudioALSAPlaybackHandlerNormal: -close()
+01-21 00:12:35.698   265   532 D AudioALSAStreamManager: +destroyPlaybackHandler(), mode = 0, pPlaybackHandler = 0xa518c280
+01-21 00:12:35.698   265   532 D AudioALSAPlaybackHandlerNormal: ~AudioALSAPlaybackHandlerNormal()
+01-21 00:12:35.698   265   532 D AudioALSAStreamManager: -destroyPlaybackHandler(), mPlaybackHandlerVector.size() = 0
+01-21 00:12:35.698   265   532 D AudioALSAStreamOut: setMuteForRouting(), mute 0, flags 6
+01-21 00:12:35.698   265   532 D AudioUtility: power_hal_hint - custPowerHint 0, data 0
+01-21 00:12:35.698   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkCusPowerHint hint:0, data:0
+01-21 00:12:35.699   274   293 I powerd  : [powerd_req] POWER_MSG_MTK_CUS_HINT: hint:0, hdl:36, data:0
+01-21 00:12:35.699   274   293 I libPerfService: 36: legacy set: -1 -1
+01-21 00:12:35.953  7888  7888 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:12:36.933   337   337 I thermal_repeater: [recvMdThermalInfo] ret=15, strLen=127,  2, 32767, -127
+01-21 00:12:37.474   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-3ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:40.487   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-1ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:40.954  7889  7889 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:12:42.811  1135  7806 I NearbyMediums: No BLE Fast/GATT advertisements found in the latest cycle.
+01-21 00:12:42.811  1135  7806 I NearbyMediums: Current Tracked Scanning Clients are : {NearbyConnections.EnvironmentMonitor, NearbySharing}
+01-21 00:12:43.497   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-4ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:43.550   634   748 I PowerWrap: PowerHal_TouchBoost
+01-21 00:12:43.551   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:15, data:10000
+01-21 00:12:43.553   274   293 I libPerfService: 15: legacy set freq: 1105000 -1
+01-21 00:12:43.554   634  2653 W ActivityManager:   Force finishing activity co.median.android.nmmzmok/co.median.android.LaunchActivity
+01-21 00:12:43.555   634   650 D View    : [Warning] assignParent to null: this = DecorView@16d2e39[nmmzmok]
+01-21 00:12:43.556   634   650 V WindowManager: Remove Window{98455df u0 Application Error: co.median.android.nmmzmok} client=8a83c7e, surfaceController=Surface(name=Application Error: co.median.android.nmmzmok) Callers=com.android.server.wm.WindowState.removeIfPossible:1851 com.android.server.wm.WindowManagerService.removeWindow:1776 com.android.server.wm.Session.remove:222 android.view.ViewRootImpl.dispatchDetachedFromWindow:3644 android.view.ViewRootImpl.doDie:6550
+01-21 00:12:43.558   274   293 I libPerfService: 15: legacy set: 3 -1
+01-21 00:12:43.559   634   650 V WindowManager: Changing focus from Window{98455df u0 Application Error: co.median.android.nmmzmok EXITING} to Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher} Callers=com.android.server.wm.WindowState.setupWindowForRemoveOnExit:1999 com.android.server.wm.WindowState.removeIfPossible:1971 com.android.server.wm.WindowState.removeIfPossible:1851 com.android.server.wm.WindowManagerService.removeWindow:1776
+01-21 00:12:43.560   634   650 D WindowManager: Input focus has changed to Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher}
+01-21 00:12:43.579   634   650 D WindowClient: Remove from mViews: DecorView@16d2e39[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:12:43.580   634   675 I WindowManager: Focus moving from Window{98455df u0 Application Error: co.median.android.nmmzmok EXITING} to Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher}
+01-21 00:12:43.581   634  2653 I ActivityManager: Killing 7864:co.median.android.nmmzmok/u0a75 (adj 900): crash
+01-21 00:12:43.583   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:0.330725,dur:9070.99,max:8360.82,min:17.30
+01-21 00:12:43.585   634   651 W system_server: kill(-7864, 9) failed: No such process
+01-21 00:12:43.598   634   748 I PowerWrap: PowerHal_TouchBoost
+01-21 00:12:43.598   634   650 W InputEventReceiver: Attempted to finish an input event but the input event receiver has already been 
+disposed.
+01-21 00:12:43.599  7006  7006 I GoogleInputMethodService: GoogleInputMethodService.onFinishInput():2092
+01-21 00:12:43.600   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:15, data:0
+01-21 00:12:43.602   274   293 I libPerfService: 15: legacy set: -1 -1
+01-21 00:12:43.602   274   293 I libPerfService: 15: legacy set freq: -1 -1
+01-21 00:12:43.604  7006  7006 I Module  : DeviceLockedStatusModuleProvider$Module.updateDeviceLockedStatus():103 repeatCheckTimes = 0, locked = false
+01-21 00:12:43.606   790   790 D StatusBar: setSystemUiVisibility vis=a708 mask=ffffffff oldVal=8008 newVal=a708 diff=2700
+01-21 00:12:43.607   790   790 D StatusBar: setSystemUiVisibility vis=a718 mask=ffffffff oldVal=a708 newVal=a718 diff=10
+01-21 00:12:43.610  7006  7006 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1349 onStartInput(EditorInfo{EditorInfo{packageName=com.android.launcher3, inputType=0, inputTypeString=NULL, enableLearning=false, autoCorrection=false, autoComplete=false, imeOptions=0, privateImeOptions=null, actionName=UNSPECIFIED, actionLabel=null, initialSelStart=-1, initialSelEnd=-1, initialCapsMode=0, label=null, fieldId=2131427358, fieldName=null, extras=null, hintText=null, hintLocales=[]}}, false)
+01-21 00:12:43.613  7006  7006 I Module  : DeviceLockedStatusModuleProvider$Module.updateDeviceLockedStatus():103 repeatCheckTimes = 1, locked = false
+01-21 00:12:43.628   634   651 W system_server: kill(-7864, 9) failed: No such process
+01-21 00:12:43.651   279   964 I SurfaceFlinger: EventThread Client Pid (7864) disconnected by (279)
+01-21 00:12:43.651   279   964 I SurfaceFlinger: EventThread Client Pid (7864) disconnected by (279)
+01-21 00:12:43.671   634   651 W system_server: kill(-7864, 9) failed: No such process
+01-21 00:12:43.671   634   651 I system_server: Successfully killed process cgroup uid 10075 pid 7864 in 88ms
+01-21 00:12:43.780   634   733 D Surface : Surface::disconnect(this=0x8f421000,api=2)
+01-21 00:12:43.780   634   733 D GraphicBuffer: unregister, handle(0x98203900) (w:812 h:557 s:816 f:0x1 u:933)
+01-21 00:12:43.782   634   733 D GraphicBuffer: unregister, handle(0x982039c0) (w:812 h:557 s:816 f:0x1 u:933)
+01-21 00:12:43.784   634   733 W AppOps  : Finishing op nesting under-run: uid 1000 pkg android code 24 time=0 duration=0 nesting=0   
+01-21 00:12:44.203   790   790 D NetworkController.WifiSignalController: Change in state from: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=false,activityOut=false,rssi=-55,lastModified=01-21 12:12:35,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:44.203   790   790 D NetworkController.WifiSignalController:        to: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=true,activityOut=true,rssi=-55,lastModified=01-21 12:12:35,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:44.730   634   904 D AES     : AEEIOCTL_GET/SET_SF_STATE IOCTL,cmd= 1074294797, lParam=0. 
+01-21 00:12:44.730   634   904 D AES     : AEEIOCTL_RT_MON_Kick IOCTL,cmd= 2147774474, lParam=300.
+01-21 00:12:45.205   790   790 D NetworkController.WifiSignalController: Change in state from: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=true,activityOut=true,rssi=-55,lastModified=01-21 12:12:44,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:45.205   790   790 D NetworkController.WifiSignalController:        to: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=false,activityOut=false,rssi=-55,lastModified=01-21 12:12:44,ssid="Silvanus WiFi",isTransient=false
+01-21 00:12:45.239   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:10.262834,dur:1656.46,max:998.09,min:16.43
+01-21 00:12:45.955  7890  7890 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:12:46.508   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-3ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:12:46.950   337   337 I thermal_repeater: [recvMdThermalInfo] ret=15, strLen=127,  2, 32767, -127
+01-21 00:12:50.959  7891  7891 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:12:52.816  1135  7806 I NearbyMediums: No BLE Fast/GATT advertisements found in the latest cycle.
+01-21 00:12:52.816  1135  7806 I NearbyMediums: Current Tracked Scanning Clients are : {NearbyConnections.EnvironmentMonitor, NearbySharing}
+01-21 00:12:55.958  7892  7892 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:12:56.966   337   337 I thermal_repeater: [recvMdThermalInfo] ret=15, strLen=127,  2, 32767, -127
+01-21 00:13:00.000   634   743 D MtkDataShapingUtils: openLteGateByDataShaping datashaping instance is null
+01-21 00:13:00.062   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:0.067462,dur:14823.26,max:14823.26,min:14823.26
+01-21 00:13:00.962  7896  7896 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:13:01.585   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-3ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:13:01.611   634   748 I PowerWrap: PowerHal_TouchBoost
+01-21 00:13:01.612   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:15, data:10000
+01-21 00:13:01.616   274   293 I libPerfService: 15: legacy set freq: 1105000 -1
+01-21 00:13:01.633   274   293 I libPerfService: 15: legacy set: 3 -1
+01-21 00:13:01.686   634   748 I PowerWrap: PowerHal_TouchBoost
+01-21 00:13:01.686   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:15, data:0
+01-21 00:13:01.687   274   293 I libPerfService: 15: legacy set: -1 -1
+01-21 00:13:01.687   274   293 I libPerfService: 15: legacy set freq: -1 -1
+01-21 00:13:01.694   279   444 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:13:01.694   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:01.695   318  7021 D APM_AudioPolicyManager: startOutput() output 13, stream 1, session 49
+01-21 00:13:01.695   318  7021 V APM::AudioOutputDescriptor: changeRefCount() stream 1, count 1
+01-21 00:13:01.698  1318  1388 D GraphicBuffer: register, handle(0x97849800) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:01.700   265  2143 D AudioALSAStreamManager: +syncSharedOutDevice(), routingSharedOutDevice: 2
+01-21 00:13:01.700   265  2143 D AudioALSAStreamManager: -syncSharedOutDevice()
+01-21 00:13:01.700   634   920 I ActivityManager: START u0 {act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x10200000 cmp=co.median.android.nmmzmok/co.median.android.LaunchActivity bnds=[360,381][526,610]} from uid 10018
+01-21 00:13:01.700   265  2143 D AudioALSAVolumeController: AudioALSAVolumeController getMasterVolume
+01-21 00:13:01.700   265  2143 D AudioALSAStreamManager: setMasterVolume(), volume = 1.000000
+01-21 00:13:01.700   265  2143 D AudioALSAVolumeController: AudioALSAVolumeController setMasterVolume v = 1.000000 mode = 0 devices = 
+0x2
+01-21 00:13:01.700   265  2143 D AudioALSAVolumeController: ApplyExtAmpHeadPhoneGain  Gain = 256 mode= 0 device = 3
+01-21 00:13:01.700   265  2143 D AudioALSAVolumeController: DegradedBGain   = 0
+01-21 00:13:01.700   265  2143 D AudioALSAVolumeController: SetHeadPhoneLGain = 0
+01-21 00:13:01.700   265  2143 D AudioALSAVolumeController: SetHeadPhoneRGain = 0
+01-21 00:13:01.701   265  2143 D AudioALSAStreamOut: open(), flags 6
+01-21 00:13:01.701   265  2143 D AudioUtility: power_hal_hint - custPowerHint 0, data 268435455
+01-21 00:13:01.701   265  2143 D AudioALSAStreamManager: +createPlaybackHandler(), mAudioMode = 0, output_devices = 0x2
+01-21 00:13:01.701   265  2143 D NVRAM   : QueryFeatureSupportInfo(), feature support bit 0x12090055
+01-21 00:13:01.701   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkCusPowerHint hint:0, data:268435455
+01-21 00:13:01.701   265  2143 D AudioALSAPlaybackHandlerNormal: AudioALSAPlaybackHandlerNormal()
+01-21 00:13:01.701   265  2143 D AudioALSAPlaybackHandlerNormal: +setFilterMng() mAudioFilterManagerHandler [0xa68961a0]
+01-21 00:13:01.702   265  2143 D AudioALSAStreamManager: -createPlaybackHandler(), mPlaybackHandlerVector.size() = 1
+01-21 00:13:01.702   265  2143 D AudioALSAPlaybackHandlerNormal: +open(), flag 6, mDevice = 0x2
+01-21 00:13:01.702   265  2143 D AudioALSAHardwareResourceManager: EnableAudBufClk(), bEanble = 1, mStartOutputDevicesCount 0
+01-21 00:13:01.702   265  2143 D AudioALSADeviceParser: compare pcm success = 8, stringpair = I2S0DL1_PLayback
+01-21 00:13:01.702   274   293 I powerd  : [powerd_req] POWER_MSG_MTK_CUS_HINT: hint:0, hdl:36, data:268435455
+01-21 00:13:01.702   274   293 I libPerfService: perfCusUserScnEnable - handle:36
+01-21 00:13:01.703   265  2143 D AudioALSAPlaybackHandlerNormal: ChooseTargetSampleRate SampleRate = 48000 outputdevice = 2
+01-21 00:13:01.703   265  2143 D         : -AssignDRAM() retval 0
+01-21 00:13:01.703   265  2143 D AudioALSAPlaybackHandlerBase: transferAudioFormatToPcmFormat(), audio_format(0x1) => pcm_format(0x0) 
+01-21 00:13:01.703   265  2143 D AudioALSAPlaybackHandlerNormal: open(), mConfig: channels = 2, rate = 48000, period_size = 256, period_count = 2, format = 0 avail_min = 256
+01-21 00:13:01.703   265  2143 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode() bEanble = 1 SampleRate = 48000
+01-21 00:13:01.703   265  2143 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:13:01.703   274   293 I libPerfService: 36: legacy set: 2 -1
+01-21 00:13:01.703   265  2143 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode(), bypass low jitter mode = 1
+01-21 00:13:01.703   265  2143 D AudioALSAPlaybackHandlerBase: +openPcmDriverWithFlag(), pcm device = 8 flag = 0x8
+01-21 00:13:01.705   265  2143 D AudioALSAPlaybackHandlerBase: -openPcmDriverWithFlag(), mPcm = 0xa68a8b60
+01-21 00:13:01.705   265  2143 D AudioALSAHardwareResourceManager: +startOutputDevice(), new_devices = 0x2, mOutputDevices = 0x0, mStartOutputDevicesCount = 0 SampleRate = 48000
+01-21 00:13:01.705   265  2143 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:13:01.705   265  2143 D AudioALSADeviceConfigManager: ApplyDeviceTurnonSequenceByName() DeviceName = headphone_output descriptor->DeviceStatusCounte = 0
+01-21 00:13:01.711   274  3178 I vendor.mediatek.hardware.power@1.1-impl: PowerHint hint:8, data:1
+01-21 00:13:01.712   274   293 I libPerfService: 8: legacy set freq: 1300000 -1
+01-21 00:13:01.712   274   293 I libPerfService: 8: legacy set: 4 -1
+01-21 00:13:01.715   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:1.210021,dur:1652.86,max:1625.97,min:26.90
+01-21 00:13:01.716   265  2143 D AudioALSADeviceConfigManager: ApplyDeviceTurnonSequenceByName() DeviceName = ext_speaker_output descriptor->DeviceStatusCounte = 0
+01-21 00:13:01.717   634   733 E ResourceType: Style contains key with bad entry: 0x01010586
+01-21 00:13:01.717   634   733 E ResourceType: Style contains key with bad entry: 0x01010586
+01-21 00:13:01.721   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:13:01.725   634   733 D WindowClient: Add to mViews: DecorView@8d1c166[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:13:01.725   634   733 D ViewRootImpl[nmmzmok]: hardware acceleration = false , fakeHwAccelerated = true, sRendererDisabled = 
+true, forceHwAccelerated = false, sSystemRendererDisabled = true
+01-21 00:13:01.728   279   444 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:13:01.729   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:01.732  1318  1388 D GraphicBuffer: register, handle(0x9784a280) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:01.736   279   279 E DumpTunnel: finding regDump() failed
+01-21 00:13:01.736   279   279 I BufferQueueConsumer: [unnamed-279-262](this:0xb1110000,id:262,api:0,p:-1,c:279) setConsumerName: unnamed-279-262
+01-21 00:13:01.736   279   279 I BufferQueueConsumer: [Splash Screen co.median.android.nmmzmok#0](this:0xb1110000,id:262,api:0,p:-1,c:279) setConsumerName: Splash Screen co.median.android.nmmzmok#0
+01-21 00:13:01.736   279   279 I BufferQueueProducer: [](this:0xb1110000,id:262,api:0,p:-1,c:279) setMaxDequeuedBufferCount: maxDequeuedBuffers = 2
+01-21 00:13:01.744   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:13:01.745   634   733 D Surface : Surface::connect(this=0x9267f800,api=2)
+01-21 00:13:01.747   274  3178 I [Gralloc]: usage1: 0x933, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:01.748   274  3178 D vndksupport: Loading /vendor/lib/hw/gralloc.mt6580.so from current namespace instead of sphal namespace.
+01-21 00:13:01.752   274   461 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:10, data:2000
+01-21 00:13:01.754   634   679 D DuraSpeed/DSPolicyBase: [setCurrentLauncher] = com.android.launcher3
+01-21 00:13:01.755   634   733 D GraphicBuffer: register, handle(0x98203600) (w:720 h:1280 s:720 f:0x1 u:933)
+01-21 00:13:01.759   265  2143 D AudioALSAHardwareResourceManager: -startOutputDevice(), mOutputDevices = 0x2, mStartOutputDevicesCount = 1
+01-21 00:13:01.759   265  2143 D AudioVoiceUIDL: [GetSRCInputParameter] mOutputSampleRate 16000,  mInputSampleRate 48000, mInChannel 2, mOutChannel, 0 format 1
+01-21 00:13:01.760   265  2143 D AudioVoiceUIDL: [GetSRCInputParameter] create SRC handle fail
+01-21 00:13:01.760   265  2143 D AudioALSAPlaybackHandlerNormal: -open()
+01-21 00:13:01.763   265  2143 D AudioMTKFilter: AudioMTKFilter::start() type 0 mode 8 bFirstDataWrite 0
+01-21 00:13:01.763   265  2143 D MtkAudioLoud: setWorkMode(), chNum 2, sampleRate 48000, workMode 8 RampupEnable 1
+01-21 00:13:01.764   265  2143 D MtkAudioLoud: setParameter 376 mInitParam.Initial_State 2
+01-21 00:13:01.764   265  2143 D MtkAudioLoud: +open()
+01-21 00:13:01.764   265  2143 D MtkAudioLoud: -open() result 0
+01-21 00:13:01.764   634   679 D DuraSpeed/AWSManager: [setCurrentLauncher] = com.android.launcher3
+01-21 00:13:01.764   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState currentPackage = co.median.android.nmmzmok, event =1004
+01-21 00:13:01.765   634   679 D DuraSpeed/DuraSpeedInternalManager: skip doSuppression
+01-21 00:13:01.766   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState end
+01-21 00:13:01.779   634   920 I ActivityManager: Start proc 7897:co.median.android.nmmzmok/u0a75 for activity co.median.android.nmmzmok/co.median.android.LaunchActivity
+01-21 00:13:01.830   634   920 V WindowManager: Set focused app to: AppWindowToken{c26ccfd token=Token{a826e8e ActivityRecord{6079e89 
+u0 co.median.android.nmmzmok/co.median.android.LaunchActivity t380}}} old focus=AppWindowToken{dcf59a8 token=Token{421dff4 ActivityRecord{f317306 u0 com.android.launcher3/.Launcher t342}}} moveFocusNow=true
+01-21 00:13:01.831   634   920 V WindowManager: Changing focus from Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher} to null Callers=com.android.server.wm.WindowManagerService.setFocusedApp:2772 com.android.server.am.ActivityManagerService.setResumedActivityUncheckLocked:3269 com.android.server.am.ActivityStack.setResumedActivityLocked:2284 com.android.server.am.ActivityStack.minimalResumeActivityLocked:1093
+01-21 00:13:01.832   634   920 D WindowManager: Input focus has changed to null
+01-21 00:13:01.848   274   461 I vendor.mediatek.hardware.power@1.1-impl: notifyAppState pack:co.median.android.nmmzmok, act:co.median.android.LaunchActivity, pid:7897, state:1
+01-21 00:13:01.850   274   293 D powerd  : [powerd_req] POWER_MSG_NOTIFY_STATE
+01-21 00:13:01.850   274   293 I libPerfService: [perfNotifyAppState] foreground:co.median.android.nmmzmok, pid:7897
+01-21 00:13:01.852   634   675 I WindowManager: Focus moving from Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher} to null
+01-21 00:13:01.854   274   293 E libPerfService: Could not open '/proc/driver/thermal/ta_fg_pid'
+01-21 00:13:01.854   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:13:01.854   274   293 E libPerfService: Could not open '/sys/module/ged/parameters/gx_top_app_pid'
+01-21 00:13:01.854   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:13:01.854   274   293 I libPerfService: perfUserGetCapability - cmd:7, id:0, val:-1
+01-21 00:13:01.863   790   790 D StatusBar: setSystemUiVisibility vis=a618 mask=ffffffff oldVal=a718 newVal=a618 diff=100
+01-21 00:13:01.867  1318  1388 E [EGL-ERROR]: __egl_platform_cancel_buffers:644: surface->num_buffers(4)
+01-21 00:13:01.867  1318  1388 D Surface : Surface::disconnect(this=0x97564800,api=1)
+01-21 00:13:01.868  1318  1388 D GraphicBuffer: unregister, handle(0x9784a280) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:01.868  1318  1388 D GraphicBuffer: unregister, handle(0x97849800) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:01.868  1318  1388 D GraphicBuffer: unregister, handle(0x97848480) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:01.869  1318  1388 D GraphicBuffer: unregister, handle(0x978495c0) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:01.898  7897  7897 I MultiDex: VM with version 2.1.0 has multidex support
+01-21 00:13:01.898  7897  7897 I MultiDex: Installing application
+01-21 00:13:01.898  7897  7897 I MultiDex: VM has multidex support, MultiDex support library is disabled.
+01-21 00:13:01.915   279   444 I SurfaceFlinger: EventThread Client Pid (7897) created
+01-21 00:13:01.916   279   444 I SurfaceFlinger: EventThread Client Pid (7897) created
+01-21 00:13:01.938   318   436 D APM_AudioPolicyManager: stopOutput() output 13, stream 1, session 49
+01-21 00:13:01.938   318   436 V APM::AudioOutputDescriptor: changeRefCount() stream 1, count 0
+01-21 00:13:01.991  7897  7897 D AndroidRuntime: Shutting down VM
+01-21 00:13:01.992  7897  7897 E AndroidRuntime: FATAL EXCEPTION: main
+01-21 00:13:01.992  7897  7897 E AndroidRuntime: Process: co.median.android.nmmzmok, PID: 7897
+01-21 00:13:01.992  7897  7897 E AndroidRuntime: java.lang.RuntimeException: Unable to create application co.median.android.GoNativeApplication: java.lang.NullPointerException: Attempt to invoke interface method 'java.util.Iterator java.util.List.iterator()' on a null object reference
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.app.ActivityThread.handleBindApplication(ActivityThread.java:5784) 
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.app.ActivityThread.-wrap1(Unknown Source:0)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.app.ActivityThread$H.handleMessage(ActivityThread.java:1690)       
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.os.Handler.dispatchMessage(Handler.java:106)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.os.Looper.loop(Looper.java:164)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.app.ActivityThread.main(ActivityThread.java:6548)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at java.lang.reflect.Method.invoke(Native Method)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:438)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:864)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime: Caused by: java.lang.NullPointerException: Attempt to invoke interface method 'java.util.Iterator java.util.List.iterator()' on a null object reference
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at i0.T.b(SourceFile:242)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at co.median.android.F.d(SourceFile:9)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at co.median.android.GoNativeApplication.onCreate(SourceFile:75)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.app.Instrumentation.callApplicationOnCreate(Instrumentation.java:1119)
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        at android.app.ActivityThread.handleBindApplication(ActivityThread.java:5781) 
+01-21 00:13:01.992  7897  7897 E AndroidRuntime:        ... 8 more
+01-21 00:13:01.994  7897  7912 D NetworkSecurityConfig: Using Network Security Config from resource network_security_config debugBuild: false
+01-21 00:13:02.000   634   920 W ActivityManager:   Force finishing activity co.median.android.nmmzmok/co.median.android.LaunchActivity
+01-21 00:13:02.006   274   461 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:13:02.007   634  7913 W AES     : Exception Log handling...
+01-21 00:13:02.007   634  7913 W AES     : Skipped - do not care third party apk
+01-21 00:13:02.010   634   679 D DuraSpeed/DSPolicyBase: [setCurrentLauncher] = com.android.launcher3
+01-21 00:13:02.014   634   650 I ActivityManager: Showing crash dialog for package co.median.android.nmmzmok u0
+01-21 00:13:02.024   634   679 D DuraSpeed/AWSManager: [setCurrentLauncher] = com.android.launcher3
+01-21 00:13:02.025  7897  7912 I System.out: isEmailSend:POST
+01-21 00:13:02.025   634   649 W BroadcastQueue: Background execution not allowed: receiving Intent { act=android.intent.action.DROPBOX_ENTRY_ADDED flg=0x10 (has extras) } to com.google.android.gms/.stats.service.DropBoxEntryAddedReceiver
+01-21 00:13:02.027   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState currentPackage = com.android.launcher3, event =1004
+01-21 00:13:02.048  7897  7912 I System.out: port:443
+01-21 00:13:02.064   634   650 D WindowClient: Add to mViews: DecorView@e9c57a2[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:13:02.065   634   650 D ViewRootImpl[nmmzmok]: hardware acceleration = false , fakeHwAccelerated = false, sRendererDisabled = true, forceHwAccelerated = false, sSystemRendererDisabled = true
+01-21 00:13:02.068   634   650 V WindowManager: Changing focus from null to Window{7377bf0 u0 Application Error: co.median.android.nmmzmok} Callers=com.android.server.wm.WindowManagerService.addWindow:1609 com.android.server.wm.Session.addToDisplay:202 android.view.ViewRootImpl.setView:735 android.view.WindowManagerGlobal.addView:359
+01-21 00:13:02.071   634   650 D WindowManager: Input focus has changed to Window{7377bf0 u0 Application Error: co.median.android.nmmzmok}
+01-21 00:13:02.074   634   675 I WindowManager: Focus moving from null to Window{7377bf0 u0 Application Error: co.median.android.nmmzmok}
+01-21 00:13:02.099   279   279 E DumpTunnel: finding regDump() failed
+01-21 00:13:02.100   279   279 I BufferQueueConsumer: [unnamed-279-263](this:0xb111e000,id:263,api:0,p:-1,c:279) setConsumerName: unnamed-279-263
+01-21 00:13:02.100   279   279 I BufferQueueConsumer: [Application Error: co.median.android.nmmzmok#0](this:0xb111e000,id:263,api:0,p:-1,c:279) setConsumerName: Application Error: co.median.android.nmmzmok#0
+01-21 00:13:02.100   279   279 I BufferQueueProducer: [](this:0xb111e000,id:263,api:0,p:-1,c:279) setMaxDequeuedBufferCount: maxDequeuedBuffers = 2
+01-21 00:13:02.114   634   650 D Surface : Surface::connect(this=0x8fb7a800,api=2)
+01-21 00:13:02.115   790   790 D StatusBar: setSystemUiVisibility vis=8018 mask=ffffffff oldVal=a618 newVal=8018 diff=2600
+01-21 00:13:02.117   274   461 I [Gralloc]: usage1: 0x933, format: 1 stride: 816 vertical_stride: 557 size: 1818048
+01-21 00:13:02.118   274   461 D vndksupport: Loading /vendor/lib/hw/gralloc.mt6580.so from current namespace instead of sphal namespace.
+01-21 00:13:02.121   634   650 D GraphicBuffer: register, handle(0x982039c0) (w:812 h:557 s:816 f:0x1 u:933)
+01-21 00:13:02.141   274   461 I [Gralloc]: usage1: 0x933, format: 1 stride: 816 vertical_stride: 557 size: 1818048
+01-21 00:13:02.142   274   461 D vndksupport: Loading /vendor/lib/hw/gralloc.mt6580.so from current namespace instead of sphal namespace.
+01-21 00:13:02.151   634   679 D DuraSpeed/DSPolicyFactory: Application = com.android.launcher3 (50MB), FreeMemory = 497MB
+01-21 00:13:02.158   634   650 D GraphicBuffer: register, handle(0x98203a80) (w:812 h:557 s:816 f:0x1 u:933)
+01-21 00:13:02.183   790   790 D StatusBar: setSystemUiVisibility vis=8008 mask=ffffffff oldVal=8018 newVal=8008 diff=10
+01-21 00:13:02.256   790   790 D NetworkController.WifiSignalController: Change in state from: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=false,activityOut=false,rssi=-55,lastModified=01-21 12:12:45,ssid="Silvanus WiFi",isTransient=false
+01-21 00:13:02.256   790   790 D NetworkController.WifiSignalController:        to: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=true,activityOut=true,rssi=-55,lastModified=01-21 12:12:45,ssid="Silvanus WiFi",isTransient=false
+01-21 00:13:02.294   634   679 V DuraSpeed/AWSManager: Killing process, pid:1422, (com.google.process.gservices), adj:902
+01-21 00:13:02.295   634   679 V DuraSpeed/AWSManager: Killing process, pid:2444, (com.google.android.partnersetup), adj:900
+01-21 00:13:02.295   634   679 V DuraSpeed/AWSManager: Killing process, pid:3143, (com.mediatek.engineermode), adj:904
+01-21 00:13:02.295   634   679 V DuraSpeed/AWSManager: Killing process, pid:2667, (com.mediatek.duraspeed), adj:906
+01-21 00:13:02.295   634   679 V DuraSpeed/AWSManager: Killing process, pid:1840, (com.sr.app:filedownloader), adj:800
+01-21 00:13:02.295   634   679 V DuraSpeed/AWSManager: kill end[com.google.process.gservices, com.google.android.partnersetup, com.mediatek.engineermode, com.mediatek.duraspeed, com.sr.app:filedownloader]
+01-21 00:13:02.295   634   679 V DuraSpeed/AWSManager: suppress start []
+01-21 00:13:02.296   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState end
+01-21 00:13:02.470  7897  7912 I System.out: Check isMmsSendPdu
+01-21 00:13:02.472  7897  7912 I System.out: [OkHttp] sendRequest>>
+01-21 00:13:02.472  7897  7912 I System.out: [OkHttp] sendRequest<<
+01-21 00:13:02.506   634   649 W ActivityManager: Activity pause timeout for ActivityRecord{6079e89 u0 co.median.android.nmmzmok/co.median.android.LaunchActivity t380 f}
+01-21 00:13:02.515   634   733 D View    : [Warning] assignParent to null: this = DecorView@8d1c166[nmmzmok]
+01-21 00:13:02.515   274   461 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:2000
+01-21 00:13:02.516   634   733 D Surface : Surface::disconnect(this=0x9267f800,api=2)
+01-21 00:13:02.517   634   733 D GraphicBuffer: unregister, handle(0x98203600) (w:720 h:1280 s:720 f:0x1 u:933)
+01-21 00:13:02.517   634   679 D DuraSpeed/DSPolicyBase: [setCurrentLauncher] = com.android.launcher3
+01-21 00:13:02.518   634   733 D WindowClient: Remove from mViews: DecorView@8d1c166[nmmzmok], this = android.view.WindowManagerGlobal@7eaf5af
+01-21 00:13:02.519   634   649 V WindowManager: Set focused app to: AppWindowToken{dcf59a8 token=Token{421dff4 ActivityRecord{f317306 
+u0 com.android.launcher3/.Launcher t342}}} old focus=AppWindowToken{c26ccfd token=Token{a826e8e ActivityRecord{6079e89 u0 co.median.android.nmmzmok/co.median.android.LaunchActivity t380}}} moveFocusNow=true
+01-21 00:13:02.520   274  3178 I vendor.mediatek.hardware.power@1.1-impl: notifyAppState pack:com.android.launcher3, act:com.android.launcher3.Launcher, pid:1318, state:1
+01-21 00:13:02.520   274   293 D powerd  : [powerd_req] POWER_MSG_NOTIFY_STATE
+01-21 00:13:02.520   274   293 I libPerfService: [perfNotifyAppState] foreground:com.android.launcher3, pid:1318
+01-21 00:13:02.520   634   679 D DuraSpeed/AWSManager: [setCurrentLauncher] = com.android.launcher3
+01-21 00:13:02.520   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState currentPackage = com.android.launcher3, event =1004  
+01-21 00:13:02.516   274   274 I merged_hal_serv: type=1400 audit(0.0:529): avc: denied { search } for name="thermal" dev="proc" ino=4026533567 scontext=u:r:merged_hal_service:s0 tcontext=u:object_r:proc_thermal:s0 tclass=dir permissive=1
+01-21 00:13:02.521   274   293 E libPerfService: Could not open '/proc/driver/thermal/ta_fg_pid'
+01-21 00:13:02.521   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:13:02.521   274   293 E libPerfService: Could not open '/sys/module/ged/parameters/gx_top_app_pid'
+01-21 00:13:02.521   274   293 E libPerfService: error : 2, No such file or directory
+01-21 00:13:02.521   274   293 I libPerfService: perfUserGetCapability - cmd:7, id:0, val:-1
+01-21 00:13:02.550   634  4687 I WindowManager: Relayout Window{ec1ce1a u0 com.android.launcher3/com.android.launcher3.Launcher}: oldVis=8 newVis=0 focusMayChange = true
+01-21 00:13:02.568  1318  1388 D Surface : Surface::connect(this=0x97564800,api=1)
+01-21 00:13:02.568  1318  1318 D Surface : Surface::allocateBuffers(this=0x97564800)
+01-21 00:13:02.570   274   461 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:02.571   274   461 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:02.573   274  3178 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:02.575   274  3178 I [Gralloc]: usage1: 0x900, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:02.577  1318  1388 D Surface : Surface::setBufferCount(this=0x97564800,bufferCount=4)
+01-21 00:13:02.578   279   583 I BufferQueueProducer: [com.android.launcher3/com.android.launcher3.Launcher#0](this:0xb1109000,id:257,api:1,p:1318,c:279) setMaxDequeuedBufferCount: maxDequeuedBuffers = 3
+01-21 00:13:02.580  1318  1318 V PhoneWindow: DecorView setVisiblity: visibility = 0, Parent = ViewRoot{3832407 com.android.launcher3/com.android.launcher3.Launcher,ident = 0}, this = DecorView@1473621[Launcher]
+01-21 00:13:02.598   634   679 D DuraSpeed/DSPolicyFactory: Application = com.android.launcher3 (50MB), FreeMemory = 496MB
+01-21 00:13:02.612   279   583 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:13:02.612   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:02.616  1318  1388 D GraphicBuffer: register, handle(0x97848480) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:02.618   274  3178 I vendor.mediatek.hardware.power@1.1-impl: PowerHint hint:8, data:0
+01-21 00:13:02.624   634  2653 D IdleScreen: activityIdleScreen: android.app.ContextImpl@b10530a mNotifyNeeded: false idleIntent: Intent { act=android.intent.action.MAIN cat=[android.intent.category.HOME] flg=0x10000100 cmp=com.android.launcher3/.Launcher }
+01-21 00:13:02.625   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:11, data:0
+01-21 00:13:02.626   274   293 I libPerfService: 11: legacy set: 2 -1
+01-21 00:13:02.626   274   293 I libPerfService: 11: legacy set freq: -1 -1
+01-21 00:13:02.627   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkPowerHint hint:10, data:0
+01-21 00:13:02.661   634   679 V DuraSpeed/AWSManager: Killing process, pid:1422, (com.google.process.gservices), adj:902
+01-21 00:13:02.662   634   679 V DuraSpeed/AWSManager: Killing process, pid:2444, (com.google.android.partnersetup), adj:900
+01-21 00:13:02.662   634   679 V DuraSpeed/AWSManager: Killing process, pid:3143, (com.mediatek.engineermode), adj:904
+01-21 00:13:02.663   634   679 V DuraSpeed/AWSManager: Killing process, pid:2667, (com.mediatek.duraspeed), adj:906
+01-21 00:13:02.663   634   679 V DuraSpeed/AWSManager: Killing process, pid:1840, (com.sr.app:filedownloader), adj:800
+01-21 00:13:02.663   634   679 V DuraSpeed/AWSManager: kill end[com.google.process.gservices, com.google.android.partnersetup, com.mediatek.engineermode, com.mediatek.duraspeed, com.sr.app:filedownloader]
+01-21 00:13:02.663   634   679 V DuraSpeed/AWSManager: suppress start []
+01-21 00:13:02.664   634   679 D DuraSpeed/DuraSpeedInternalManager: switchState end
+01-21 00:13:02.729   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:53.269699,dur:1013.71,max:55.14,min:14.13
+01-21 00:13:02.821  1135  7806 I NearbyMediums: No BLE Fast/GATT advertisements found in the latest cycle.
+01-21 00:13:02.821  1135  7806 I NearbyMediums: Current Tracked Scanning Clients are : {NearbyConnections.EnvironmentMonitor, NearbySharing}
+01-21 00:13:03.145  1318  1388 W OpenGLRenderer: Incorrectly called buildLayer on View: ShortcutAndWidgetContainer, destroying layer...
+01-21 00:13:03.145  1318  1388 W OpenGLRenderer: Incorrectly called buildLayer on View: ShortcutAndWidgetContainer, destroying layer...
+01-21 00:13:03.146   279   445 W GrallocMapperPassthrough: buffer descriptor with invalid usage bits 0x400
+01-21 00:13:03.146   274  3178 I [Gralloc]: usage1: 0xf02, format: 1 stride: 720 vertical_stride: 1280 size: 3686400
+01-21 00:13:03.151  1318  1388 D GraphicBuffer: register, handle(0x978495c0) (w:720 h:1280 s:720 f:0x1 u:f02)
+01-21 00:13:04.248   790   790 D NetworkController.WifiSignalController: Change in state from: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=true,activityOut=true,rssi=-55,lastModified=01-21 12:13:02,ssid="Silvanus WiFi",isTransient=false
+01-21 00:13:04.248   790   790 D NetworkController.WifiSignalController:        to: connected=true,enabled=true,level=4,inetCondition=1,iconGroup=IconGroup(Wi-Fi Icons),activityIn=false,activityOut=false,rssi=-55,lastModified=01-21 12:13:02,ssid="Silvanus WiFi",isTransient=false
+01-21 00:13:04.282   279   279 I DisplayDevice: [Built-in Screen (type:0)] fps:12.231965,dur:1553.31,max:1102.77,min:16.89
+01-21 00:13:04.601   634   757 D WifiStateMachine:  MtkL2ConnectedState { when=-2ms what=131155 arg1=12 target=com.android.internal.util.StateMachine$SmHandler } 12 0, mShouldDeferDisableWifi = false, mWaitForWfcNotify = false
+01-21 00:13:04.912   265   532 D AudioALSAStreamOut: standby()
+01-21 00:13:04.913   265   532 D AudioALSAStreamOut: standbyStreamOut()
+01-21 00:13:04.913   265   532 D AudioALSAStreamOut: close(), flags 6, mMixerOutInUse 0
+01-21 00:13:04.913   265   532 D AudioALSAPlaybackHandlerNormal: +close()
+01-21 00:13:04.913   265   532 D AudioVoiceUIDL: [SetInputStandBy] ReadRefFromRing to exit? (0)
+01-21 00:13:04.913   265   532 D AudioALSAHardwareResourceManager: +stopOutputDevice(), mOutputDevices = 0x2, mStartOutputDevicesCount = 1
+01-21 00:13:04.913   265   532 D AudioALSADeviceConfigManager: ApplyDeviceTurnoffSequenceByName(), DeviceName = ext_speaker_output descriptor->DeviceStatusCounter = 1
+01-21 00:13:04.914   265   532 D AudioALSADeviceConfigManager: ApplyDeviceTurnoffSequenceByName(), DeviceName = headphone_output descriptor->DeviceStatusCounter = 1
+01-21 00:13:04.914   265   532 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:13:04.914   265   532 D AudioALSAHardwareResourceManager: -stopOutputDevice(), mOutputDevices = 0x0, mStartOutputDevicesCount = 0
+01-21 00:13:04.914   265   532 D AudioALSAPlaybackHandlerBase: +closePcmDriver(), mPcm = 0xa68a8b60
+01-21 00:13:04.915   265   532 D AudioALSAPlaybackHandlerBase: -closePcmDriver(), mPcm = 0x0
+01-21 00:13:04.915   265   532 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode() bEanble = 0 SampleRate = 48000
+01-21 00:13:04.915   265   532 D AudioALSADriverUtility: GetPropertyValue key = af.resouce.extdac_support value = 0
+01-21 00:13:04.915   265   532 D AudioALSAPlaybackHandlerNormal: SetLowJitterMode(), bypass low jitter mode = 0
+01-21 00:13:04.916   265   532 D AudioMTKFilter: AudioMTKFilter::stop() type 0 mode 8
+01-21 00:13:04.916   265   532 D MtkAudioLoud: +close()
+01-21 00:13:04.916   265   532 D MtkAudioLoud: -close()
+01-21 00:13:04.916   265   532 D AudioALSAPlaybackHandlerBase: DeinitDataPending
+01-21 00:13:04.916   265   532 D AudioALSAHardwareResourceManager: EnableAudBufClk(), bEanble = 0, mStartOutputDevicesCount 0
+01-21 00:13:04.916   265   532 D AudioALSAPlaybackHandlerNormal: -close()
+01-21 00:13:04.916   265   532 D AudioALSAStreamManager: +destroyPlaybackHandler(), mode = 0, pPlaybackHandler = 0xa518c280
+01-21 00:13:04.916   265   532 D AudioALSAPlaybackHandlerNormal: ~AudioALSAPlaybackHandlerNormal()
+01-21 00:13:04.916   265   532 D AudioALSAStreamManager: -destroyPlaybackHandler(), mPlaybackHandlerVector.size() = 0
+01-21 00:13:04.917   265   532 D AudioALSAStreamOut: setMuteForRouting(), mute 0, flags 6
+01-21 00:13:04.917   265   532 D AudioUtility: power_hal_hint - custPowerHint 0, data 0
+01-21 00:13:04.918   274  3178 I vendor.mediatek.hardware.power@1.1-impl: mtkCusPowerHint hint:0, data:0
+01-21 00:13:04.918   274   293 I powerd  : [powerd_req] POWER_MSG_MTK_CUS_HINT: hint:0, hdl:36, data:0
+01-21 00:13:04.919   274   293 I libPerfService: 36: legacy set: -1 -1
+01-21 00:13:05.961  7919  7919 E mxc4005xc:  memsic Open pointer device failed! -1
+01-21 00:13:06.982   337   337 I thermal_repeater: [recvMdThermalInfo] ret=15, strLe

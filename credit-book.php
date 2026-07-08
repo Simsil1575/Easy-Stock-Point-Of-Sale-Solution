@@ -66,33 +66,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $db->prepare("UPDATE creditors SET name = ?, phone = ?, active = ? WHERE id = ?");
             $stmt->execute([$name, $phone, $active, $_POST['id']]);
         }
-        header('Location: credit-book');
+        $dateParam = '';
+        if (isset($_POST['date'])) {
+            if (strtolower(trim($_POST['date'])) === 'all') {
+                $dateParam = '?date=all';
+            } elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($_POST['date']))) {
+                $dateParam = '?date=' . $_POST['date'];
+            }
+        }
+        header('Location: credit-book' . $dateParam);
         exit();
     }
 }
 
-// Fetch all credit records
-$creditors = $db->query("SELECT * FROM creditors ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+// Date filter: 'all' = all days, else specific date (default today)
+$dateParam = isset($_GET['date']) ? trim($_GET['date']) : '';
+if (strtolower($dateParam) === 'all') {
+    $filterDate = 'all';
+} elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateParam)) {
+    $filterDate = $dateParam;
+} else {
+    $filterDate = date('Y-m-d');
+}
+$isAllDays = ($filterDate === 'all');
 
-// Update the credit sales query to group by creditor and show totals
-$creditSales = $db->query("
-    SELECT 
-        creditors.id AS creditor_id,
-        creditors.name AS creditor_name,
-        SUM(credit_sales.total_amount) as total_amount,
-        SUM(credit_sales.paid_amount) as paid_amount,
-        MAX(credit_sales.due_date) as latest_due_date,
-        COUNT(*) as total_transactions
-    FROM credit_sales 
-    LEFT JOIN creditors ON credit_sales.creditor_id = creditors.id
-    GROUP BY credit_sales.creditor_id
-    ORDER BY total_amount - paid_amount DESC
-")->fetchAll(PDO::FETCH_ASSOC);
+// Fetch credit sales totals: by date or all time
+if ($isAllDays) {
+    $creditSalesStmt = $db->query("
+        SELECT 
+            creditors.id AS creditor_id,
+            creditors.name AS creditor_name,
+            SUM(credit_sales.total_amount) as total_amount,
+            SUM(credit_sales.paid_amount) as paid_amount,
+            MAX(credit_sales.due_date) as latest_due_date,
+            COUNT(*) as total_transactions
+        FROM credit_sales 
+        LEFT JOIN creditors ON credit_sales.creditor_id = creditors.id
+        GROUP BY credit_sales.creditor_id
+        ORDER BY total_amount - paid_amount DESC
+    ");
+    $creditSales = $creditSalesStmt->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    $creditSalesStmt = $db->prepare("
+        SELECT 
+            creditors.id AS creditor_id,
+            creditors.name AS creditor_name,
+            SUM(credit_sales.total_amount) as total_amount,
+            SUM(credit_sales.paid_amount) as paid_amount,
+            MAX(credit_sales.due_date) as latest_due_date,
+            COUNT(*) as total_transactions
+        FROM credit_sales 
+        LEFT JOIN creditors ON credit_sales.creditor_id = creditors.id
+        WHERE DATE(credit_sales.created_at) = ?
+        GROUP BY credit_sales.creditor_id
+        ORDER BY total_amount - paid_amount DESC
+    ");
+    $creditSalesStmt->execute([$filterDate]);
+    $creditSales = $creditSalesStmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
 $salesByCreditor = [];
 foreach ($creditSales as $sale) {
     $salesByCreditor[$sale['creditor_id']] = $sale;
 }
+
+// Show all creditors (new accounts appear immediately; balance/status use sales on selected date)
+$creditors = $db->query("SELECT * FROM creditors ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch upcoming due credit sales (within 7 days)
 $dueSoonStmt = $db->prepare("
@@ -121,6 +160,13 @@ foreach ($salesByCreditor as $creditorId => $sale) {
 }
 
 $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
+
+// For edit mode (modal pre-fill and open on load)
+$editCreditor = null;
+if (isset($_GET['edit'])) {
+    $editId = (int)$_GET['edit'];
+    $editCreditor = $db->query("SELECT * FROM creditors WHERE id = $editId")->fetch(PDO::FETCH_ASSOC);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -134,6 +180,8 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="sweetalert2@11.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="receipt.php?js=true"></script>
 
     <style>
         .fade-in {
@@ -178,6 +226,97 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         .container {
             max-width: 100vw; /* Ensure container does not exceed viewport width */
             padding: 0 1rem; /* Add some padding for better spacing */
+        }
+        
+        /* Modal overlay for Create/Edit Account */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        .modal-content {
+            background: white;
+            border-radius: 1rem;
+            max-width: 520px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            transform: scale(0.9);
+            transition: all 0.3s ease;
+        }
+        @media (max-width: 640px) {
+            .modal-content {
+                width: calc(100% - 1.5rem);
+                max-height: 85vh;
+            }
+        }
+        .modal-overlay.active .modal-content {
+            transform: scale(1);
+        }
+        
+        /* Mobile-responsive header */
+        @media (max-width: 767px) {
+            .credit-book-header {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+                padding-top: 0.75rem;
+                padding-bottom: 0.75rem;
+            }
+            .credit-book-header .header-left {
+                width: 100%;
+                flex: 0 0 100%;
+                min-width: 0;
+            }
+            .credit-book-header .header-title {
+                font-size: 1.125rem;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 50vw;
+            }
+            .credit-book-header .header-actions {
+                width: 100%;
+                flex: 0 0 100%;
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.5rem;
+                justify-content: flex-start;
+            }
+            .credit-book-header .header-actions .header-date-wrap {
+                flex: 1;
+                min-width: 0;
+            }
+            .credit-book-header .header-actions #filterDate {
+                min-width: 0;
+                width: 100%;
+                max-width: 100%;
+            }
+            #creditorNotificationsDropdown {
+                max-width: min(24rem, calc(100vw - 2rem));
+                right: 0;
+                left: auto;
+            }
+        }
+        @media (max-width: 480px) {
+            .credit-book-header .header-create-btn span.btn-text {
+                display: none;
+            }
+            .credit-book-header .header-create-btn {
+                padding-left: 0.75rem;
+                padding-right: 0.75rem;
+            }
         }
         
         /* Mobile hamburger menu styles */
@@ -246,6 +385,22 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         .mobile-overlay.active {
             opacity: 1;
             visibility: visible;
+        }
+
+        /* Ensure sidebar is above overlay on mobile */
+        @media (max-width: 1023px) {
+            #sidebar {
+                z-index: 10000 !important;
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .hamburger {
+                display: none;
+            }
+            .mobile-overlay {
+                display: none;
+            }
         }
         
         /* Mobile responsive adjustments */
@@ -518,22 +673,43 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-6">
+            <div class="container mx-auto p-4 sm:p-6">
                 <!-- Header Row: Creditor Management + Controls -->
-                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
-                    <!-- Mobile Controls Row -->
-                    <div class="flex items-center gap-3">
-                        <!-- Mobile Hamburger Menu Button -->
-                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
+                <div class="credit-book-header sticky top-0 z-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-4 sm:px-6 shadow-sm">
+                    <!-- Left: Back + Hamburger + Title -->
+                    <div class="header-left flex items-center gap-2 sm:gap-3 min-w-0 flex-shrink-0">
+                        <a href="cashier-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm flex-shrink-0">
+                            <svg class="w-5 h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">back</span>
+                        </a>
+                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 flex-shrink-0" onclick="toggleSidebar()">
                             <span></span>
                             <span></span>
                             <span></span>
                         </div>
-                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0">Creditor Management</h1>
+                        <h1 class="header-title text-lg sm:text-xl lg:text-2xl xl:text-3xl font-bold mb-0 truncate">Creditor Management</h1>
                     </div>
                     
-                    <!-- Right side: Notification Icon -->
-                    <div class="relative cursor-pointer ml-auto">
+                    <!-- Right: Date / All days + Create Account + Notification (wrap on mobile) -->
+                    <div class="header-actions flex flex-wrap items-center gap-2 sm:gap-3 ml-auto">
+                        <div class="header-date-wrap flex items-center gap-2 flex-wrap">
+                            <label class="text-sm font-medium text-gray-700 hidden sm:inline">Date:</label>
+                            <input type="date" id="filterDate" value="<?= $isAllDays ? '' : htmlspecialchars($filterDate) ?>"
+                                class="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm min-w-[120px] sm:min-w-0"
+                                onchange="if(this.value) window.location.href='credit-book?date=' + this.value">
+                            <a href="credit-book?date=all" class="inline-flex items-center px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-sm font-medium transition-colors <?= $isAllDays ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' ?>">
+                                All days
+                            </a>
+                            <?php if ($isAllDays): ?>
+                            <a href="credit-book?date=<?= date('Y-m-d') ?>" class="inline-flex items-center px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors">Today</a>
+                            <?php endif; ?>
+                        </div>
+                        <button type="button" onclick="openCreditorModal(true)" id="openCreditorModalBtn" class="header-create-btn inline-flex items-center px-3 py-2 sm:px-4 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors text-sm font-medium flex-shrink-0">
+                            <i class="fas fa-user-plus sm:mr-2"></i><span class="btn-text">Create Account</span>
+                        </button>
+                        <div class="relative cursor-pointer flex-shrink-0">
                         <svg onclick="toggleCreditorNotifications()" class="h-6 w-6 text-gray-400 hover:text-gray-500 transition-colors duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
                         </svg>
@@ -575,7 +751,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                                             <svg class="w-4 h-4 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                                             </svg>
-                                                            <a href="credit-transactions.php?creditor_id=<?= $creditor['id'] ?>" class="text-red-700 hover:text-gray-600 transition-colors flex items-center justify-between w-full">
+                                                            <a href="credit-transactions.php?creditor_id=<?= $creditor['id'] ?>&date=<?= urlencode($filterDate) ?>" class="text-red-700 hover:text-gray-600 transition-colors flex items-center justify-between w-full">
                                                                 <span class="font-medium text-red-800"><?= htmlspecialchars($creditor['name']) ?></span>
                                                                 <span class="ml-2 px-2 py-1 bg-red-50 text-red-600 text-xs font-semibold rounded-full">
                                                                     N$<?= number_format($creditor['balance'], 2) ?>
@@ -611,7 +787,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                                                 <svg class="w-4 h-4 text-yellow-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                                                 </svg>
-                                                                <a href="credit-transactions.php?creditor_id=<?= $sale['id'] ?>" class="text-gray-700 hover:text-gray-600 transition-colors">
+                                                                <a href="credit-transactions.php?creditor_id=<?= $sale['id'] ?>&date=<?= urlencode($filterDate) ?>" class="text-gray-700 hover:text-gray-600 transition-colors">
                                                                     <?= htmlspecialchars($sale['name']) ?>
                                                                 </a>
                                                             </div>
@@ -627,6 +803,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                 <?php endif; ?>
                             <?php endif; ?>
                         </div>
+                        </div>
                     </div>
                 </div>
                 
@@ -640,89 +817,71 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 <?php unset($_SESSION['error']); ?>
                 <?php endif; ?>
                 
-                <!-- Creditor Account Form -->
-                <div class="bg-white rounded-xl shadow-lg p-4 md:p-6 mb-8 border border-gray-100 overflow-hidden">
-                    <div class="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-6 pb-4 border-b border-gray-200">
-                        <h2 class="text-xl md:text-2xl font-bold text-gray-800 flex items-center">
-                            <svg class="w-5 h-5 md:w-6 md:h-6 mr-2 text-gray-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                            </svg>
-                            <span class="break-words">Account Management</span>
-                        </h2>
-                        <!-- Submit Button moved to top right -->
-                        <button type="submit" form="creditorForm"
-                            class="bg-gradient-to-r from-gray-600 to-gray-700 text-white font-semibold py-2.5 md:py-3 px-4 md:px-8 rounded-lg transition-all duration-300 transform hover:scale-105 shadow-md hover:shadow-lg flex items-center justify-center w-full md:w-auto text-sm md:text-base">
-                            <i class="fas <?= isset($_GET['edit']) ? 'fa-save' : 'fa-user-plus' ?> mr-2"></i><span><?= isset($_GET['edit']) ? 'Update' : 'Create' ?> Account</span>
-                        </button>
-                    </div>
-                    <form id="creditorForm" method="POST" class="space-y-6">
-                        <?php if (isset($_GET['edit'])): 
-                            $editCreditor = $db->query("SELECT * FROM creditors WHERE id = " . $_GET['edit'])->fetch(PDO::FETCH_ASSOC);
-                        ?>
-                            <input type="hidden" name="id" value="<?= $editCreditor['id'] ?>">
-                        <?php endif; ?>
-
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                            <!-- Name Field -->
-                            <div class="space-y-2 group">
-                                <label class="block text-md font-semibold text-gray-700 flex items-center">
-                                    <i class="fas fa-user-circle mr-2 text-gray-500"></i>Creditor Name <span class="text-gray-500">*</span>
-                                </label>
-                                <div class="relative">
-                                    <input type="text" name="name" required 
-                                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-gray-500 focus:ring-2 focus:ring-gray-200 transition duration-200 placeholder-gray-400 shadow-sm"
-                                        value="<?= $editCreditor['name'] ?? '' ?>"
-                                        placeholder="Tate John">
-                                    <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                            <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
-                                        </svg>
-                                    </div>
-                                </div>
-                                <p class="text-xs text-gray-500 mt-1">Enter the full name of the creditor</p>
-                            </div>
-
-                            <!-- Phone Field -->
-                            <div class="space-y-2 group">
-                                <label class="block text-md font-semibold text-gray-700 flex items-center">
-                                    <i class="fas fa-mobile-alt mr-2 text-gray-500"></i>Contact Number
-                                </label>
-                                <div class="relative">
-                                    <input type="tel" name="phone" 
-                                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-gray-500 focus:ring-2 focus:ring-gray-200 transition duration-200 placeholder-gray-400 shadow-sm"
-                                        value="<?= $editCreditor['phone'] ?? '' ?>"
-                                        placeholder="0814534236">
-                                    <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                            <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
-                                        </svg>
-                                    </div>
-                                </div>
-                                <p class="text-xs text-gray-500 mt-1">Mobile number for contact purposes</p>
-                            </div>
+                <!-- Create/Edit Account Modal -->
+                <div id="creditorModal" class="modal-overlay" onclick="if(event.target===this) closeCreditorModal()">
+                    <div class="modal-content p-6 shadow-xl">
+                        <div class="flex justify-between items-center mb-6 pb-4 border-b border-gray-200">
+                            <h2 class="text-xl font-bold text-gray-800 flex items-center">
+                                <i class="fas fa-user-plus mr-2 text-gray-600"></i>
+                                <span id="creditorModalTitle"><?= $editCreditor ? 'Update Account' : 'Create Account' ?></span>
+                            </h2>
+                            <button type="button" onclick="closeCreditorModal()" class="text-gray-400 hover:text-gray-600 p-1 rounded transition-colors">
+                                <i class="fas fa-times text-xl"></i>
+                            </button>
                         </div>
-
-                        <div class="flex justify-between items-center pt-4 mt-6 border-t border-gray-100">
-                            <!-- Active Status -->
-
-                            
-                            <?php if (isset($_GET['edit'])): ?>
-                            <a href="credit-book.php" class="text-gray-500 hover:text-gray-700 transition-colors">
-                                <i class="fas fa-times mr-1"></i> Cancel editing
-                            </a>
+                        <form id="creditorForm" method="POST" action="credit-book.php<?= $filterDate ? '?date=' . urlencode($filterDate) : '' ?>" class="space-y-5">
+                            <?php if ($filterDate): ?>
+                                <input type="hidden" name="date" value="<?= htmlspecialchars($filterDate) ?>">
                             <?php endif; ?>
-                        </div>
-                    </form>
+                            <?php if ($editCreditor): ?>
+                                <input type="hidden" name="id" value="<?= (int)$editCreditor['id'] ?>">
+                            <?php endif; ?>
+                            <div class="grid grid-cols-1 gap-5">
+                                <div class="space-y-2">
+                                    <label class="block text-sm font-semibold text-gray-700">Creditor Name <span class="text-gray-500">*</span></label>
+                                    <input type="text" name="name" required
+                                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-gray-500 focus:ring-2 focus:ring-gray-200 transition duration-200"
+                                        value="<?= $editCreditor ? htmlspecialchars($editCreditor['name']) : '' ?>"
+                                        placeholder="Tate John">
+                                </div>
+                                <div class="space-y-2">
+                                    <label class="block text-sm font-semibold text-gray-700">Contact Number</label>
+                                    <input type="tel" name="phone"
+                                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-gray-500 focus:ring-2 focus:ring-gray-200 transition duration-200"
+                                        value="<?= $editCreditor ? htmlspecialchars($editCreditor['phone'] ?? '') : '' ?>"
+                                        placeholder="0814534236">
+                                </div>
+                            </div>
+                            <div class="flex justify-between items-center pt-4 border-t border-gray-100">
+                                <?php if ($editCreditor): ?>
+                                    <a href="credit-book.php<?= $filterDate ? '?date=' . urlencode($filterDate) : '' ?>" class="text-gray-500 hover:text-gray-700 transition-colors text-sm">
+                                        <i class="fas fa-times mr-1"></i> Cancel editing
+                                    </a>
+                                <?php else: ?>
+                                    <span></span>
+                                <?php endif; ?>
+                                <div class="flex gap-2">
+                                    <button type="button" onclick="closeCreditorModal()" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors">
+                                        Close
+                                    </button>
+                                    <button type="submit" class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors font-medium">
+                                        <i class="fas <?= $editCreditor ? 'fa-save' : 'fa-user-plus' ?> mr-2"></i><?= $editCreditor ? 'Update' : 'Create' ?> Account
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
                 </div>
-
+                
                 <!-- Creditors List -->
                 <div class="bg-white rounded-lg shadow-md overflow-hidden">
-                    <div class="px-6 py-1 border-b border-gray-200 bg-gray-300 flex justify-between items-center">
-                        <h3 class="text-lg font-semibold text-gray-700 flex items-center">
+                    <div class="px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-300 flex flex-col sm:flex-row sm:flex-wrap sm:justify-between sm:items-center gap-3">
+                        <h3 class="text-base sm:text-lg font-semibold text-gray-700 flex items-center">
                             <i class="fas fa-users mr-2 text-gray-600"></i>Registered Creditors
                         </h3>
-                        <!-- Search Input -->
-                        <div class="relative max-w-72">
+                        <div class="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                            <!-- Search Input -->
+                            <div class="relative flex-1 sm:flex-initial sm:max-w-72 min-w-0">
                             <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
                                 <svg class="w-4 h-4 text-gray-400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
                                     <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
@@ -730,6 +889,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                             </div>
                             <input type="text" id="searchInput" onkeyup="filterCreditors()" placeholder="Search creditors..." 
                                    class="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-400 focus:outline-none focus:border-gray-400 shadow-sm transition duration-200 bg-white placeholder-gray-300">
+                            </div>
                         </div>
                     </div>
                     <div class="overflow-x-auto">
@@ -791,7 +951,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                     $saleData = $salesByCreditor[$creditor['id']] ?? null;
                                     $creditorBalance = $saleData ? ($saleData['total_amount'] - $saleData['paid_amount']) : 0;
                                 ?>
-                                <tr class="hover:bg-gray-50 transition-colors creditor-row" data-creditor-id="<?= htmlspecialchars($creditor['id']) ?>">
+                                <tr class="hover:bg-gray-50 transition-colors creditor-row cursor-pointer" data-creditor-id="<?= htmlspecialchars($creditor['id']) ?>" data-href="credit-transactions.php?creditor_id=<?= (int)$creditor['id'] ?>&date=<?= urlencode($filterDate) ?>" onclick="handleCreditorRowClick(event, this)">
                                     <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900" data-label="ID">
                                         <?= htmlspecialchars($creditor['id']) ?>
                                     </td>
@@ -813,10 +973,10 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                         <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'text-gray-500 font-medium' : ($creditorBalance > 0 ? 'text-teal-500 font-medium' : 'text-teal-600 font-medium') ?>" data-label="Balance">
                                         N$<?= number_format($creditorBalance, 2) ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Quick Actions">
+                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Quick Actions" onclick="event.stopPropagation()">
                                         <?php if (isset($salesByCreditor[$creditor['id']]) && ($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount']) > 0): ?>
                                         <div class="flex gap-2 justify-center">
-                                            <button onclick="printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
+                                            <button onclick="event.stopPropagation(); printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
                                                 class="inline-flex items-center px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors font-medium text-sm">
                                                 <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
@@ -824,7 +984,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                                 Print
                                             </button>
                                             <a href="javascript:void(0);" 
-                                               onclick="confirmPayAll(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
+                                               onclick="event.stopPropagation(); confirmPayAll(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
                                                class="inline-flex items-center px-3 py-1.5 rounded-md bg-teal-100 text-teal-700 hover:bg-teal-100 transition-colors font-medium text-sm">
                                                 <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
@@ -834,15 +994,15 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                         </div>
                                         <?php endif; ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Actions">
+                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Actions" onclick="event.stopPropagation()">
                                         <div class="flex items-center justify-center gap-2">
-                                            <a href="credit-transactions.php?creditor_id=<?= $creditor['id'] ?>" 
+                                            <a href="credit-transactions.php?creditor_id=<?= $creditor['id'] ?>&date=<?= urlencode($filterDate) ?>" 
                                                class="inline-flex items-center justify-center px-3 py-1.5 text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200 text-sm font-medium"
                                                title="View Transactions">
                                                 <i class="ti ti-file-invoice mr-1"></i> View
                                             </a>
 
-                                            <a href="credit-book.php?edit=<?= $creditor['id'] ?>" 
+                                            <a href="credit-book.php?<?= $filterDate ? 'date=' . urlencode($filterDate) . '&' : '' ?>edit=<?= $creditor['id'] ?>" 
                                                class="inline-flex items-center justify-center px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200 text-sm font-medium"
                                                title="Edit Creditor">
                                                 <i class="fas fa-edit"></i>
@@ -892,6 +1052,8 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
     ?>
 
     <script>
+    // Current date filter for links to credit-transactions
+    const currentFilterDate = <?= json_encode($filterDate) ?>;
     // Business info for Android printing
     var businessInfo = {
         business_name: <?= json_encode($businessInfo['name'] ?? 'POS SOLUTION') ?>,
@@ -902,34 +1064,64 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
 
-    // Helper function to send receipt to printer - uses Android native printing if available
-    function sendToPrinter(receiptData) {
-        var dataWithBusiness = Object.assign({}, receiptData, {
-            business_name: receiptData.business_name || businessInfo.business_name,
-            location: receiptData.location || businessInfo.location,
-            phone: receiptData.phone || businessInfo.phone,
-            footer_text: receiptData.footer_text || businessInfo.footer_text,
-            vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-            vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-        });
-        
-        var printer = window.AndroidPrinter || window.NativePrinter || null;
-        
-        if (printer && typeof printer.printReceipt === 'function') {
-            console.log('[sendToPrinter] Using Android native printing');
-            try {
-                printer.printReceipt(JSON.stringify(dataWithBusiness));
-                return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-            } catch (e) {
-                console.error('[sendToPrinter] Android print error:', e.message);
+    // sendToPrinter function is now loaded from receipt.php?js=true
+    // The function is defined in receipt.php and automatically handles Android printing
+    // The Android interceptor in MainActivity.java only listens to receipt.php calls
+    if (typeof sendToPrinter === 'undefined') {
+        console.warn('[credit-book.php] sendToPrinter not loaded from receipt.php, using fallback');
+        function sendToPrinter(receiptData) {
+            // Ensure print_only flag is set for regular receipts
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                receiptData.print_only = true;
             }
+            
+            // Add business info to receipt data
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+            });
+            
+            // Use fetch to receipt.php - the interceptor will catch this
+            return fetch('receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { 
+                return r.json();
+            });
         }
-        
-        return fetch('receipt.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataWithBusiness)
-        }).then(function(r) { return r.json(); });
+    }
+
+    // Creditor Create/Edit modal
+    function openCreditorModal(forCreate) {
+        var modal = document.getElementById('creditorModal');
+        var form = document.getElementById('creditorForm');
+        var titleEl = document.getElementById('creditorModalTitle');
+        if (forCreate) {
+            form.querySelector('input[name="name"]').value = '';
+            form.querySelector('input[name="phone"]').value = '';
+            var idInput = form.querySelector('input[name="id"]');
+            if (idInput) idInput.remove();
+            var action = 'credit-book.php';
+            if (typeof currentFilterDate !== 'undefined' && currentFilterDate) action += '?date=' + encodeURIComponent(currentFilterDate);
+            form.action = action;
+            if (titleEl) titleEl.textContent = 'Create Account';
+            form.querySelector('button[type="submit"]').innerHTML = '<i class="fas fa-user-plus mr-2"></i>Create Account';
+        }
+        modal.classList.add('active');
+    }
+    function closeCreditorModal() {
+        document.getElementById('creditorModal').classList.remove('active');
+    }
+
+    function handleCreditorRowClick(event, row) {
+        if (event.target.closest('a, button')) return;
+        var href = row.getAttribute('data-href');
+        if (href) window.location.href = href;
     }
 
     // Global variables for sorting and pagination
@@ -942,6 +1134,9 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
 
     // Initialize the table when document is ready
     document.addEventListener('DOMContentLoaded', function() {
+        <?php if ($editCreditor): ?>
+        openCreditorModal();
+        <?php endif; ?>
         // Store all rows initially
         const tableBody = document.querySelector('tbody');
         allRows = Array.from(tableBody.querySelectorAll('tr')).filter(row => !row.querySelector('td[colspan]'));
@@ -1214,7 +1409,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         }).then((result) => {
             if (result.isConfirmed) {
                 // Cash payment - redirect with print flag
-                window.location.href = `credit-transactions.php?creditor_id=${creditorId}&pay_all=1&auto_print=1`;
+                window.location.href = `credit-transactions.php?creditor_id=${creditorId}&date=${currentFilterDate}&pay_all=1&auto_print=1`;
             } else if (result.isDenied) {
                 // EFT payment - show EFT form
                 showEftPaymentForm(creditorId, creditorName, totalBalance);
@@ -1277,7 +1472,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         }).then((result) => {
             if (result.isConfirmed) {
                 // Redirect with EFT parameters and print flag
-                window.location.href = `credit-transactions.php?creditor_id=${creditorId}&pay_all=1&eft=1&transaction_ref=${encodeURIComponent(result.value.transactionRef)}&wallet_provider=${encodeURIComponent(result.value.walletProvider)}&auto_print=1`;
+                window.location.href = `credit-transactions.php?creditor_id=${creditorId}&date=${currentFilterDate}&pay_all=1&eft=1&transaction_ref=${encodeURIComponent(result.value.transactionRef)}&wallet_provider=${encodeURIComponent(result.value.walletProvider)}&auto_print=1`;
             }
         });
     }
@@ -1421,7 +1616,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                         // Get the creditor ID from the row
                         const creditorId = creditorRow.getAttribute('data-creditor-id');
                         // Redirect to creditor transactions page
-                        window.location.href = `credit-transactions.php?creditor_id=${creditorId}`;
+                        window.location.href = `credit-transactions.php?creditor_id=${creditorId}&date=${currentFilterDate}`;
                     } else {
                         // Show notification if creditor not found
                         if (typeof Swal !== 'undefined') {
@@ -1444,7 +1639,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 const creditorRow = document.querySelector(`.creditor-row[data-creditor-id="${barcodeBuffer}"]`);
                 if (creditorRow) {
                     const creditorId = creditorRow.getAttribute('data-creditor-id');
-                    window.location.href = `credit-transactions.php?creditor_id=${creditorId}`;
+                    window.location.href = `credit-transactions.php?creditor_id=${creditorId}&date=${currentFilterDate}`;
                 } else {
                     if (typeof Swal !== 'undefined') {
                         Swal.fire({

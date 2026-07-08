@@ -23,9 +23,14 @@ if ($activationStatus == 0) {
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-// Helper function to get username from user_id
+// Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId) {
     if (empty($userId)) return 'Unknown';
+    
+    // If it's already a username (not numeric), return it as is
+    if (!is_numeric($userId)) {
+        return $userId;
+    }
     
     try {
         $userDb = new PDO('sqlite:../user.db');
@@ -598,6 +603,7 @@ foreach ($tabPayments as &$payment) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= htmlspecialchars($viewTab['tab_name']) ?> - Tab Details</title>
+    <script src="../receipt.php?js=true"></script>
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/jquery-3.6.0.min.js"></script>
@@ -1284,34 +1290,23 @@ foreach ($tabPayments as &$payment) {
             vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
         };
 
-        // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
-            var dataWithBusiness = Object.assign({}, receiptData, {
-                business_name: receiptData.business_name || businessInfo.business_name,
-                location: receiptData.location || businessInfo.location,
-                phone: receiptData.phone || businessInfo.phone,
-                footer_text: receiptData.footer_text || businessInfo.footer_text,
-                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-            });
-            
-            var printer = window.AndroidPrinter || window.NativePrinter || null;
-            
-            if (printer && typeof printer.printReceipt === 'function') {
-                console.log('[sendToPrinter] Using Android native printing');
-                try {
-                    printer.printReceipt(JSON.stringify(dataWithBusiness));
-                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-                } catch (e) {
-                    console.error('[sendToPrinter] Android print error:', e.message);
-                }
+        // sendToPrinter loaded from ../receipt.php?js=true (routes to QZ Tray when enabled)
+        if (typeof sendToPrinter === 'undefined') {
+            function sendToPrinter(receiptData) {
+                var dataWithBusiness = Object.assign({}, receiptData, {
+                    business_name: receiptData.business_name || businessInfo.business_name,
+                    location: receiptData.location || businessInfo.location,
+                    phone: receiptData.phone || businessInfo.phone,
+                    footer_text: receiptData.footer_text || businessInfo.footer_text,
+                    vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                    vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+                });
+                return fetch('../receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) { return r.json(); });
             }
-            
-            return fetch('../receipt.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataWithBusiness)
-            }).then(function(r) { return r.json(); });
         }
 
         // Edit Item Modal functions

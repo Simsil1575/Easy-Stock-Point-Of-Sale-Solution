@@ -12,9 +12,33 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     exit();
 }
 
+function ensureRecipeTablesSQLite(SQLite3 $db): void {
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS product_recipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL UNIQUE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    ");
+
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS recipe_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER NOT NULL,
+            ingredient_product_id INTEGER NOT NULL,
+            quantity_per_unit DECIMAL(10,4) NOT NULL DEFAULT 0,
+            FOREIGN KEY (recipe_id) REFERENCES product_recipes(id) ON DELETE CASCADE,
+            FOREIGN KEY (ingredient_product_id) REFERENCES products(id)
+        )
+    ");
+}
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $db = new SQLite3('../pos.db');
+    ensureRecipeTablesSQLite($db);
 
     $id = $_POST['id'];
     $name = $_POST['name'];
@@ -125,6 +149,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmtInsert->execute();
     }
 
+    // Save recipe rows for this product (ingredients + qty per unit)
+    $ingredientIds = $_POST['recipe_ingredient_id'] ?? [];
+    $ingredientQtys = $_POST['recipe_qty'] ?? [];
+    $recipeRows = [];
+    $rowCount = min(count($ingredientIds), count($ingredientQtys));
+    for ($i = 0; $i < $rowCount; $i++) {
+        $ingredientId = intval($ingredientIds[$i]);
+        $qtyPerUnit = floatval($ingredientQtys[$i]);
+        if ($ingredientId > 0 && $qtyPerUnit > 0 && $ingredientId !== intval($id)) {
+            $recipeRows[] = [
+                'ingredient_id' => $ingredientId,
+                'qty' => $qtyPerUnit
+            ];
+        }
+    }
+
+    // Remove existing recipe first
+    $deleteItemsStmt = $db->prepare("DELETE FROM recipe_items WHERE recipe_id IN (SELECT id FROM product_recipes WHERE product_id = :product_id)");
+    $deleteItemsStmt->bindValue(':product_id', $id, SQLITE3_INTEGER);
+    $deleteItemsStmt->execute();
+    $deleteRecipeStmt = $db->prepare("DELETE FROM product_recipes WHERE product_id = :product_id");
+    $deleteRecipeStmt->bindValue(':product_id', $id, SQLITE3_INTEGER);
+    $deleteRecipeStmt->execute();
+
+    if (!empty($recipeRows)) {
+        $createRecipeStmt = $db->prepare("INSERT INTO product_recipes (product_id, updated_at) VALUES (:product_id, CURRENT_TIMESTAMP)");
+        $createRecipeStmt->bindValue(':product_id', $id, SQLITE3_INTEGER);
+        $createRecipeStmt->execute();
+        $recipeId = $db->lastInsertRowID();
+
+        $insertRecipeItemStmt = $db->prepare("
+            INSERT INTO recipe_items (recipe_id, ingredient_product_id, quantity_per_unit)
+            VALUES (:recipe_id, :ingredient_id, :qty)
+        ");
+        foreach ($recipeRows as $recipeRow) {
+            $insertRecipeItemStmt->bindValue(':recipe_id', $recipeId, SQLITE3_INTEGER);
+            $insertRecipeItemStmt->bindValue(':ingredient_id', $recipeRow['ingredient_id'], SQLITE3_INTEGER);
+            $insertRecipeItemStmt->bindValue(':qty', $recipeRow['qty'], SQLITE3_FLOAT);
+            $insertRecipeItemStmt->execute();
+        }
+    }
+
     header('Location: edit?id=' . $id . '&edit=success');
     exit;
 }
@@ -132,6 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Get product data for editing
 if (isset($_GET['id'])) {
     $db = new SQLite3('../pos.db');
+    ensureRecipeTablesSQLite($db);
     $id = $_GET['id'];
     
     $stmt = $db->prepare("SELECT * FROM products WHERE id = :id");
@@ -144,6 +211,26 @@ if (isset($_GET['id'])) {
     $catResult = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
     while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
         $categories[] = $row['category'];
+    }
+
+    $ingredientOptions = [];
+    $ingredientResult = $db->query("SELECT id, name, quantity FROM products ORDER BY name ASC");
+    while ($row = $ingredientResult->fetchArray(SQLITE3_ASSOC)) {
+        $ingredientOptions[] = $row;
+    }
+
+    $recipeItems = [];
+    $recipeStmt = $db->prepare("
+        SELECT ri.ingredient_product_id, ri.quantity_per_unit
+        FROM product_recipes pr
+        INNER JOIN recipe_items ri ON ri.recipe_id = pr.id
+        WHERE pr.product_id = :product_id
+        ORDER BY ri.id ASC
+    ");
+    $recipeStmt->bindValue(':product_id', $id, SQLITE3_INTEGER);
+    $recipeResult = $recipeStmt->execute();
+    while ($row = $recipeResult->fetchArray(SQLITE3_ASSOC)) {
+        $recipeItems[] = $row;
     }
     
     if (!$product) {
@@ -247,11 +334,11 @@ if (isset($_GET['id'])) {
         
         /* Ensure sidebar maintains proper z-index above overlay */
         .sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         #sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         /* Mobile responsive adjustments */
@@ -496,6 +583,47 @@ if (isset($_GET['id'])) {
                                             focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
                                     </div>
                                 </div>
+
+                                <!-- Recipe Builder -->
+                                <div class="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div>
+                                            <h3 class="text-sm font-semibold text-gray-800">Recipe-based Product</h3>
+                                            <p class="text-xs text-gray-500">Set ingredients deducted automatically when this product is sold.</p>
+                                        </div>
+                                        <button type="button" id="addRecipeRowBtn" class="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">
+                                            Add Ingredient
+                                        </button>
+                                    </div>
+
+                                    <div id="recipeRows" class="space-y-2">
+                                        <?php if (!empty($recipeItems)): ?>
+                                            <?php foreach ($recipeItems as $recipeItem): ?>
+                                                <div class="grid grid-cols-12 gap-2 items-center recipe-row">
+                                                    <div class="col-span-7">
+                                                        <select name="recipe_ingredient_id[]" class="w-full px-2 py-2 border border-gray-300 rounded-md text-sm">
+                                                            <option value="">Select ingredient</option>
+                                                            <?php foreach ($ingredientOptions as $ingredient): ?>
+                                                                <?php if (intval($ingredient['id']) !== intval($product['id'])): ?>
+                                                                    <option value="<?= intval($ingredient['id']) ?>" <?= intval($recipeItem['ingredient_product_id']) === intval($ingredient['id']) ? 'selected' : '' ?>>
+                                                                        <?= htmlspecialchars($ingredient['name']) ?> (Stock: <?= number_format(floatval($ingredient['quantity']), 2) ?>)
+                                                                    </option>
+                                                                <?php endif; ?>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                    </div>
+                                                    <div class="col-span-4">
+                                                        <input type="number" step="0.0001" min="0.0001" name="recipe_qty[]" value="<?= number_format(floatval($recipeItem['quantity_per_unit']), 4, '.', '') ?>" placeholder="Qty per 1 unit" class="w-full px-2 py-2 border border-gray-300 rounded-md text-sm">
+                                                    </div>
+                                                    <div class="col-span-1 text-right">
+                                                        <button type="button" class="remove-recipe-row text-rose-600 hover:text-rose-800 text-lg leading-none">&times;</button>
+                                                    </div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </div>
+                                    <p class="text-xs text-gray-500 mt-2">Example: Strawberry Daiquiri -> Rum 0.0500, Strawberry Puree 0.0300, Ice 0.2000.</p>
+                                </div>
                             </div>
 
                             <!-- Right Column - Image Upload and Cropper -->
@@ -552,6 +680,14 @@ if (isset($_GET['id'])) {
         const croppedImageInput = document.getElementById('cropped-image');
         const form = document.querySelector('form');
         let cropper = null;
+        const ingredientOptions = <?= json_encode(array_values(array_map(function($ingredient) use ($product) {
+            return [
+                'id' => intval($ingredient['id']),
+                'name' => $ingredient['name'],
+                'quantity' => floatval($ingredient['quantity']),
+                'isCurrent' => intval($ingredient['id']) === intval($product['id'])
+            ];
+        }, $ingredientOptions)), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 
         // Initialize cropper if existing image is present
         if (!previewContainer.classList.contains('hidden')) {
@@ -715,11 +851,58 @@ if (isset($_GET['id'])) {
             });
         }
 
+        function buildIngredientOptionsHtml(selectedId = '') {
+            let html = '<option value="">Select ingredient</option>';
+            ingredientOptions.forEach((option) => {
+                if (option.isCurrent) return;
+                const isSelected = String(option.id) === String(selectedId) ? ' selected' : '';
+                html += `<option value="${option.id}"${isSelected}>${option.name} (Stock: ${option.quantity.toFixed(2)})</option>`;
+            });
+            return html;
+        }
+
+        function createRecipeRow(selectedId = '', qty = '') {
+            const row = document.createElement('div');
+            row.className = 'grid grid-cols-12 gap-2 items-center recipe-row';
+            row.innerHTML = `
+                <div class="col-span-7">
+                    <select name="recipe_ingredient_id[]" class="w-full px-2 py-2 border border-gray-300 rounded-md text-sm">
+                        ${buildIngredientOptionsHtml(selectedId)}
+                    </select>
+                </div>
+                <div class="col-span-4">
+                    <input type="number" step="0.0001" min="0.0001" name="recipe_qty[]" value="${qty}" placeholder="Qty per 1 unit" class="w-full px-2 py-2 border border-gray-300 rounded-md text-sm">
+                </div>
+                <div class="col-span-1 text-right">
+                    <button type="button" class="remove-recipe-row text-rose-600 hover:text-rose-800 text-lg leading-none">&times;</button>
+                </div>
+            `;
+            return row;
+        }
+
         // Initialize barcode display
         document.addEventListener('DOMContentLoaded', function() {
             const barcodeInput = document.getElementById('barcode');
             if (barcodeInput && barcodeInput.value) {
                 updateBarcodeDisplay(barcodeInput.value);
+            }
+
+            const recipeRowsContainer = document.getElementById('recipeRows');
+            const addRecipeRowBtn = document.getElementById('addRecipeRowBtn');
+
+            if (addRecipeRowBtn && recipeRowsContainer) {
+                addRecipeRowBtn.addEventListener('click', function() {
+                    recipeRowsContainer.appendChild(createRecipeRow());
+                });
+
+                recipeRowsContainer.addEventListener('click', function(e) {
+                    if (e.target.classList.contains('remove-recipe-row')) {
+                        const row = e.target.closest('.recipe-row');
+                        if (row) {
+                            row.remove();
+                        }
+                    }
+                });
             }
         });
 

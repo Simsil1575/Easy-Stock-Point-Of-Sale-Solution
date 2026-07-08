@@ -342,6 +342,90 @@ try {
         }
     }
     
+    // Handle cashier permissions form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_cashier_permissions'])) {
+        try {
+            // Create cashier_permissions table if it doesn't exist
+            $db->exec("CREATE TABLE IF NOT EXISTS cashier_permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                allow_tabs BOOLEAN NOT NULL DEFAULT 1,
+                allow_transactions BOOLEAN NOT NULL DEFAULT 1,
+                allow_credit_book BOOLEAN NOT NULL DEFAULT 1,
+                allow_cash_inout BOOLEAN NOT NULL DEFAULT 1,
+                allow_settings BOOLEAN NOT NULL DEFAULT 0
+            )");
+            
+            // Check if row exists
+            $checkStmt = $db->query("SELECT COUNT(*) FROM cashier_permissions")->fetchColumn();
+            if ($checkStmt == 0) {
+                $db->exec("INSERT INTO cashier_permissions (allow_tabs, allow_transactions, allow_credit_book, allow_cash_inout, allow_settings) VALUES (1, 1, 1, 1, 0)");
+            }
+            
+            // Update permissions
+            $allowTabs = isset($_POST['allow_tabs']) ? 1 : 0;
+            $allowTransactions = isset($_POST['allow_transactions']) ? 1 : 0;
+            $allowCreditBook = isset($_POST['allow_credit_book']) ? 1 : 0;
+            $allowCashInOut = isset($_POST['allow_cash_inout']) ? 1 : 0;
+            $allowSettings = isset($_POST['allow_settings']) ? 1 : 0;
+            
+            $updateStmt = $db->prepare("UPDATE cashier_permissions SET 
+                allow_tabs = :allow_tabs,
+                allow_transactions = :allow_transactions,
+                allow_credit_book = :allow_credit_book,
+                allow_cash_inout = :allow_cash_inout,
+                allow_settings = :allow_settings
+                WHERE id = 1");
+            $updateStmt->execute([
+                ':allow_tabs' => $allowTabs,
+                ':allow_transactions' => $allowTransactions,
+                ':allow_credit_book' => $allowCreditBook,
+                ':allow_cash_inout' => $allowCashInOut,
+                ':allow_settings' => $allowSettings
+            ]);
+            
+            $successMessage = 'Cashier permissions updated successfully!';
+        } catch(PDOException $e) {
+            $errorMessage = 'Error updating cashier permissions: ' . $e->getMessage();
+        }
+    }
+    
+    // Get current cashier permissions
+    $cashierPermissions = [
+        'allow_tabs' => 1,
+        'allow_transactions' => 1,
+        'allow_credit_book' => 1,
+        'allow_cash_inout' => 1,
+        'allow_settings' => 0
+    ];
+    try {
+        // Create table if it doesn't exist
+        $db->exec("CREATE TABLE IF NOT EXISTS cashier_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            allow_tabs BOOLEAN NOT NULL DEFAULT 1,
+            allow_transactions BOOLEAN NOT NULL DEFAULT 1,
+            allow_credit_book BOOLEAN NOT NULL DEFAULT 1,
+            allow_cash_inout BOOLEAN NOT NULL DEFAULT 1,
+            allow_settings BOOLEAN NOT NULL DEFAULT 0
+        )");
+        
+        // Get current permissions
+        $permissions = $db->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        if ($permissions) {
+            $cashierPermissions = [
+                'allow_tabs' => $permissions['allow_tabs'] ?? 1,
+                'allow_transactions' => $permissions['allow_transactions'] ?? 1,
+                'allow_credit_book' => $permissions['allow_credit_book'] ?? 1,
+                'allow_cash_inout' => $permissions['allow_cash_inout'] ?? 1,
+                'allow_settings' => $permissions['allow_settings'] ?? 0
+            ];
+        } else {
+            // Insert default row
+            $db->exec("INSERT INTO cashier_permissions (allow_tabs, allow_transactions, allow_credit_book, allow_cash_inout, allow_settings) VALUES (1, 1, 1, 1, 0)");
+        }
+    } catch(PDOException $e) {
+        // Use defaults if error
+    }
+    
     // Get current receipt setting
     $defaultPrintReceipt = 0;
     try {
@@ -616,6 +700,124 @@ try {
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
                                 </svg>
                                 Save Settings
+                            </button>
+                        </div>
+                    </form>
+                </div>
+                
+                <!-- Cashier Permissions Section -->
+                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
+                    <h2 class="text-2xl font-bold mb-6">Cashier Sidebar Permissions</h2>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
+                        <div class="flex">
+                            <div class="flex-shrink-0">
+                                <svg class="h-5 w-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="ml-3">
+                                <p class="text-sm text-blue-700">
+                                    <strong>Note:</strong> Control which sidebar menu options are available to cashiers. Admins always have access to all options. Home and Logout are always visible to all users.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <form action="" method="POST" class="space-y-4">
+                        <div class="grid grid-cols-1 gap-4">
+                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                <div class="flex-1">
+                                    <label for="allow_tabs" class="block text-sm font-medium text-gray-700 mb-1">
+                                        Allow Tabs
+                                    </label>
+                                    <p class="text-xs text-gray-500">Enable cashiers to access the Tabs menu</p>
+                                </div>
+                                <div class="ml-4">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" name="allow_tabs" id="allow_tabs" 
+                                               class="sr-only peer" 
+                                               <?php echo $cashierPermissions['allow_tabs'] ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                <div class="flex-1">
+                                    <label for="allow_transactions" class="block text-sm font-medium text-gray-700 mb-1">
+                                        Allow Transactions
+                                    </label>
+                                    <p class="text-xs text-gray-500">Enable cashiers to access the Transactions/Reports menu</p>
+                                </div>
+                                <div class="ml-4">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" name="allow_transactions" id="allow_transactions" 
+                                               class="sr-only peer" 
+                                               <?php echo $cashierPermissions['allow_transactions'] ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                <div class="flex-1">
+                                    <label for="allow_credit_book" class="block text-sm font-medium text-gray-700 mb-1">
+                                        Allow Credit Book
+                                    </label>
+                                    <p class="text-xs text-gray-500">Enable cashiers to access the Credit Book menu</p>
+                                </div>
+                                <div class="ml-4">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" name="allow_credit_book" id="allow_credit_book" 
+                                               class="sr-only peer" 
+                                               <?php echo $cashierPermissions['allow_credit_book'] ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                <div class="flex-1">
+                                    <label for="allow_cash_inout" class="block text-sm font-medium text-gray-700 mb-1">
+                                        Allow Cash In/Out
+                                    </label>
+                                    <p class="text-xs text-gray-500">Enable cashiers to access the Cash In/Out menu</p>
+                                </div>
+                                <div class="ml-4">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" name="allow_cash_inout" id="allow_cash_inout" 
+                                               class="sr-only peer" 
+                                               <?php echo $cashierPermissions['allow_cash_inout'] ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                <div class="flex-1">
+                                    <label for="allow_settings" class="block text-sm font-medium text-gray-700 mb-1">
+                                        Allow Settings
+                                    </label>
+                                    <p class="text-xs text-gray-500">Enable cashiers to access the Settings menu (not recommended for security)</p>
+                                </div>
+                                <div class="ml-4">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" name="allow_settings" id="allow_settings" 
+                                               class="sr-only peer" 
+                                               <?php echo $cashierPermissions['allow_settings'] ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex justify-end mt-6">
+                            <button type="submit" 
+                                    name="update_cashier_permissions" 
+                                    value="1"
+                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                                Save Permissions
                             </button>
                         </div>
                     </form>

@@ -37,6 +37,13 @@ if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 
+// Ensure tab tips column exists (ignore if already added)
+try {
+    $db->exec("ALTER TABLE tab_payments ADD COLUMN tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column may already exist
+}
+
 // Calculate business day boundaries based on closing time
 $closingHour = (int)substr($closingTime, 0, 2);
 $closingMinute = (int)substr($closingTime, 3, 2);
@@ -329,14 +336,19 @@ $ordersQuery = $db->prepare("
         FROM order_items oi
         GROUP BY oi.order_id
     ), order_tab_info AS (
-        SELECT tp.order_id, t.tab_name, tp.cashier_id as tab_cashier_id
+        SELECT
+            tp.order_id,
+            t.tab_name,
+            MIN(tp.cashier_id) as tab_cashier_id,
+            COALESCE(SUM(tp.tip_amount), 0) as tips
         FROM tab_payments tp
         JOIN tabs t ON tp.tab_id = t.id
+        GROUP BY tp.order_id, t.tab_name
     ), order_splits AS (
         SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
                MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
                MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
-               oti.tab_name, oti.tab_cashier_id
+               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips
         FROM orders o
         LEFT JOIN order_sums os ON os.order_id = o.id
         LEFT JOIN order_products op ON op.order_id = o.id
@@ -347,11 +359,11 @@ $ordersQuery = $db->prepare("
         )
         GROUP BY o.id
     )
-    SELECT id, cash_amount AS total, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
     FROM order_splits
     WHERE cash_amount > 0
     UNION ALL
-    SELECT id, eft_amount AS total, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
     FROM order_splits
     WHERE eft_amount > 0
     ORDER BY created_at DESC
@@ -361,6 +373,7 @@ $creditQuery = $db->prepare("
     SELECT 
         cs.id, 
         cs.total_amount as total, 
+        0 as tips,
         cs.created_at,
         GROUP_CONCAT(csi.product_name || ' (x' || csi.quantity || ')', ', ') as products,
         CASE 
@@ -1290,6 +1303,9 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <span class="font-medium <?= $row['sale_type'] === 'credit' ? 'text-gray-600' : 'text-gray-600' ?>"><?= htmlspecialchars($row['products']) ?></span>
                                 <?php if (isset($row['creditor_name']) && $row['creditor_name']): ?>
                                 <span class="text-xs text-orange-500 font-medium">(<?= htmlspecialchars($row['creditor_name']) ?>)</span>
+                                <?php endif; ?>
+                                <?php if (floatval($row['tips'] ?? 0) > 0): ?>
+                                <span class="text-xs text-emerald-600 font-medium">(Tip: N$<?= number_format(floatval($row['tips']), 2) ?>)</span>
                                 <?php endif; ?>
                                 <?php if (isset($row['tab_name']) && $row['tab_name']): ?>
                                 <span class="text-xs text-blue-500 font-medium">[Tab: <?= htmlspecialchars($row['tab_name']) ?>]</span>

@@ -100,8 +100,13 @@ $currentTime = date('H:i');
 // If current time is after closing time, show today's data
 $defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
 
-// Handle date selection
-$selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
+// Handle date selection (prefer GET date when returning from error redirect)
+$selectedDate = $defaultDate;
+if (isset($_POST['date'])) {
+    $selectedDate = $_POST['date'];
+} elseif (isset($_GET['date']) && in_array($_GET['date'], $distinctDates)) {
+    $selectedDate = $_GET['date'];
+}
 
 // Determine current business date
 $currentTime = date('H:i');
@@ -232,13 +237,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
                 // Redirect back with error message if not ajax
-                header('Location: cash.php?error=insufficient_funds&available=' . $cashInTill);
+                header('Location: cash.php?error=insufficient_funds&available=' . $cashInTill . '&date=' . urlencode($selectedDate));
                 exit;
             }
         }
         
-        $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, created_at) VALUES (?, ?, ?, datetime('now', '+2 hours'))");
-        $stmt->execute([$_POST['action'], $_POST['amount'], $_POST['description']]);
+        // Use selected date for created_at so the transaction is saved on the chosen date
+        $transactionDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
+        $currentTime = $db->query("SELECT strftime('%H:%M:%S', 'now', '+2 hours')")->fetchColumn();
+        $createdAt = $transactionDate . ' ' . $currentTime;
+        
+        $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$_POST['action'], $_POST['amount'], $_POST['description'], $_SESSION['username'] ?? 'Unknown', $createdAt]);
         
         if(isset($_POST['ajax'])) {
             $id = $db->lastInsertId();
@@ -315,10 +325,10 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
         .sidebar {
             position: fixed;
             height: 100%;
-            z-index: 9999 !important; /* Prevent overlay from overlapping sidebar */
+            z-index: 10000 !important; /* Prevent overlay from overlapping sidebar */
         }
         #sidebar {
-            z-index: 9999 !important; /* Ensure sidebar stays above overlay */
+            z-index: 10000 !important; /* Ensure sidebar stays above overlay */
         }
         .content {
             margin-left: 250px;
@@ -714,7 +724,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
             
             <div class="container mx-auto p-6">
                 <!-- Alert Notification Container -->
-                <div id="alertContainer" class="fixed top-4 right-4 z-50 w-80 transform transition-transform duration-300 translate-x-full"></div>
+                <div id="alertContainer" class="fixed top-4 right-4 z-[100] w-80 transform transition-transform duration-300 translate-x-full"></div>
                 
                 <?php if (isset($_GET['error']) && $_GET['error'] === 'insufficient_funds'): ?>
                 <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded shadow-md" role="alert">
@@ -736,6 +746,12 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
+                        <a href="manager-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm flex-shrink-0">
+                            <svg class="w-5 h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">back</span>
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>
@@ -1034,6 +1050,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                         <form id="cashOutForm" method="POST" class="p-6">
                             <input type="hidden" name="action" value="cash-out">
                             <input type="hidden" name="ajax" value="1">
+                            <input type="hidden" name="date" value="<?= htmlspecialchars($selectedDate) ?>">
                             
                             <div class="space-y-4">
                                 <div class="relative">

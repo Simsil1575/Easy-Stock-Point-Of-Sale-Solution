@@ -271,8 +271,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
-        $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, created_at) VALUES (?, ?, ?, datetime('now', '+2 hours'))");
-        $stmt->execute([$_POST['action'], $_POST['amount'], $_POST['description']]);
+        $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, datetime('now', '+2 hours'))");
+        $stmt->execute([$_POST['action'], $_POST['amount'], $_POST['description'], $_SESSION['username'] ?? 'Unknown']);
         
         if(isset($_POST['ajax'])) {
             $id = $db->lastInsertId();
@@ -306,7 +306,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (isset($_POST['record_eft_income'])) {
         // Handle EFT income recording
         $stmt = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$_POST['order_id'] ?? null, $_POST['transaction_ref'], $_POST['wallet_provider'], $_POST['amount'], $_POST['cashier_id'] ?? 1]);
+        $stmt->execute([$_POST['order_id'] ?? null, $_POST['transaction_ref'], $_POST['wallet_provider'], $_POST['amount'], $_SESSION['username'] ?? 'Unknown']);
         
         if(isset($_POST['ajax'])) {
             echo json_encode(['status' => 'success', 'message' => 'EFT income recorded successfully']);
@@ -328,7 +328,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (isset($_POST['record_creditor'])) {
         // Handle creditor recording
         $stmt = $db->prepare("INSERT INTO credit_sales (creditor_id, total_amount, due_date, created_at, cashier_id) VALUES (?, ?, ?, datetime('now', '+2 hours'), ?)");
-        $stmt->execute([$_POST['creditor_id'], $_POST['total_amount'], $_POST['due_date'], $_POST['cashier_id'] ?? 1]);
+        $stmt->execute([$_POST['creditor_id'], $_POST['total_amount'], $_POST['due_date'], $_SESSION['username'] ?? 'Unknown']);
         
         if(isset($_POST['ajax'])) {
             echo json_encode(['status' => 'success', 'message' => 'Creditor sale recorded successfully']);
@@ -384,6 +384,7 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cash Management</title>
+    <script src="receipt.php?js=true"></script>
     <script src="navigation.js" async></script>
     <link href="src/output.css" rel="stylesheet">
     <script src="src/jquery-3.6.0.min.js"></script>
@@ -2069,38 +2070,16 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
                         total_expense: data.total_expense || 0,
                         net_amount: data.net_amount || 0
                     });
-                    // Create hidden iframe for background printing
-                    const iframe = document.createElement('iframe');
-                    iframe.style.position = 'absolute';
-                    iframe.style.left = '-9999px';
-                    iframe.style.width = '1px';
-                    iframe.style.height = '1px';
-                    iframe.style.border = 'none';
-                    document.body.appendChild(iframe);
-
-                    // Send data to receipt.php and let it handle printing
-                    fetch('receipt.php', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(printData)
-                    })
-                    .then(resp => resp.json())
+                    // Use sendToPrinter (routes to QZ Tray when enabled) or fallback to direct fetch
+                    const printFn = (typeof window.sendToPrinter === 'function')
+                        ? (data) => window.sendToPrinter(data)
+                        : (data) => fetch('receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+                    printFn(printData)
                     .then(result => {
-                        if (result.success) {
-                            // Load receipt.php in hidden iframe for background printing
-                            const url = 'receipt.php?data=' + encodeURIComponent(JSON.stringify(result.orderData));
-                            iframe.src = url;
-                            
+                        if (result && result.success) {
                             showAlert('Cash-up receipt printed successfully.', 'success');
-                            
-                            // Clean up iframe after printing
-                            setTimeout(() => {
-                                if (iframe.parentNode) {
-                                    iframe.parentNode.removeChild(iframe);
-                                }
-                            }, 3000);
                         } else {
-                            showAlert('Receipt printing failed: ' + (result.message || 'Unknown error'), 'error');
+                            showAlert('Receipt printing failed: ' + (result?.message || 'Unknown error'), 'error');
                         }
                     })
                     .catch(err => {

@@ -67,7 +67,7 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         $printer->text($businessInfo['location'] . "\n");
         $printer->setEmphasis(false);
         $printer->text("Tel: " . $businessInfo['phone'] . "\n");
-        $printer->feed();
+        // Removed feed() - separator line comes next
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->text(str_repeat('-', 48) . "\n");
         $printer->setEmphasis(true);
@@ -77,7 +77,7 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         $printer->text("Date: " . $orderData['date'] . "\n");
         $printer->text("Printed: " . date('Y-m-d H:i') . "\n");
         $printer->text("By: " . $orderData['cashier_username'] . "\n");
-        $printer->feed();
+        // Removed feed() - totals section comes next
         $printer->text(str_repeat('=', 48) . "\n");
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->text(sprintf("%-24s N$%8.2f\n", "CASH SALES:", $orderData['total_cash_sales']));
@@ -88,7 +88,7 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         $printer->text(sprintf("%-24s N$%8.2f\n", "CASH ON HAND:", $orderData['cash_on_hand']));
         $printer->setEmphasis(false);
         $printer->text(str_repeat('=', 48) . "\n");
-        $printer->feed();
+        // Removed feed() - income/expense section comes next
         // Income/Expense breakdown if available
         if (isset($orderData['total_income'])) {
             $printer->setEmphasis(true);
@@ -110,26 +110,62 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
             $printer->text(sprintf("%-24s N$%8.2f\n", "NET AMOUNT:", $orderData['net_amount'] ?? 0));
             $printer->setEmphasis(false);
         }
-        $printer->feed();
+        // Removed feed() - footer comes directly
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text($businessInfo['footer_text'] . "\n");
-        $printer->feed(2);
+        // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
         $printer->text("____________________\n");
         $printer->text("Cashier Signature\n");
-        $printer->feed(2);
+        // Removed feed() - manager signature comes next
         $printer->text("____________________\n");
         $printer->text("Manager Signature\n");
-        $printer->feed(2);
+        // Removed feed() - cut immediately to save paper
         $printer->cut();
         $printer->pulse();
         $printer->close();
+        
+        // Enrich orderData with business info before returning
+        $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+        $orderData['location'] = $businessInfo['location'] ?? '';
+        $orderData['phone'] = $businessInfo['phone'] ?? '';
+        $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+        $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+        $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+        
         header('Content-Type: application/json');
-        echo json_encode(['success' => true, 'message' => 'Cash-up receipt printed']);
+        echo json_encode([
+            'success' => true, 
+            'message' => 'Cash-up receipt printed',
+            'order_data' => $orderData  // Include enriched orderData for Android
+        ]);
         exit;
     } catch (Exception $e) {
+        // Enrich orderData even on error for Android compatibility
+        if (isset($orderData) && is_array($orderData)) {
+            try {
+                $db = new PDO('sqlite:info.db');
+                $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                if ($businessInfo) {
+                    $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+                    $orderData['location'] = $businessInfo['location'] ?? '';
+                    $orderData['phone'] = $businessInfo['phone'] ?? '';
+                    $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+                    $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+                    $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+                }
+            } catch (Exception $dbError) {
+                // Ignore database errors in error handler
+            }
+        }
+        
         header('Content-Type: application/json');
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        echo json_encode([
+            'success' => false, 
+            'message' => $e->getMessage(),
+            'order_data' => $orderData ?? []  // Include orderData even on error for Android
+        ]);
         exit;
     }
 }
@@ -154,9 +190,19 @@ try {
             'location' => 'Your Business Address',
             'phone' => 'Your Phone Number',
             'footer_text' => 'Thank you for your purchase!',
-            'printer_port' => 'COM4'
+            'printer_port' => 'COM4',
+            'vat_inclusive' => 'exclusive',
+            'vat_rate' => 15.0
         ];
     }
+    
+    // Enrich orderData with business info for Android interceptor
+    $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+    $orderData['location'] = $businessInfo['location'] ?? '';
+    $orderData['phone'] = $businessInfo['phone'] ?? '';
+    $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+    $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+    $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
     
     // Detect client IP address to determine which printer to use
     $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
@@ -282,7 +328,7 @@ try {
             
             $printer->text(sprintf("%-24s N$%8.2f\n", "Balance:", $transaction['balance']));
             $printer->text(str_repeat('-', 48) . "\n");
-            $printer->feed();
+            // Removed feed() - total balance comes next
         }
         
         // Print total balance again
@@ -290,16 +336,12 @@ try {
         $printer->text(sprintf("%-24s N$%8.2f\n", "TOTAL BALANCE:", $orderData['total_balance']));
         $printer->setEmphasis(false);
         $printer->text(str_repeat('-', 48) . "\n");
-        $printer->feed(2); // Add extra spacing before footer
-        
         // Footer section
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text($businessInfo['footer_text'] . "\n");
-        $printer->feed(4); // Add more spacing before cutting
-        
-        // Add a line of dashes before cutting
-        $printer->text(str_repeat('-', 48) . "\n");
-        $printer->feed(2);
+        // Removed feed() and dashes - cut immediately to save paper
+        // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
     } else {
         // REGULAR RECEIPT PRINTING - 48 chars
         $printer->setJustification(Printer::JUSTIFY_LEFT);
@@ -459,7 +501,8 @@ try {
         // Footer section
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text($businessInfo['footer_text'] . "\n");
-        $printer->feed(4);
+        // Reduced from feed(4) to feed(1) to save paper
+        $printer->feed(1);
     }
 
     // Send final commands
@@ -481,17 +524,36 @@ try {
         throw new Exception("Failed to complete printing: " . $e->getMessage());
     }
 
-    // Return success response
+    // Return success response with enriched orderData for Android interceptor
     header('Content-Type: application/json');
     echo json_encode([
         'success' => true, 
         'message' => 'Receipt printed successfully',
         'printer_used' => $printerName,
         'client_ip' => $clientIP,
-        'connection_type' => $isNetworkPrinter ? 'network' : 'local'
+        'connection_type' => $isNetworkPrinter ? 'network' : 'local',
+        'order_data' => $orderData  // Include enriched orderData for Android
     ]);
 
 } catch (Exception $e) {
+    // Enrich orderData even on error for Android compatibility
+    if (isset($orderData) && is_array($orderData)) {
+        try {
+            $db = new PDO('sqlite:info.db');
+            $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            if ($businessInfo) {
+                $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+                $orderData['location'] = $businessInfo['location'] ?? '';
+                $orderData['phone'] = $businessInfo['phone'] ?? '';
+                $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+                $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+                $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+            }
+        } catch (Exception $dbError) {
+            // Ignore database errors in error handler
+        }
+    }
+    
     header('Content-Type: application/json');
     http_response_code(500);
     echo json_encode([
@@ -500,7 +562,8 @@ try {
         'printer_attempted' => $printerName ?? 'unknown',
         'client_ip' => $clientIP ?? 'unknown',
         'connection_type' => ($isNetworkPrinter ?? false) ? 'network' : 'local',
-        'details' => 'Please check if the printer is connected and powered on.'
+        'details' => 'Please check if the printer is connected and powered on.',
+        'order_data' => $orderData ?? []  // Include orderData even on error for Android
     ]);
 }
 exit;

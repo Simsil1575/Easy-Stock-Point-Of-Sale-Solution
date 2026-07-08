@@ -440,18 +440,19 @@
                     <span class="text-lg text-gray-700">Home</span>
                 </a>
             </li>
-
-            <li>
-                <a href="credit-tabs" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-tabs">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="2" y="5" width="20" height="14" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
-                        <rect x="2" y="9" width="20" height="2" fill="currentColor"/>
-                        <rect x="16" y="15" width="4" height="2" rx="1" fill="currentColor"/>
+     <li>
+                <a href="manager-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="manager-center">
+                    <svg class="w-7 h-7 mr-4" fill="none" stroke="currentColor" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="7" y="7" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="27" y="7" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="7" y="27" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="27" y="27" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
                     </svg>
-                    <span class="text-lg text-gray-700">Tabs</span>
+                    <span class="text-lg text-gray-700">Menu</span>
                 </a>
             </li>
 
+       
             <li>
                 <a href="sales" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="sales">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -462,6 +463,19 @@
             </li>
 
             <li>
+                <a href="reports-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports-center">
+                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18 17V9"/>
+                        <path d="M13 17V5"/>
+                        <path d="M8 17v-3"/>
+                    </svg>
+                    <span class="text-lg text-gray-700">Reports</span>
+                </a>
+            </li>
+        
+
+            <li>
                 <a href="inventory" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="inventory">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
@@ -469,6 +483,7 @@
                     <span class="text-lg text-gray-700">Inventory</span>
                 </a>
             </li>
+            
 
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
@@ -479,32 +494,10 @@
                 </a>
             </li>
 
+       
+      
             <li>
-                <a href="credit-book" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-book">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v5h.293l6 6V4H6v14h6V10h.293l6 6V4z"></path>
-                    </svg>
-                    <span class="text-lg text-gray-700">Credit Book</span>
-                </a>
-            </li>
-
-            <li>
-                <a href="cash" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cash">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    <span class="text-lg text-gray-700">Cash In/Out</span>
-                </a>
-            </li>
-
-            <li>
-    <a href="inbox" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="inbox">
-        <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m0 0v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8m18-2a2 2 0 00-2-2H5a2 2 0 00-2 2" />
-        </svg>
-        <span class="text-lg text-gray-700">Inbox</span>
-        <span id="inbox-badge" class="ml-2 px-2 py-0.5 text-xs font-medium bg-red-500 text-white rounded-full opacity-0 transition-opacity duration-200"></span>
-    </a>
+ 
 </li>
 
 
@@ -553,17 +546,35 @@
         const query = window.location.search;
         const currentPage = path.substring(path.lastIndexOf('/') + 1);
         
+        // Manager-center subpages: Menu stays active when on any of these
+        const isManagerSubpage = (
+            currentPage === 'credit-tabs' || currentPage.startsWith('credit-tabs') ||
+            currentPage === 'credit-book' || currentPage.startsWith('credit-book') ||
+            currentPage.startsWith('credit-transactions') ||
+            currentPage.startsWith('view-tab') ||
+            currentPage === 'cash' || currentPage === 'cash.php' ||
+            currentPage === 'cash-up' || currentPage.startsWith('cash-up') ||
+            currentPage.startsWith('damaged_goods') ||
+            currentPage.startsWith('create_creditor')
+        );
+        
         // Remove active class from all links
         const links = document.querySelectorAll('.nav-link');
         links.forEach(link => {
             link.classList.remove('bg-gray-300');
             
-            // Check if current page matches link or is inventory related
-            if (link.getAttribute('data-href') === currentPage || 
+            const href = link.getAttribute('data-href');
+            
+            // When on a manager subpage, only highlight Menu (manager-center)
+            if (isManagerSubpage) {
+                if (href === 'manager-center') {
+                    link.classList.add('bg-gray-300');
+                }
+            } else if (href === currentPage || 
                 currentPage === '' || 
                 currentPage === 'index.php' || 
-                (currentPage === 'home' && link.getAttribute('data-href') === './') ||
-                (link.getAttribute('data-href') === 'inventory' && 
+                (currentPage === 'home' && href === './') ||
+                (href === 'inventory' && 
                     (currentPage === 'inventory' || 
                      currentPage === 'add_product' || 
                      currentPage === 'receiving' ||
@@ -572,7 +583,7 @@
                      currentPage === 'stock_taking' || 
                      currentPage === 'edit.php' || 
                      query.includes('edit.php?id='))) ||
-                (link.getAttribute('data-href') === 'settings' && 
+                (href === 'settings' && 
                     (currentPage === 'users' || 
                     currentPage === 'add_user' || 
                     currentPage === 'damaged_goods' || 
@@ -583,62 +594,35 @@
                      query.includes('delete=success') ||
                      query.includes('add=success') ||
                      query.includes('update=success'))) ||
-                (link.getAttribute('data-href') === 'credit-book' && 
-                    (currentPage.startsWith('credit-transactions.php') || 
-                     currentPage.startsWith('credit-book.php'))) ||
-                (link.getAttribute('data-href') === 'credit-tabs' && 
+                (href === 'credit-tabs' && 
                     (currentPage.startsWith('view-tab.php') || 
                      currentPage.startsWith('credit-tabs'))) ||
-                (link.getAttribute('data-href') === 'reports' && 
+                (href === 'reports' && 
                     (currentPage === 'reports' || 
                      currentPage === 'weekly_sales' || 
                      currentPage === 'weekly_sales.php' ||
                      currentPage === 'generate_weekly_report' ||
-                     currentPage === 'generate_weekly_report.php'))) {
+                     currentPage === 'generate_weekly_report.php')) ||
+                (href === 'reports-center' && 
+                    (currentPage === 'reports-center' || 
+                     currentPage === 'reports-center.php' ||
+                     currentPage === 'generate_report_pdf' ||
+                     currentPage === 'generate_report_pdf.php')) ||
+                (href === 'manager-center' && 
+                    (currentPage === 'manager-center' || 
+                     currentPage === 'manager-center.php'))) {
                 link.classList.add('bg-gray-300');
             }
         });
     }
 
-    // Function to update inbox badge
-    function updateInboxBadge() {
-        const badge = document.getElementById('inbox-badge');
-        // Don't update if already updating
-        if (badge.dataset.updating === 'true') return;
-        
-        badge.dataset.updating = 'true';
-        
-        fetch('chat_api.php?unread_count=1')
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'success' && data.count > 0) {
-                    badge.textContent = data.count;
-                    badge.classList.remove('opacity-0');
-                } else {
-                    badge.classList.add('opacity-0');
-                }
-            })
-            .catch(error => {
-                console.error('Error fetching unread count:', error);
-                badge.classList.add('opacity-0');
-            })
-            .finally(() => {
-                badge.dataset.updating = 'false';
-            });
-    }
-    
-
     // Update active link on page load and set default active
     document.addEventListener('DOMContentLoaded', () => {
         updateActiveLink();
-        updateInboxBadge();
         // If no page is selected, activate home by default
         if (!document.querySelector('.nav-link.bg-gray-300')) {
             document.querySelector('[data-href="./"]').classList.add('bg-gray-300');
         }
-
-        // Update inbox badge every 30 seconds
-        setInterval(updateInboxBadge, 30000);
     });
     
     // Mobile sidebar functions
@@ -804,39 +788,6 @@
             setTimeout(adjustSidebarButtons, 100);
         });
     }
-
-            // Silent notification generation
-            function generateSilentNotification() {
-            // Get last notification time from localStorage
-            const lastNotificationTime = localStorage.getItem('lastNotificationTime');
-            const currentTime = new Date().getTime();
-            const fourHoursInMs = 4 * 60 * 60 * 1000; // 4 hours in milliseconds
-
-            // Check if 6 hours have passed since last notification
-            if (!lastNotificationTime || (currentTime - parseInt(lastNotificationTime)) >= sixHoursInMs) {
-                fetch('chat_api.php?generate_notification=1')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.status === 'success') {
-                            // Update last notification time
-                            localStorage.setItem('lastNotificationTime', currentTime.toString());
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error generating notification:', error);
-                    });
-            }
-        }
-
-        // Generate notification once on page load
-        generateSilentNotification();
-
-        // Handle page visibility
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) {
-                generateSilentNotification();
-            }
-        });
 </script>
 
 <script src="3.4.16"></script>

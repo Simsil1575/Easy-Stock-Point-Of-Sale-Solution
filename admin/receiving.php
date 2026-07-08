@@ -46,20 +46,25 @@ date_default_timezone_set('Africa/Harare');
 // Handle form submission for bulk receiving
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        $db->beginTransaction();
-        
         // Handle both JSON and form data
         $receivingData = null;
+        $isAjaxRequest = false;
+        $isPdfOnly = false;
+        
         if (isset($_POST['receiving_data'])) {
-            // Form submission for PDF download
+            // Form submission for PDF download ONLY (data already saved via AJAX)
             $receivingData = json_decode($_POST['receiving_data'], true);
+            $isPdfOnly = true; // Don't save to database again
         } else {
-            // JSON submission for AJAX
+            // JSON submission for AJAX - this saves to database
             $receivingData = json_decode(file_get_contents('php://input'), true);
+            $isAjaxRequest = true;
         }
         
         if (isset($receivingData['items']) && is_array($receivingData['items'])) {
             $receivingItems = []; // Store items for PDF generation
+            $receivingItemsForDb = []; // Store items for database
+            
             // Determine selected receiving date/time (supports backdating)
             $selectedDateTime = null;
             if (!empty($receivingData['receiving_date'])) {
@@ -74,6 +79,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $today = substr($selectedDateTime, 0, 10);
             
+            // Running totals for the receiving record
+            $totalItemsCount = 0;
+            $totalQuantity = 0;
+            $totalValue = 0;
+            $totalCost = 0;
+            
+            // Only update database if this is NOT a PDF-only request
+            if (!$isPdfOnly) {
+                $db->beginTransaction();
+            }
+            
             foreach ($receivingData['items'] as $item) {
                 if (!empty($item['product_id']) && !empty($item['quantity']) && $item['quantity'] > 0) {
                     $productId = $item['product_id'];
@@ -86,69 +102,141 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     if ($product) {
                         $oldQuantity = intval($product['quantity']);
-                        $newQuantity = $oldQuantity + $quantity;
+                        // For PDF only, calculate what the new quantity would be (don't update)
+                        // For AJAX, this is before update so it's correct
+                        $newQuantity = $isPdfOnly ? $oldQuantity : ($oldQuantity + $quantity);
+                        $itemValue = $quantity * $product['price'];
+                        $itemCost = $quantity * ($product['buying_price'] ?? $product['price']);
                         
                         // Store item details for PDF
                         $receivingItems[] = [
                             'product_name' => $product['name'],
-                            'old_quantity' => $oldQuantity,
+                            'old_quantity' => $isPdfOnly ? ($oldQuantity - $quantity) : $oldQuantity, // For PDF, stock was already updated
                             'added_quantity' => $quantity,
-                            'new_quantity' => $newQuantity,
+                            'new_quantity' => $oldQuantity, // Current quantity (already updated for PDF)
                             'price' => $product['price'],
-                            'buying_price' => $product['buying_price'],
-                            'total_value' => $quantity * $product['price'],
-                            'total_cost' => $quantity * $product['buying_price']
+                            'buying_price' => $product['buying_price'] ?? $product['price'],
+                            'total_value' => $itemValue,
+                            'total_cost' => $itemCost
                         ];
                         
-                        // Update product quantity
-                        $updateStmt = $db->prepare("UPDATE products SET quantity = ? WHERE id = ?");
-                        $updateStmt->execute([$newQuantity, $productId]);
+                        // Update running totals
+                        $totalItemsCount++;
+                        $totalQuantity += $quantity;
+                        $totalValue += $itemValue;
+                        $totalCost += $itemCost;
                         
-                        // Log the stock change (use selected receiving date/time)
-                        $logStmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, changed_at) VALUES (?, ?, ?, ?, ?, ?)");
-                        $logStmt->execute([$productId, 'Restock', $quantity, $oldQuantity, $newQuantity, $selectedDateTime]);
-                        
-                        // Update or insert daily stock summary - only update received quantity
-                        $summaryStmt = $db->prepare("
-                            INSERT OR REPLACE INTO daily_stock_summary 
-                            (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
-                            VALUES (
-                                ?,
-                                ?,
-                                COALESCE((SELECT opening_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0),
-                                COALESCE((SELECT closing_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), ?),
-                                COALESCE((SELECT received_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0) + ?,
-                                COALESCE((SELECT sold_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0),
-                                COALESCE((SELECT damaged_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0)
-                            )
-                        ");
-                        $summaryStmt->execute([
-                            $today, $productId, $today, $productId, $today, $productId, $newQuantity,
-                            $today, $productId, $quantity,
-                            $today, $productId,
-                            $today, $productId
-                        ]);
+                        // Only update database if NOT PDF-only request
+                        if (!$isPdfOnly) {
+                            // Store item details for database
+                            $receivingItemsForDb[] = [
+                                'product_id' => $productId,
+                                'product_name' => $product['name'],
+                                'quantity_added' => $quantity,
+                                'old_quantity' => $oldQuantity,
+                                'new_quantity' => $newQuantity,
+                                'unit_price' => $product['price'],
+                                'buying_price' => $product['buying_price'] ?? $product['price'],
+                                'total_value' => $itemValue,
+                                'total_cost' => $itemCost
+                            ];
+                            
+                            // Update product quantity
+                            $updateStmt = $db->prepare("UPDATE products SET quantity = ? WHERE id = ?");
+                            $updateStmt->execute([$newQuantity, $productId]);
+                            
+                            // Log the stock change (use selected receiving date/time)
+                            $logStmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, changed_at) VALUES (?, ?, ?, ?, ?, ?)");
+                            $logStmt->execute([$productId, 'Restock', $quantity, $oldQuantity, $newQuantity, $selectedDateTime]);
+                            
+                            // Update or insert daily stock summary - only update received quantity
+                            $summaryStmt = $db->prepare("
+                                INSERT OR REPLACE INTO daily_stock_summary 
+                                (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
+                                VALUES (
+                                    ?,
+                                    ?,
+                                    COALESCE((SELECT opening_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0),
+                                    COALESCE((SELECT closing_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), ?),
+                                    COALESCE((SELECT received_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0) + ?,
+                                    COALESCE((SELECT sold_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0),
+                                    COALESCE((SELECT damaged_quantity FROM daily_stock_summary WHERE date = ? AND product_id = ?), 0)
+                                )
+                            ");
+                            $summaryStmt->execute([
+                                $today, $productId, $today, $productId, $today, $productId, $newQuantity,
+                                $today, $productId, $quantity,
+                                $today, $productId,
+                                $today, $productId
+                            ]);
+                        }
                     }
                 }
             }
             
-            $db->commit();
+            // Create receiving record in database (for tracking and email retry) - ONLY for AJAX requests
+            $receivingRecordId = null;
+            if (!$isPdfOnly && !empty($receivingItemsForDb)) {
+                // Insert receiving record
+                $recordStmt = $db->prepare("
+                    INSERT INTO receiving_records 
+                    (user_id, username, receiving_date, total_items, total_quantity, total_value, total_cost, email_status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+                ");
+                $recordStmt->execute([
+                    $_SESSION['user_id'],
+                    $_SESSION['username'],
+                    $selectedDateTime,
+                    $totalItemsCount,
+                    $totalQuantity,
+                    $totalValue,
+                    $totalCost
+                ]);
+                $receivingRecordId = $db->lastInsertId();
+                
+                // Insert receiving items
+                $itemStmt = $db->prepare("
+                    INSERT INTO receiving_items 
+                    (record_id, product_id, product_name, quantity_added, old_quantity, new_quantity, unit_price, buying_price, total_value, total_cost)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                foreach ($receivingItemsForDb as $dbItem) {
+                    $itemStmt->execute([
+                        $receivingRecordId,
+                        $dbItem['product_id'],
+                        $dbItem['product_name'],
+                        $dbItem['quantity_added'],
+                        $dbItem['old_quantity'],
+                        $dbItem['new_quantity'],
+                        $dbItem['unit_price'],
+                        $dbItem['buying_price'],
+                        $dbItem['total_value'],
+                        $dbItem['total_cost']
+                    ]);
+                }
+            }
             
-            // Generate PDF if there are items and it's a form submission
-            if (!empty($receivingItems) && isset($_POST['receiving_data'])) {
+            // Commit transaction only if we started one
+            if (!$isPdfOnly) {
+                $db->commit();
+            }
+            
+            // Generate PDF if there are items and it's a form submission (PDF only)
+            if (!empty($receivingItems) && $isPdfOnly) {
                 // Include FPDF library
                 if (!file_exists('../fpdf/fpdf.php')) {
                     die('FPDF library not found at ../fpdf/fpdf.php');
                 }
                 require('../fpdf/fpdf.php');
                 
-                // Create new PDF instance
+                // Create new PDF instance (receiving date passed in as displayDate)
                 class ReceivingPDF extends FPDF {
+                    var $displayDate;
                     function Header() {
                         $this->SetFont('Arial', 'B', 15);
                         $this->Cell(0, 10, 'Stock Receiving Report', 0, 1, 'C');
                         $this->SetFont('Arial', '', 12);
-                        $this->Cell(0, 10, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
+                        $this->Cell(0, 10, 'Receiving date: ' . $this->displayDate, 0, 1, 'C');
                         $this->Ln(10);
                         
                         // Table header
@@ -167,8 +255,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 
-                // Initialize PDF
+                // Initialize PDF with selected receiving date
                 $pdf = new ReceivingPDF();
+                $pdf->displayDate = $selectedDateTime;
                 $pdf->AliasNbPages();
                 $pdf->AddPage();
                 $pdf->SetFont('Arial', '', 9);
@@ -198,8 +287,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdf->Cell(100, 8, 'Total Restock Value:', 0, 0, 'L');
                 $pdf->Cell(50, 8, 'N$' . number_format($totalValue, 2), 0, 1, 'L');
                 
-                // Generate filename
-                $fileName = 'Stock_Receiving_Report_' . date('Y-m-d_H-i-s') . '.pdf';
+                // Generate filename using selected receiving date
+                $fileName = 'Stock_Receiving_Report_' . date('Y-m-d_H-i-s', strtotime($selectedDateTime)) . '.pdf';
                 
                 // Set proper headers for PDF download
                 header('Content-Type: application/pdf');
@@ -213,20 +302,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             // Return JSON response for AJAX requests
-            if (!isset($_POST['receiving_data'])) {
+            if ($isAjaxRequest) {
                 http_response_code(200);
-                echo json_encode(['success' => true, 'message' => 'Stock received successfully']);
+                echo json_encode([
+                    'success' => true, 
+                    'message' => 'Stock received successfully',
+                    'record_id' => $receivingRecordId
+                ]);
                 exit;
             }
         }
     } catch (Exception $e) {
-        $db->rollBack();
-        if (!isset($_POST['receiving_data'])) {
+        // Only rollback if we started a transaction
+        if (!$isPdfOnly) {
+            $db->rollBack();
+        }
+        if ($isAjaxRequest) {
             http_response_code(500);
             echo json_encode(['success' => false, 'message' => 'Error: ' . $e->getMessage()]);
         } else {
             // For form submissions, show error in a simple way
-            echo '<script>alert("Error: ' . $e->getMessage() . '"); window.close();</script>';
+            echo '<script>alert("Error: ' . addslashes($e->getMessage()) . '"); window.close();</script>';
         }
         exit;
     }
@@ -509,11 +605,11 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         
         /* Ensure sidebar maintains proper z-index above overlay */
         .sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         #sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         /* Mobile responsive adjustments */
@@ -1659,36 +1755,46 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     </div>
                 `;
                 
-                // Small delay to show the loader animation
-                await new Promise(resolve => setTimeout(resolve, 500));
-                
-                // Trigger PDF download directly without opening new page
                 const receivingDateEl = document.getElementById('receivingDate');
                 const receivingDate = receivingDateEl && receivingDateEl.value ? receivingDateEl.value : null;
                 
-                // Create a temporary form for PDF download
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = 'receiving.php';
-                form.style.display = 'none';
+                // Step 1: First submit via AJAX to save data and get record ID
+                const ajaxResponse = await fetch('receiving.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ items: items, receiving_date: receivingDate })
+                });
                 
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = 'receiving_data';
-                input.value = JSON.stringify({ items: items, receiving_date: receivingDate });
+                const ajaxResult = await ajaxResponse.json();
                 
-                form.appendChild(input);
-                document.body.appendChild(form);
-                form.submit();
-                document.body.removeChild(form);
+                if (!ajaxResult.success) {
+                    throw new Error(ajaxResult.message || 'Failed to save receiving data');
+                }
+                
+                const recordId = ajaxResult.record_id;
                 
                 // Show success message
-                showToast('Stock received successfully! PDF report is being downloaded.', 'success');
+                showToast('Stock received successfully! Downloading PDF...', 'success');
                 
-                // Send email after a short delay to allow PDF download to complete
-                setTimeout(() => {
-                    sendReceivingEmail(items, receivingDate);
-                }, 2000);
+                // Step 2: Download PDF first using iframe (doesn't navigate away)
+                await downloadPDF(items, receivingDate);
+                
+                // Step 3: After PDF download initiated, send email
+                showToast('PDF downloaded! Sending email report...', 'info');
+                
+                try {
+                    const emailResult = await sendReceivingEmail(recordId);
+                    if (emailResult && emailResult.success) {
+                        showToast('Email report sent successfully!', 'success');
+                    } else {
+                        showToast('Email sending failed - can be retried later', 'error');
+                    }
+                } catch (emailError) {
+                    console.error('Email sending error:', emailError);
+                    showToast('Email sending failed - can be retried later', 'error');
+                }
                 
                 // Reset form
                 rows.forEach(row => {
@@ -1710,13 +1816,13 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     // Refresh current stock values
                     setTimeout(() => {
                         location.reload();
-                    }, 1000);
+                    }, 1500);
                 }, 2000);
                 
             } catch (error) {
                 console.error('Error:', error);
                 hideLoadingOverlay();
-                showToast('Failed to submit receiving', 'error');
+                showToast('Failed to submit receiving: ' + error.message, 'error');
                 
                 // Re-enable submit button
                 submitReceivingBtn.disabled = false;
@@ -1728,6 +1834,43 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 `;
             }
         });
+        
+        // Function to download PDF using hidden iframe
+        function downloadPDF(items, receivingDate) {
+            return new Promise((resolve) => {
+                // Create hidden iframe for PDF download
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.name = 'pdfDownloadFrame';
+                document.body.appendChild(iframe);
+                
+                // Create form targeting the iframe
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'receiving.php';
+                form.target = 'pdfDownloadFrame';
+                form.style.display = 'none';
+                
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'receiving_data';
+                input.value = JSON.stringify({ items: items, receiving_date: receivingDate });
+                
+                form.appendChild(input);
+                document.body.appendChild(form);
+                form.submit();
+                
+                // Clean up and resolve after a short delay to allow download to start
+                setTimeout(() => {
+                    document.body.removeChild(form);
+                    // Keep iframe for a bit longer to ensure download completes
+                    setTimeout(() => {
+                        document.body.removeChild(iframe);
+                    }, 5000);
+                    resolve();
+                }, 1500);
+            });
+        }
         
         // Premium loading overlay functions
         function showLoadingOverlay() {
@@ -1746,8 +1889,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             document.body.style.overflow = 'auto';
         }
 
-        // Function to send receiving email
-        async function sendReceivingEmail(items, receivingDate) {
+        // Function to send receiving email using record ID
+        async function sendReceivingEmail(recordId) {
             try {
                 const response = await fetch('send_receiving_email.php', {
                     method: 'POST',
@@ -1755,21 +1898,15 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ 
-                        items: items, 
-                        receiving_date: receivingDate 
+                        record_id: recordId
                     })
                 });
                 
                 const result = await response.json();
-                
-                if (result.success) {
-                    showToast('Email sent successfully!', 'success');
-                } else {
-                    showToast('Email sending failed: ' + result.message, 'error');
-                }
+                return result;
             } catch (error) {
                 console.error('Email sending error:', error);
-                showToast('Email sending failed', 'error');
+                return { success: false, message: error.message };
             }
         }
 

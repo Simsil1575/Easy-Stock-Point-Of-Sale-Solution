@@ -1,7 +1,8 @@
 <?php
-// Check if user is logged in and has admin privileges
+// Check if user is logged in and has admin or manager privileges
 session_start();
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+$allowedRoles = ['admin', 'manager'];
+if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SESSION['role']) || !in_array(strtolower($_SESSION['role']), $allowedRoles)) {
     header('Content-Type: application/json');
     echo json_encode(['success' => false, 'message' => 'Unauthorized access']);
     exit();

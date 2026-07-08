@@ -32,6 +32,20 @@ try {
     // Connect to databases
     $dbPos = new PDO('sqlite:pos.db');
     $dbInfo = new PDO('sqlite:info.db');
+
+    // Load receipt printing mode (receipt.php vs qzreceipt.php)
+    $use_qz_tray = 0;
+    try {
+        $dbPos->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+    } catch (PDOException $e) {
+        // Column already exists
+    }
+    try {
+        $settingRow = $dbPos->query("SELECT use_qz_tray FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $use_qz_tray = (int)($settingRow['use_qz_tray'] ?? 0);
+    } catch (PDOException $e) {
+        $use_qz_tray = 0;
+    }
     
     // Get business info
     $businessInfo = $dbInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
@@ -210,6 +224,7 @@ try {
             SELECT 
                 o.id as order_id,
                 o.total,
+                o.cash_received,
                 o.created_at,
                 o.cashier_id,
                 GROUP_CONCAT(oi.product_name || ' x' || oi.quantity || ' @ N$' || oi.price, ', ') as products
@@ -263,7 +278,7 @@ try {
         
         $receiptData = [
             'order_id' => $cashData['order_id'],
-            'cash_received' => $cashData['total'] ?? $total, // Use actual total from order
+            'cash_received' => $cashData['cash_received'] ?? $cashData['total'] ?? $total, // Use actual cash_received from order
             'items' => $formattedItems,
             'cashier_username' => $_SESSION['username'],
             'created_at' => $cashData['created_at'],
@@ -386,11 +401,15 @@ try {
             }
         }
         
-        // Return receipt_data directly (not wrapped) for Android
+        // Ensure print_only flag is set for Android printing
+        $receiptData['print_only'] = true;
+        
+        // Return receipt_data with order_data field for Android interceptor compatibility
         $response = [
             'success' => true,
             'message' => 'Receipt data ready for printing',
             'receipt_data' => $receiptData,
+            'order_data' => $receiptData,  // Also include as order_data for Android interceptor
             'transaction_id' => $transactionId,
             'sale_type' => $saleType
         ];
@@ -399,6 +418,25 @@ try {
         error_log("Android reprint - Full response structure: " . json_encode($response, JSON_PRETTY_PRINT));
         
         echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit();
+    }
+
+    // If QZ Tray is enabled (desktop/web), return receipt_data so the frontend can call sendToPrinter()
+    // which will route to QZ (qzreceipt.php) automatically.
+    if ($use_qz_tray) {
+        // Ensure print_only flag is set for regular receipts
+        if (!isset($receiptData['print_only'])) {
+            $receiptData['print_only'] = true;
+        }
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Receipt data ready for printing',
+            'receipt_data' => $receiptData,
+            'order_data' => $receiptData,
+            'transaction_id' => $transactionId,
+            'sale_type' => $saleType
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit();
     }
     
@@ -425,6 +463,10 @@ try {
             $isNetworkPrinter = false;
         }
         
+        // Receipt width: 32 for 58mm (XP-58), 42 for 80mm (POS-80C / network) - same as receipt.php
+        $receiptWidth = ($printerName === 'POSPrinter POS-80C' || $isNetworkPrinter) ? 42 : 32;
+        $receiptTruncate = $receiptWidth - 3;
+        
         // Create printer connection
         if ($isNetworkPrinter) {
             $connector = new NetworkPrintConnector("192.168.1.7", 9100);
@@ -445,23 +487,25 @@ try {
         $printer->text("Cashier: " . $_SESSION['username'] . "\n");
         $printer->feed();
         
-        // Print receipt content based on transaction type
+        // Print receipt content based on transaction type (size-responsive)
         $printer->setJustification(Printer::JUSTIFY_LEFT);
-        $printer->text(str_repeat('-', 42) . "\n");
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->setEmphasis(true);
         $receiptNumber = isset($receiptData['order_id']) ? $receiptData['order_id'] : (isset($receiptData['sale_id']) ? $receiptData['sale_id'] : uniqid());
         $receiptType = isset($receiptData['sale_id']) ? "Credit Sale" : "Receipt";
         $printer->text($receiptType . " #: " . $receiptNumber . "\n");
         $printer->setEmphasis(false);
-        $printer->text(str_repeat('-', 42) . "\n");
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->text("Date: " . date('Y-m-d H:i') . "\n");
         $printer->feed();
         
-        // Items section header
+        // Items section header (column widths scale with receipt)
+        $itemCol = (int)($receiptWidth * 0.5);
+        $amtCol = min(12, $receiptWidth - $itemCol - 5);
         $printer->setEmphasis(true);
-        $printer->text(sprintf("%-20s %3s %9s\n", "Item", "Qty", "Amount"));
+        $printer->text(sprintf("%-{$itemCol}s %3s %{$amtCol}s\n", "Item", "Qty", "Amount"));
         $printer->setEmphasis(false);
-        $printer->text(str_repeat('-', 42) . "\n");
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
         
         $subtotal = 0;
         if (isset($receiptData['items']) && is_array($receiptData['items']) && !empty($receiptData['items'])) {
@@ -474,8 +518,8 @@ try {
                 $subtotal += $amount;
                 
                 // Print item name (truncate if too long)
-                if (strlen($name) > 42) {
-                    $name = substr($name, 0, 39) . '...';
+                if (strlen($name) > $receiptWidth) {
+                    $name = substr($name, 0, $receiptTruncate) . '...';
                 }
                 $printer->text($name . "\n");
                 
@@ -483,12 +527,12 @@ try {
                 $qtyPrice = sprintf("%d x N$%.2f", $quantity, $price);
                 $amountText = sprintf("N$%.2f", $amount);
                 
-                // Ensure proper alignment within 42 characters
-                $spaces = 42 - strlen($qtyPrice) - strlen($amountText);
+                // Ensure proper alignment within receipt width
+                $spaces = $receiptWidth - strlen($qtyPrice) - strlen($amountText);
                 if ($spaces < 1) $spaces = 1;
                 
                 $printer->text($qtyPrice . str_repeat(' ', $spaces) . $amountText . "\n");
-                $printer->text(str_repeat('-', 42) . "\n");
+                $printer->text(str_repeat('-', $receiptWidth) . "\n");
             }
         } else {
             error_log("WARNING: No items found in receiptData for reprint!");
@@ -499,17 +543,17 @@ try {
         $printer->feed();
         $printer->setEmphasis(true);
         $totalText = sprintf("TOTAL: N$ %8.2f", $subtotal);
-        $spaces = 42 - strlen($totalText);
-        $printer->text(str_repeat(' ', $spaces) . $totalText . "\n");
+        $spaces = $receiptWidth - strlen($totalText);
+        $printer->text(str_repeat(' ', max(0, $spaces)) . $totalText . "\n");
         $printer->setEmphasis(false);
         $printer->feed();
         
         // Payment information section
-        $printer->text(str_repeat('-', 42) . "\n");
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->setEmphasis(true);
         $printer->text("PAYMENT INFORMATION\n");
         $printer->setEmphasis(false);
-        $printer->text(str_repeat('-', 42) . "\n");
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
         
         if (isset($receiptData['creditor_id'])) {
             // Credit payment
@@ -553,15 +597,15 @@ try {
             $printer->text("Method: EFT\n");
             $printer->text(sprintf("%-10s %s\n", "Provider:", $receiptData['wallet_provider']));
             $ref = $receiptData['transaction_ref'];
-            if (strlen($ref) > 30) {
-                $ref = substr($ref, 0, 27) . '...';
+            if (strlen($ref) > $receiptTruncate) {
+                $ref = substr($ref, 0, $receiptTruncate - 3) . '...';
             }
             $printer->text(sprintf("%-10s %s\n", "Ref:", $ref));
             $printer->text(sprintf("%-10s N$%8.2f\n", "Paid:", $subtotal));
         } else if (isset($receiptData['payment_method']) && $receiptData['payment_method'] === 'mixed') {
             // Mixed payment (Cash + EFT)
             $printer->text("Method: Mixed Payment\n");
-            $printer->text(str_repeat('-', 42) . "\n");
+            $printer->text(str_repeat('-', $receiptWidth) . "\n");
             
             // Cash portion
             if (isset($receiptData['cash_amount']) && $receiptData['cash_amount'] > 0) {
@@ -576,14 +620,14 @@ try {
                 }
                 if (isset($receiptData['transaction_ref']) && !empty($receiptData['transaction_ref'])) {
                     $ref = $receiptData['transaction_ref'];
-                    if (strlen($ref) > 36) {
-                        $ref = substr($ref, 0, 33) . '...';
+                    if (strlen($ref) > $receiptTruncate) {
+                        $ref = substr($ref, 0, $receiptTruncate - 3) . '...';
                     }
                     $printer->text(sprintf("%-10s %s\n", "Ref:", $ref));
                 }
             }
             
-            $printer->text(str_repeat('-', 42) . "\n");
+            $printer->text(str_repeat('-', $receiptWidth) . "\n");
             $printer->text(sprintf("%-10s N$%8.2f\n", "Total:", $subtotal));
             
             // Calculate and show change if cash amount is greater than total
@@ -598,12 +642,14 @@ try {
             $paidText = sprintf("Paid: %12s", "N$ " . number_format($receiptData['cash_received'], 2));
             $printer->text($paidText . "\n");
             $change = $receiptData['cash_received'] - $subtotal;
+            // Match home.php behavior: show 0.00 if change is negative
+            $change = $change >= 0 ? $change : 0;
             $changeText = sprintf("Change: %10s", "N$ " . number_format($change, 2));
             $printer->text($changeText . "\n");
         }
         
         $printer->feed();
-        $printer->text(str_repeat('-', 42) . "\n");
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->feed();
         
         // Footer section
@@ -611,9 +657,12 @@ try {
         $printer->text($businessInfo['footer_text'] . "\n");
         $printer->feed(4);
         
-        // Send final commands
+        // Send final commands to stop printer and prevent further printing
         $connector->write(chr(27).chr(109));
         $printer->cut();
+        
+        // Initialize printer (ESC @) - resets printer and clears buffer to prevent further printing
+        $printer->initialize();
         
         // NOTE: Cash drawer intentionally NOT opened for receipt reprints
         // To prevent unwanted drawer opens during reprint operations
@@ -625,11 +674,22 @@ try {
         throw new Exception('Receipt printing failed: ' . $e->getMessage());
     }
     
+    // Enrich receiptData with business info before returning (for non-Android requests)
+    if (isset($receiptData) && is_array($receiptData)) {
+        $receiptData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+        $receiptData['location'] = $businessInfo['location'] ?? '';
+        $receiptData['phone'] = $businessInfo['phone'] ?? '';
+        $receiptData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+        $receiptData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+        $receiptData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+    }
+    
     echo json_encode([
         'success' => true,
         'message' => 'Receipt reprinted successfully',
         'transaction_id' => $transactionId,
-        'sale_type' => $saleType
+        'sale_type' => $saleType,
+        'order_data' => $receiptData ?? []  // Include enriched orderData for Android compatibility
     ]);
     
 } catch (Exception $e) {

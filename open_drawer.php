@@ -9,18 +9,61 @@ use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
 
-// Get the order data from the POST request
-$orderData = json_decode(file_get_contents('php://input'), true);
-
-if (!$orderData) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'No order data received']);
-    exit;
+function getUseQzTrayFlag(): int {
+    try {
+        $dbPos = new PDO('sqlite:pos.db');
+        $dbPos->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        try {
+            $dbPos->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+        } catch (PDOException $e) {
+            // ignore
+        }
+        $row = $dbPos->query("SELECT use_qz_tray FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        return (int)($row['use_qz_tray'] ?? 0);
+    } catch (Exception $e) {
+        return 0;
+    }
 }
 
-// Open cash drawer without printing when requested
-if (isset($orderData['open_drawer_only']) && $orderData['open_drawer_only']) {
+// Support GET (e.g. from Cash Management page) or POST with JSON body
+$isGet = ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET';
+$orderData = null;
+if (!$isGet) {
+    $raw = file_get_contents('php://input');
+    $orderData = $raw !== '' ? json_decode($raw, true) : null;
+}
+
+// Open cash drawer: GET request or POST with open_drawer_only (no order data required)
+$openDrawerOnly = $isGet || (is_array($orderData) && !empty($orderData['open_drawer_only']));
+
+if ($openDrawerOnly) {
     try {
+        $use_qz_tray = getUseQzTrayFlag();
+
+        // If QZ Tray enabled, route drawer open via qzreceipt.php (needs browser QZ Tray).
+        if ($use_qz_tray) {
+            $payload = [
+                'open_drawer_only' => true,
+                'cashier_username' => ($orderData['cashier_username'] ?? null)
+            ];
+            $encoded = urlencode(json_encode($payload));
+
+            // GET calls can be redirected to qzreceipt.php to trigger drawer pulse.
+            if ($isGet) {
+                header('Location: qzreceipt.php?data=' . $encoded);
+                exit;
+            }
+
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => true,
+                'message' => 'Drawer open requested via QZ Tray',
+                'receipt_data' => $payload,
+                'order_data' => $payload
+            ]);
+            exit;
+        }
+
         // Determine printer to use based on client IP (same logic as below)
         $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
         $printerName = '';
@@ -71,3 +114,7 @@ if (isset($orderData['open_drawer_only']) && $orderData['open_drawer_only']) {
     }
 }
 
+// POST with order data but not open_drawer_only: this script only handles drawer open
+header('Content-Type: application/json');
+http_response_code(400);
+echo json_encode(['success' => false, 'message' => 'Use print endpoint for receipts. This endpoint only opens the cash drawer (GET or open_drawer_only).']);

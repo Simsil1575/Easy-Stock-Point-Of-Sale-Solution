@@ -4,7 +4,7 @@ error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
 ini_set('display_errors', 0);
 if (ob_get_level()) ob_clean();
 /* Call this file 'hello-world.php' */
-require __DIR__ . '../vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php';
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
@@ -85,7 +85,7 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
                 'name' => 'POS SOLUTION',
                 'location' => 'Your Business Address',
                 'phone' => 'Your Phone Number',
-                'footer_text' => 'Thank you for your purchase!',
+                'footer_text' => '',  // No fallback - use empty if not in database
                 'printer_port' => 'COM4'
             ];
         }
@@ -227,9 +227,15 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         $printer->text($businessInfo['name'] . "\n");
         $printer->selectPrintMode();
         $printer->setEmphasis(true);
-        $printer->text($businessInfo['location'] . "\n");
+        // Only print location if not empty to avoid blank lines
+        if (!empty($businessInfo['location'])) {
+            $printer->text($businessInfo['location'] . "\n");
+        }
         $printer->setEmphasis(false);
-        $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        // Only print phone if not empty to avoid "Tel: " with no number
+        if (!empty($businessInfo['phone'])) {
+            $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        }
         $printer->feed();
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->text(str_repeat('-', 42) . "\n");
@@ -239,14 +245,50 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         $printer->text(str_repeat('-', 42) . "\n");
         $printer->text("Date: " . $orderData['date'] . "\n");
         $printer->text("Printed: " . date('Y-m-d H:i') . "\n");
-        $printer->text("By: " . $orderData['cashier_username'] . "\n");
+        // Only print cashier if not empty to avoid "By: " with no name
+        if (!empty($orderData['cashier_username'])) {
+            $printer->text("By: " . $orderData['cashier_username'] . "\n");
+        }
         $printer->feed();
         $printer->text(str_repeat('=', 42) . "\n");
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->feed();
         
-        // Simplified display - only essential info
-        if (isset($orderData['total_income'])) {
+        // Print all items sold if show_all_items is set
+        if (isset($orderData['show_all_items']) && $orderData['show_all_items'] && isset($orderData['items']) && !empty($orderData['items'])) {
+            $printer->setEmphasis(true);
+            $printer->text("ALL ITEMS SOLD\n");
+            $printer->setEmphasis(false);
+            $printer->text(str_repeat('-', 42) . "\n");
+            
+            foreach ($orderData['items'] as $item) {
+                $name = substr($item['name'] ?? '', 0, 20);
+                $qty = number_format($item['quantity'] ?? 0, 0);
+                $price = number_format($item['price'] ?? 0, 2);
+                $total = number_format($item['total'] ?? 0, 2);
+                
+                $printer->text(sprintf("%-20s\n", $name));
+                $printer->text(sprintf("  %4s x N$%6s = N$%8s\n", $qty, $price, $total));
+            }
+            
+            $printer->text(str_repeat('-', 42) . "\n");
+            
+            // Print totals
+            $printer->setEmphasis(true);
+            $printer->text("TOTALS:\n");
+            $printer->setEmphasis(false);
+            $printer->text(sprintf("%-20s N$%8.2f\n", "Cash Sales:", $orderData['cash_sales'] ?? 0));
+            $printer->text(sprintf("%-20s N$%8.2f\n", "EFT Sales:", $orderData['eft_sales'] ?? 0));
+            $printer->text(str_repeat('-', 42) . "\n");
+            $printer->setEmphasis(true);
+            $printer->text(sprintf("%-20s N$%8.2f\n", "Grand Total:", $orderData['grand_total'] ?? 0));
+            $printer->setEmphasis(false);
+            $printer->text(str_repeat('=', 42) . "\n");
+            $printer->feed();
+        }
+        
+        // Simplified display - only essential info (for regular cash-up reports without items)
+        if (!isset($orderData['show_all_items']) && isset($orderData['total_income'])) {
             // Cash
             $cashTotal = ($orderData['cash_sales'] ?? 0) + ($orderData['credit_cash'] ?? 0);
             $printer->text(sprintf("%-20s N$%8.2f\n", "CASH:", $cashTotal));
@@ -287,15 +329,32 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
             }
         }
         
-        $printer->feed();
+        // Removed feed() - footer comes directly
         $printer->setJustification(Printer::JUSTIFY_CENTER);
-        $printer->text($businessInfo['footer_text'] . "\n");
-        $printer->feed(2);
+        // Only print footer if not empty to avoid blank lines
+        if (!empty($businessInfo['footer_text'])) {
+            $printer->text($businessInfo['footer_text'] . "\n");
+        }
+        // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
         $printer->cut();
         $printer->pulse();
         $printer->close();
+        
+        // Enrich orderData with business info for Android (same as main receipt flow)
+        $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+        $orderData['location'] = $businessInfo['location'] ?? '';
+        $orderData['phone'] = $businessInfo['phone'] ?? '';
+        $orderData['footer_text'] = $businessInfo['footer_text'] ?? '';  // No fallback - use empty if not in database
+        $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+        $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+        
         header('Content-Type: application/json');
-        echo json_encode(['success' => true, 'message' => 'Cash-up receipt printed']);
+        echo json_encode([
+            'success' => true, 
+            'message' => 'Cash-up receipt printed',
+            'order_data' => $orderData  // Include enriched orderData for Android
+        ]);
         exit;
     } catch (Exception $e) {
         header('Content-Type: application/json');
@@ -324,10 +383,21 @@ try {
             'name' => 'POS SOLUTION',
             'location' => 'Your Business Address',
             'phone' => 'Your Phone Number',
-            'footer_text' => 'Thank you for your purchase!',
-            'printer_port' => 'COM4'
+            'footer_text' => '',  // No fallback - use empty if not in database
+            'printer_port' => 'COM4',
+            'vat_inclusive' => 'exclusive',
+            'vat_rate' => 15.0
         ];
     }
+    
+    // ALWAYS enrich orderData with business info for Android interceptor
+    // This is the ONLY source of business info - no fallbacks in Android app
+    $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+    $orderData['location'] = $businessInfo['location'] ?? '';
+    $orderData['phone'] = $businessInfo['phone'] ?? '';
+    $orderData['footer_text'] = $businessInfo['footer_text'] ?? '';  // No fallback - use empty if not in database
+    $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+    $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
     
     // Detect client IP address to determine which printer to use
     $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
@@ -382,10 +452,19 @@ try {
         $printer->text($businessInfo['name'] . "\n");
         $printer->selectPrintMode(); // Reset print mode
         $printer->setEmphasis(true);
-        $printer->text($businessInfo['location'] . "\n");
+        // Only print location if not empty to avoid blank lines
+        if (!empty($businessInfo['location'])) {
+            $printer->text($businessInfo['location'] . "\n");
+        }
         $printer->setEmphasis(false);
-        $printer->text("Tel: " . $businessInfo['phone'] . "\n");
-        $printer->text("Cashier: " . $orderData['cashier_username'] . "\n");
+        // Only print phone if not empty to avoid "Tel: " with no number
+        if (!empty($businessInfo['phone'])) {
+            $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        }
+        // Only print cashier if not empty to avoid "Cashier: " with no name
+        if (!empty($orderData['cashier_username'])) {
+            $printer->text("Cashier: " . $orderData['cashier_username'] . "\n");
+        }
         $printer->feed();
     } catch (Exception $e) {
         error_log("Error printing header: " . $e->getMessage());
@@ -403,7 +482,10 @@ try {
         $printer->text(str_repeat('-', 42) . "\n");
         $printer->text("Date: " . $orderData['date'] . "\n");
         $printer->text("Printed: " . date('Y-m-d H:i') . "\n");
-        $printer->text("By: " . $orderData['cashier_username'] . "\n");
+        // Only print cashier if not empty to avoid "By: " with no name
+        if (!empty($orderData['cashier_username'])) {
+            $printer->text("By: " . $orderData['cashier_username'] . "\n");
+        }
         $printer->feed();
         $printer->text(str_repeat('=', 42) . "\n");
         $printer->setJustification(Printer::JUSTIFY_LEFT);
@@ -446,11 +528,11 @@ try {
             }
         }
         $printer->text(str_repeat('=', 42) . "\n");
-        $printer->feed();
+        // Removed feed() - signature section comes directly
         // Signature line
         $printer->text(str_repeat('-', 42) . "\n");
         $printer->text("Signature: ________________\n");
-        $printer->feed();
+        // Removed feed() - end message comes next
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text("*** End of Cash-up Report ***\n");
         $printer->feed();
@@ -507,7 +589,8 @@ try {
             $printer->text(sprintf("%-20s N$%8.2f\n", "OUTSTANDING BALANCE:", $orderData['total_balance']));
             $printer->setEmphasis(false);
             $printer->text(str_repeat('=', 42) . "\n");
-            $printer->feed(2);
+            // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
         } else {
             // CREDIT SALE BALANCE RECEIPT - 48 chars (original format)
             $printer->setJustification(Printer::JUSTIFY_CENTER);
@@ -554,17 +637,20 @@ try {
             $printer->text(sprintf("%-20s N$%8.2f\n", "TOTAL BALANCE:", $orderData['total_balance']));
             $printer->setEmphasis(false);
             $printer->text(str_repeat('-', 42) . "\n");
-            $printer->feed(2);
+            // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
         }
         
         // Footer section
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text($businessInfo['footer_text'] . "\n");
-        $printer->feed(4);
+        // Reduced from feed(4) to feed(1) to save paper
+        $printer->feed(1);
         
         // Add a line of dashes before cutting
         $printer->text(str_repeat('-', 42) . "\n");
-        $printer->feed(2);
+        // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
     } else {
         // REGULAR RECEIPT PRINTING - 48 chars
         $printer->setJustification(Printer::JUSTIFY_LEFT);
@@ -707,7 +793,8 @@ try {
                     // Manually print the creditor ID below the barcode
                     $printer->setBarcodeTextPosition(Printer::BARCODE_TEXT_NONE);
                     $printer->text("\n" . $barcodeData . "\n");
-                    $printer->feed(2);
+                    // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
                     
                     $barcodePrinted = true;
                     $barcodeFormat = 'CODE39';
@@ -726,7 +813,8 @@ try {
                         $printer->setJustification(Printer::JUSTIFY_CENTER);
                         
                         $printer->barcode($barcodeData, Printer::BARCODE_CODE128);
-                        $printer->feed(2);
+                        // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
                         
                         $barcodePrinted = true;
                         $barcodeFormat = 'CODE128';
@@ -853,7 +941,8 @@ try {
                     // Manually print the tab ID below the barcode
                     $printer->setBarcodeTextPosition(Printer::BARCODE_TEXT_NONE);
                     $printer->text("\n" . $barcodeData . "\n");
-                    $printer->feed(2);
+                    // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
                     
                     $barcodePrinted = true;
                     $barcodeFormat = 'CODE39';
@@ -872,7 +961,8 @@ try {
                         $printer->setJustification(Printer::JUSTIFY_CENTER);
                         
                         $printer->barcode($barcodeData, Printer::BARCODE_CODE128);
-                        $printer->feed(2);
+                        // Reduced from feed(2) to feed(1) to save paper
+        $printer->feed(1);
                         
                         $barcodePrinted = true;
                         $barcodeFormat = 'CODE128';
@@ -914,8 +1004,12 @@ try {
         
         // Footer section
         $printer->setJustification(Printer::JUSTIFY_CENTER);
-        $printer->text($businessInfo['footer_text'] . "\n");
-        $printer->feed(4);
+        // Only print footer if not empty to avoid blank lines
+        if (!empty($businessInfo['footer_text'])) {
+            $printer->text($businessInfo['footer_text'] . "\n");
+        }
+        // Reduced from feed(4) to feed(1) to save paper
+        $printer->feed(1);
     }
 
     // Send final commands
@@ -929,17 +1023,55 @@ try {
         throw new Exception("Failed to complete printing: " . $e->getMessage());
     }
 
-    // Return success response
+    // Return success response with enriched orderData for Android interceptor
     header('Content-Type: application/json');
     echo json_encode([
         'success' => true, 
         'message' => 'Receipt printed successfully',
         'printer_used' => $printerName,
         'client_ip' => $clientIP,
-        'connection_type' => $isNetworkPrinter ? 'network' : 'local'
+        'connection_type' => $isNetworkPrinter ? 'network' : 'local',
+        'order_data' => $orderData  // Include enriched orderData for Android
     ]);
 
 } catch (Exception $e) {
+    // ALWAYS enrich orderData with business info, even on error, for Android compatibility
+    // This ensures business info is always available from receipt.php
+    if (!isset($orderData) || !is_array($orderData)) {
+        $orderData = [];
+    }
+    
+    try {
+        $db = new PDO('sqlite:../info.db');
+        $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        
+        // Always set business info - use database values or defaults
+            if ($businessInfo) {
+                $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+                $orderData['location'] = $businessInfo['location'] ?? '';
+                $orderData['phone'] = $businessInfo['phone'] ?? '';
+                $orderData['footer_text'] = $businessInfo['footer_text'] ?? '';  // No fallback - use empty if not in database
+                $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+                $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+            } else {
+                // Use defaults if database query fails
+                $orderData['business_name'] = 'POS SOLUTION';
+                $orderData['location'] = '';
+                $orderData['phone'] = '';
+                $orderData['footer_text'] = '';  // No fallback - use empty if not in database
+                $orderData['vat_inclusive'] = 'exclusive';
+                $orderData['vat_rate'] = 15.0;
+            }
+        } catch (Exception $dbError) {
+            // Even if database fails, provide defaults so Android always has business info
+            $orderData['business_name'] = 'POS SOLUTION';
+            $orderData['location'] = '';
+            $orderData['phone'] = '';
+            $orderData['footer_text'] = '';  // No fallback - use empty if not in database
+            $orderData['vat_inclusive'] = 'exclusive';
+            $orderData['vat_rate'] = 15.0;
+        }
+    
     header('Content-Type: application/json');
     http_response_code(500);
     echo json_encode([
@@ -948,7 +1080,8 @@ try {
         'printer_attempted' => $printerName ?? 'unknown',
         'client_ip' => $clientIP ?? 'unknown',
         'connection_type' => ($isNetworkPrinter ?? false) ? 'network' : 'local',
-        'details' => 'Please check if the printer is connected and powered on.'
+        'details' => 'Please check if the printer is connected and powered on.',
+        'order_data' => $orderData  // ALWAYS include business info for Android
     ]);
 }
 exit;

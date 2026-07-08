@@ -62,6 +62,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="3.4.16"></script>
+    <script src="../receipt.php?js=true"></script>
     <style>
         .toast-notification {
             transition: opacity 0.5s ease-out, transform 0.5s ease-out;
@@ -600,13 +601,13 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                             
                             <!-- Action Buttons -->
                             <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0 order-1 sm:order-2">
-                                <a href="stock_tracking.php?export_pdf=true&report_type=inventory" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap flex-shrink-0">
+                                <button onclick="printInventoryReceipt()" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap flex-shrink-0">
                                     <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
                                     </svg>
-                                    <span class="hidden sm:inline">Inventory PDF</span>
-                                    <span class="sm:hidden">PDF</span>
-                                </a>
+                                    <span class="hidden sm:inline">Print Inventory</span>
+                                    <span class="sm:hidden">Print</span>
+                                </button>
                                 
                                 <a href="add_product" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm bg-gray-300 hover:bg-gray-400 text-black font-medium rounded-md shadow-sm whitespace-nowrap flex-shrink-0 transition-colors">
                                     <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -751,12 +752,12 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                             
                             <!-- Action Buttons -->
                             <div class="flex items-center gap-3 flex-shrink-0">
-                                <a href="stock_tracking.php?export_pdf=true&report_type=inventory" class="inline-flex items-center justify-center px-4 py-2 text-sm text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap">
+                                <button onclick="printInventoryReceipt()" class="inline-flex items-center justify-center px-4 py-2 text-sm text-white rounded-md bg-gradient-to-r from-teal-500 to-teal-500 hover:from-teal-600 hover:to-teal-600 shadow-sm transition-colors whitespace-nowrap">
                                     <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
                                     </svg>
-                                    <span>Inventory PDF</span>
-                                </a>
+                                    <span>Print Inventory</span>
+                                </button>
                                 
                                 <a href="add_product" class="inline-flex items-center justify-center px-4 py-2 text-sm bg-gray-300 hover:bg-gray-400 text-black font-medium rounded-md shadow-sm whitespace-nowrap transition-colors">
                                     <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -824,7 +825,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                             $db = new SQLite3('../pos.db');
                             $results = $db->query("SELECT * FROM products");
                             while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
-                                echo "<tr class='hover:bg-gray-50 transition-colors' data-category='" . htmlspecialchars($row['category'] ?? '') . "'>";
+                                echo "<tr class='hover:bg-gray-50 transition-colors' data-category=\"" . htmlspecialchars($row['category'] ?? '', ENT_QUOTES, 'UTF-8') . "\">";
                                 echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium text-black-900 truncate' title='{$row['name']}'>{$row['name']}</td>";
                                 echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['quantity']}</td>";
                                 echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['price']}</td>";
@@ -956,6 +957,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         let sortDirection = {};
         const totalPages = Math.ceil(rows.length / rowsPerPage);
         let currentPage = 1;
+        let showAllMode = false;
         const searchInput = document.getElementById('searchInput');
         const searchInputDesktop = document.getElementById('searchInputDesktop');
         const categoryFilter = document.getElementById('categoryFilter');
@@ -972,13 +974,19 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             return (searchInput && searchInput.value) || (searchInputDesktop && searchInputDesktop.value) || '';
         }
         
+        function getInventoryCategoryValue() {
+            if (categoryFilter && categoryFilterDesktop) {
+                return categoryFilter.value || categoryFilterDesktop.value;
+            }
+            if (categoryFilter) return categoryFilter.value;
+            if (categoryFilterDesktop) return categoryFilterDesktop.value;
+            return '';
+        }
+
         // Store current page and category in sessionStorage
         function saveCurrentPage() {
             sessionStorage.setItem('inventoryCurrentPage', currentPage);
-            const activeFilter = categoryFilter || categoryFilterDesktop;
-            if (activeFilter) {
-                sessionStorage.setItem('inventoryCategory', activeFilter.value);
-            }
+            sessionStorage.setItem('inventoryCategory', getInventoryCategoryValue());
         }
         
         // Retrieve current page and category from sessionStorage
@@ -1018,21 +1026,18 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             searchInputDesktop.addEventListener('input', handleSearchInput);
         }
 
-        // Helper function to handle category filter change
-        function handleCategoryFilter() {
+        // Helper function to handle category filter change (must use event.target: both selects exist in DOM; only one is visible)
+        function handleCategoryFilter(e) {
             // If category is selected, exit showAllMode and use pagination
             if (showAllMode) {
                 showAllMode = false;
                 resetPagination();
             }
-            
-            // Sync both filters
-            const activeFilter = categoryFilter || categoryFilterDesktop;
-            const selectedValue = activeFilter ? activeFilter.value : '';
-            if (categoryFilter && categoryFilterDesktop) {
-                categoryFilter.value = selectedValue;
-                categoryFilterDesktop.value = selectedValue;
-            }
+
+            const source = e && e.target ? e.target : (categoryFilter || categoryFilterDesktop);
+            const selectedValue = source ? source.value : '';
+            if (categoryFilter) categoryFilter.value = selectedValue;
+            if (categoryFilterDesktop) categoryFilterDesktop.value = selectedValue;
             filterRows(getSearchValue());
         }
 
@@ -1041,8 +1046,6 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         if (categoryFilterDesktop) categoryFilterDesktop.addEventListener('change', handleCategoryFilter);
         
         // View All button functionality - toggle between show all and pagination
-        let showAllMode = false;
-        
         function handleViewAll() {
             // Toggle showAllMode
             showAllMode = !showAllMode;
@@ -1104,11 +1107,10 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (searchTerm === undefined) {
                 searchTerm = getSearchValue();
             }
-            const activeFilter = categoryFilter || categoryFilterDesktop;
-            const selectedCategory = activeFilter ? activeFilter.value : '';
+            const selectedCategory = (getInventoryCategoryValue() || '').trim();
             rows = allRows.filter(row => {
                 const productName = row.children[0].textContent.toLowerCase();
-                const productCategory = row.dataset.category || '';
+                const productCategory = (row.dataset.category || '').trim();
                 const matchesSearch = productName.includes(searchTerm.toLowerCase());
                 const matchesCategory = !selectedCategory || productCategory === selectedCategory;
                 return matchesSearch && matchesCategory;
@@ -1184,11 +1186,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 }
             });
 
-            // Clear and re-append sorted rows
+            // Re-append rows so sorted order is visible, but keep all allRows in DOM so category filter keeps working
+            const rowsSet = new Set(rows);
+            const otherRows = allRows.filter(row => !rowsSet.has(row));
             while (tableBody.firstChild) {
                 tableBody.removeChild(tableBody.firstChild);
             }
             rows.forEach(row => tableBody.appendChild(row));
+            otherRows.forEach(row => tableBody.appendChild(row));
 
             // Only show page if not in showAllMode
             if (!showAllMode) {
@@ -1788,6 +1793,106 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         sidebar.classList.remove('open');
         overlay.classList.remove('active');
         hamburger.classList.remove('open');
+    }
+    
+    // Print Inventory Receipt function
+    function printInventoryReceipt() {
+        // Collect inventory data from the table
+        const tableBody = document.getElementById('tableBody');
+        const rows = tableBody.querySelectorAll('tr');
+        
+        const items = [];
+        let grandTotal = 0;
+        
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length >= 3) {
+                const name = cells[0].textContent.trim();
+                const quantity = parseInt(cells[1].textContent.trim()) || 0;
+                const price = parseFloat(cells[2].textContent.trim()) || 0;
+                const totalValue = quantity * price;
+                
+                items.push({
+                    name: name,
+                    quantity: quantity,
+                    price: price,
+                    total_value: totalValue
+                });
+                
+                grandTotal += totalValue;
+            }
+        });
+        
+        // Prepare receipt data
+        const receiptData = {
+            is_inventory_receipt: true,
+            print_only: true,
+            cashier_username: '<?= htmlspecialchars($_SESSION['username'] ?? 'Admin') ?>',
+            items: items,
+            grand_total: grandTotal
+        };
+        
+        // Show loading indicator
+        const btn = event.target.closest('button');
+        const originalContent = btn.innerHTML;
+        btn.innerHTML = '<svg class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+        btn.disabled = true;
+        
+        const printFn = (typeof window.sendToPrinter === 'function')
+            ? window.sendToPrinter
+            : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+
+        printFn(receiptData)
+        .then(result => {
+            // Restore button
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+            
+            if (result.success) {
+                // Show success toast
+                showToast('Inventory receipt printed successfully!', 'success');
+            } else {
+                // Show error toast
+                showToast('Print failed: ' + (result.message || 'Unknown error'), 'error');
+            }
+        })
+        .catch(error => {
+            // Restore button
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+            
+            console.error('Print error:', error);
+            showToast('Print failed: ' + error.message, 'error');
+        });
+    }
+    
+    // Toast notification function (if not already defined)
+    function showToast(message, type = 'info') {
+        // Remove existing toasts
+        const existingToasts = document.querySelectorAll('.toast-notification');
+        existingToasts.forEach(toast => toast.remove());
+        
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.className = 'toast-notification fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-[99999] transform transition-all duration-300';
+        
+        if (type === 'success') {
+            toast.classList.add('bg-green-500', 'text-white');
+        } else if (type === 'error') {
+            toast.classList.add('bg-red-500', 'text-white');
+        } else {
+            toast.classList.add('bg-blue-500', 'text-white');
+        }
+        
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        
+        // Auto-remove after 3 seconds
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(100%)';
+            setTimeout(() => toast.remove(), 500);
+        }, 3000);
     }
 </script>
 </body>

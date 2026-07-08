@@ -13,15 +13,41 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     exit();
 }
 
+// Check if user has the correct role (cashier/default only, exclude admin/manager/waitress)
+$userRole = strtolower($_SESSION['role']);
+if (in_array($userRole, ['admin', 'manager', 'waitress'])) {
+    // Clear session and log out user with wrong role
+    session_unset();
+    session_destroy();
+    header("Location: ../");
+    exit();
+}
+
 // Database connection
 $db = new PDO('sqlite:pos.db');
 
+// Ensure skip_stock_checks column exists for older databases
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN skip_stock_checks BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists, continue
+}
+
+// Ensure use_qz_tray column exists for receipt printing mode
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists, continue
+}
+
 // Fetch the show_all_products setting
-$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity FROM product_settings LIMIT 1");
+$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity, skip_stock_checks, use_qz_tray FROM product_settings LIMIT 1");
 $setting = $settingStmt->fetch(PDO::FETCH_ASSOC);
 $show_all_products = $setting['show_all_products'] ?? 0; // Default to 0 if not set
 $default_print_receipt = $setting['default_print_receipt'] ?? 0; // Default to 0 if not set
 $hide_available_quantity = $setting['hide_available_quantity'] ?? 0; // Default to 0 if not set
+$skip_stock_checks = isset($setting['skip_stock_checks']) ? (int)$setting['skip_stock_checks'] : 0;
+$use_qz_tray = isset($setting['use_qz_tray']) ? (int)$setting['use_qz_tray'] : 0;
 
 // Fetch products from the database
 $query = '
@@ -55,8 +81,17 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
 // Add this after fetching products
 $creditors = $db->query("SELECT * FROM creditors WHERE active = 1")->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch unique categories from products
-$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category";
+// Fetch unique categories from products (custom order: Bar, Restaurant, Laundry, Rooms, then others alphabetically)
+$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' 
+ORDER BY 
+    CASE 
+        WHEN LOWER(category) = 'bar' THEN 1
+        WHEN LOWER(category) = 'restaurant' THEN 2
+        WHEN LOWER(category) = 'laundry' THEN 3
+        WHEN LOWER(category) = 'rooms' THEN 4
+        ELSE 5
+    END,
+    category";
 $categoriesStmt = $db->query($categoriesQuery);
 $categories = [];
 while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
@@ -96,6 +131,8 @@ if (!$businessInfo) {
     <script src="src/howler.min.js"></script>
     <script src="src/chart.js"></script>
     <script src="lucide.js"></script>
+    <!-- Load sendToPrinter function from receipt.php -->
+    <script src="receipt.php?js=true"></script>
     <meta name="google" content="notranslate">
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
@@ -273,13 +310,17 @@ if (!$businessInfo) {
             transition: transform 0.3s ease-in-out;
         }
         
-        /* Ensure modals appear above cart on mobile */
+        /* Ensure modals appear above cart on mobile and sidebar */
         .swal2-container {
             z-index: 10000 !important;
         }
         
         .swal2-popup {
             z-index: 10001 !important;
+        }
+        
+        .swal2-backdrop-show {
+            z-index: 9999 !important;
         }
         
         #cart.mobile-open {
@@ -509,6 +550,22 @@ if (!$businessInfo) {
     .mobile-overlay.active {
         opacity: 1;
         visibility: visible;
+    }
+
+    /* Ensure sidebar is above overlay on mobile */
+    @media (max-width: 1023px) {
+        #sidebar {
+            z-index: 10000 !important;
+        }
+    }
+
+    @media (min-width: 1024px) {
+        .hamburger {
+            display: none;
+        }
+        .mobile-overlay {
+            display: none;
+        }
     }
 
     /* Touch scrolling improvements for product grid */
@@ -1048,7 +1105,7 @@ if (!$businessInfo) {
         #searchBar {
             font-size: 0.875rem !important;
             padding-left: 2.5rem !important;
-            padding-right: 2.5rem !important;
+            padding-right: 3rem !important; /* Space for camera button in right corner */
             padding-top: 0.5rem !important;
             padding-bottom: 0.5rem !important;
         }
@@ -1168,7 +1225,7 @@ if (!$businessInfo) {
         #searchBar {
             font-size: 0.75rem !important;
             padding-left: 2rem !important;
-            padding-right: 2rem !important;
+            padding-right: 2.75rem !important; /* Space for camera button in right corner */
             padding-top: 0.375rem !important;
             padding-bottom: 0.375rem !important;
         }
@@ -1179,6 +1236,11 @@ if (!$businessInfo) {
         
         /* Reduce icon sizes in search bar */
         #searchBar ~ div svg {
+            width: 0.875rem !important;
+            height: 0.875rem !important;
+        }
+        
+        #cameraScanBtn svg {
             width: 0.875rem !important;
             height: 0.875rem !important;
         }
@@ -1252,12 +1314,26 @@ if (!$businessInfo) {
                         <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
                     </svg>
                 </div>
-                <!-- Clear button -->
-                <div class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                <!-- Clear button (appears when there's text) -->
+                <div class="absolute inset-y-0 right-10 pr-3 flex items-center">
                     <svg id="clearSearch" onclick="clearSearch()" class="h-5 w-5 text-gray-400 cursor-pointer opacity-0 transition-opacity duration-200 pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
                     </svg>
                 </div>
+                <!-- Camera/Scan button - Right corner -->
+                <button id="cameraScanBtn" onclick="toggleCameraScanner()" class="absolute inset-y-0 right-0 pr-3 flex items-center p-1.5 text-gray-400 hover:text-teal-500 transition-colors duration-200 focus:outline-none" title="Scan barcode with camera">
+                    <!-- Scan icon with only corner edges, nothing in the middle -->
+                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <!-- Top-left corner -->
+                        <polyline points="4,8 4,4 8,4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                        <!-- Top-right corner -->
+                        <polyline points="16,4 20,4 20,8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                        <!-- Bottom-right corner -->
+                        <polyline points="20,16 20,20 16,20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                        <!-- Bottom-left corner -->
+                        <polyline points="8,20 4,20 4,16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
             </div>
             
             <!-- Category Filter Section -->
@@ -1404,7 +1480,8 @@ if (!$businessInfo) {
                 <?php foreach ($products as $product): ?>
                     <div class="bg-white rounded-xl shadow-lg overflow-hidden cursor-pointer transition-transform duration-300 hover:scale-105 product-item select-none" 
                         data-price="<?= $product['price'] ?>" 
-                        data-name="<?= htmlspecialchars($product['name']) ?>" 
+                        data-name="<?= htmlspecialchars($product['name']) ?>"
+                        data-available-quantity="<?= (int)$product['quantity'] ?>"
                         data-barcode="<?= htmlspecialchars($product['barcode']) ?>"
                         data-category="<?= htmlspecialchars($product['category'] ?? '') ?>"
                         data-discount="<?= $product['discount'] ?? 0 ?>"
@@ -1543,6 +1620,74 @@ if (!$businessInfo) {
                     });
                 clearSearch();
                 }
+            }
+        }
+
+        // Camera scanner toggle function
+        let isCameraScanning = false;
+        function toggleCameraScanner() {
+            if (typeof AndroidBarcodeScanner === 'undefined') {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Scanner Not Available',
+                    text: 'Camera scanner is only available in the Android app',
+                    timer: 2000,
+                    timerProgressBar: true
+                });
+                return;
+            }
+
+            try {
+                if (isCameraScanning) {
+                    AndroidBarcodeScanner.stopScanning();
+                    isCameraScanning = false;
+                    updateCameraButton(false);
+                    Swal.fire({
+                        icon: 'info',
+                        title: 'Scanner Stopped',
+                        text: 'Camera scanner has been stopped',
+                        timer: 1500,
+                        timerProgressBar: true,
+                        showConfirmButton: false
+                    });
+                } else {
+                    AndroidBarcodeScanner.startScanning();
+                    isCameraScanning = true;
+                    updateCameraButton(true);
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Scanner Started',
+                        text: 'Camera scanner is now active. Point at a barcode to scan.',
+                        timer: 2000,
+                        timerProgressBar: true,
+                        showConfirmButton: false
+                    });
+                }
+            } catch (error) {
+                console.error('Error toggling camera scanner:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to toggle camera scanner: ' + error.message,
+                    timer: 2000,
+                    timerProgressBar: true
+                });
+            }
+        }
+
+        // Update camera button appearance
+        function updateCameraButton(isActive) {
+            const btn = document.getElementById('cameraScanBtn');
+            if (!btn) return;
+            
+            if (isActive) {
+                btn.classList.remove('text-gray-400', 'hover:text-teal-500');
+                btn.classList.add('text-teal-500', 'hover:text-teal-600');
+                btn.title = 'Stop camera scanner';
+            } else {
+                btn.classList.remove('text-teal-500', 'hover:text-teal-600');
+                btn.classList.add('text-gray-400', 'hover:text-teal-500');
+                btn.title = 'Scan barcode with camera';
             }
         }
 
@@ -1770,7 +1915,7 @@ if (!$businessInfo) {
                 </div>
             </div>
 
-            <div class="flex flex-wrap space-x-2 mb-4">
+            <div id="cashButtonsContainer" class="flex flex-wrap space-x-2 mb-4">
                 <button class="bg-sky-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-sky-800 transition-colors duration-300 mb-2 text-sm" onclick="addCash(5)">N$5</button>
                 <button class="bg-teal-600 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-teal-700 transition-colors duration-300 mb-2 text-sm" onclick="addCash(10)">N$10</button>
                 <button class="bg-red-600 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-red-700 transition-colors duration-300 mb-2 text-sm" onclick="addCash(20)">N$20</button>
@@ -1799,6 +1944,19 @@ if (!$businessInfo) {
                 <button class="bg-stone-700 text-gray-100 font-semibold px-3 py-2 rounded-lg shadow hover:bg-stone-800 transition-colors duration-200 mb-2 text-sm" onclick="handleTips()">
                     <i data-lucide="hand-coins" class="w-4 h-4 inline-block mr-1 text-gray-100 opacity-80"></i>
                     Tips
+                </button>
+                <button class="bg-red-700 text-gray-100 font-semibold px-3 py-2 rounded-lg shadow hover:bg-red-800 transition-colors duration-200 mb-2 text-sm" onclick="handleRefund()">
+                    <i data-lucide="undo-2" class="w-4 h-4 inline-block mr-1 text-gray-100 opacity-80"></i>
+                    Refund
+                </button>
+                <button class="bg-amber-600 text-gray-100 font-semibold px-3 py-2 rounded-lg shadow hover:bg-amber-700 transition-colors duration-200 mb-2 text-sm" onclick="handleChange()">
+                    <i data-lucide="coins" class="w-4 h-4 inline-block mr-1 text-gray-100 opacity-80"></i>
+                    Change
+                </button>
+                <button id="toggleExtraButtons2" class="bg-teal-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-teal-800 transition-colors duration-300 mb-2 text-sm" onclick="toggleExtraButtons()">
+                    <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+                    </svg>
                 </button>
             </div>
         </div>
@@ -1891,10 +2049,33 @@ if (!$businessInfo) {
 
         // Settings from PHP
         const hideAvailableQuantity = <?php echo $hide_available_quantity; ?>;
+        const skipStockChecks = <?php echo $skip_stock_checks; ?>;
         const defaultPrintReceipt = <?php echo $default_print_receipt; ?>;
+        // receipt.php?js=true may already define `useQzTray` as a var.
+        if (typeof useQzTray === 'undefined') {
+            var useQzTray = <?php echo $use_qz_tray ? 'true' : 'false'; ?>;
+        }
+
+        // Get available quantity from product element (data attribute or "Available:" text). Used for stock checks even when quantity is hidden.
+        function getAvailableQuantity(productElement) {
+            if (!productElement) return null;
+            const dataQty = productElement.getAttribute('data-available-quantity');
+            if (dataQty !== null && dataQty !== '') return parseInt(dataQty, 10);
+            const quantityElement = productElement.querySelector('p:last-child');
+            if (quantityElement && quantityElement.textContent.includes('Available:')) {
+                const m = quantityElement.textContent.match(/Available:\s*(\d+)/);
+                return m ? parseInt(m[1], 10) : null;
+            }
+            return null;
+        }
+        
+        // Current user info for table ownership
+        const currentUserId = <?php echo json_encode($_SESSION['user_id'] ?? null); ?>;
+        const currentUserRole = <?php echo json_encode($_SESSION['role'] ?? 'cashier'); ?>;
         
         // Business info for Android native printing
-        const businessInfo = {
+        // Make businessInfo global so sendToPrinter (from receipt.php?js=true) can access it
+        window.businessInfo = {
             business_name: <?php echo json_encode($businessInfo['name'] ?? 'POS SOLUTION'); ?>,
             location: <?php echo json_encode($businessInfo['location'] ?? ''); ?>,
             phone: <?php echo json_encode($businessInfo['phone'] ?? ''); ?>,
@@ -1902,51 +2083,96 @@ if (!$businessInfo) {
             vat_inclusive: <?php echo json_encode($businessInfo['vat_inclusive'] ?? 'exclusive'); ?>,
             vat_rate: <?php echo json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)); ?>
         };
+        // Also keep local reference for backward compatibility
+        const businessInfo = window.businessInfo;
         
-        // Helper function to send receipt to printer - uses Android native printing if available
-        function sendToPrinter(receiptData) {
-            // Add business info to receipt data
-            var dataWithBusiness = Object.assign({}, receiptData, {
-                business_name: receiptData.business_name || businessInfo.business_name,
-                location: receiptData.location || businessInfo.location,
-                phone: receiptData.phone || businessInfo.phone,
-                footer_text: receiptData.footer_text || businessInfo.footer_text,
-                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
-                vat_rate: receiptData.vat_rate || businessInfo.vat_rate
-            });
-            
-            console.log('[sendToPrinter] Called');
-            
-            // Try multiple interface names
-            var printer = window.AndroidPrinter || window.NativePrinter || window.median || null;
-            
-            console.log('[sendToPrinter] AndroidPrinter:', typeof window.AndroidPrinter);
-            console.log('[sendToPrinter] NativePrinter:', typeof window.NativePrinter);
-            console.log('[sendToPrinter] median:', typeof window.median);
-            
-            // Check if Android native printing is available
-            if (printer && typeof printer.printReceipt === 'function') {
-                console.log('[sendToPrinter] Found printer interface, using native printing');
-                try {
-                    var jsonData = JSON.stringify(dataWithBusiness);
-                    console.log('[sendToPrinter] Calling printReceipt with data length:', jsonData.length);
-                    printer.printReceipt(jsonData);
-                    console.log('[sendToPrinter] printReceipt called successfully');
-                    return Promise.resolve({ success: true, message: 'Printed via Android', printer_type: 'android_native' });
-                } catch (e) {
-                    console.error('[sendToPrinter] Android print error:', e.message);
+        // sendToPrinter function is now loaded from receipt.php?js=true
+        // The function is defined in receipt.php and automatically handles Android printing
+        // The Android interceptor in MainActivity.java only listens to receipt.php calls
+        if (typeof sendToPrinter === 'undefined') {
+            console.warn('[home.php] sendToPrinter not loaded from receipt.php, using fallback');
+            function sendToPrinter(receiptData) {
+                // Ensure print_only flag is set (parity with receipt.php behavior for regular receipts)
+                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt) {
+                    receiptData.print_only = true;
                 }
-            } else {
-                console.log('[sendToPrinter] No printer interface found with printReceipt method');
+
+                // Add business info to receipt data
+                var dataWithBusiness = Object.assign({}, receiptData, {
+                    business_name: receiptData.business_name || businessInfo.business_name,
+                    location: receiptData.location || businessInfo.location,
+                    phone: receiptData.phone || businessInfo.phone,
+                    footer_text: receiptData.footer_text || businessInfo.footer_text,
+                    vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                    vat_rate: receiptData.vat_rate || businessInfo.vat_rate
+                });
+
+                var ua = (navigator.userAgent || '').toLowerCase();
+                var isAndroidLike = ua.indexOf('android') !== -1 || ua.indexOf('median') !== -1;
+
+                // QZ Tray printing (desktop/web) - uses qzreceipt.php and waits for completion.
+                if (useQzTray && !isAndroidLike) {
+                    window.__qzTrayPrintQueue = window.__qzTrayPrintQueue || Promise.resolve();
+                    window.__qzTrayPrintQueue = window.__qzTrayPrintQueue.then(function() {
+                        return new Promise(function(resolve) {
+                            var qzSupported = !!dataWithBusiness.is_cashup_report || !!dataWithBusiness.is_balance_receipt
+                                || (! (dataWithBusiness.tab_id || dataWithBusiness.table_id)
+                                    && !dataWithBusiness.is_tab_balance_receipt
+                                    && !dataWithBusiness.is_payment_receipt
+                                    && !dataWithBusiness.is_refund_receipt);
+
+                            if (!qzSupported) {
+                                return resolve({ success: false, message: 'Unsupported receipt type for QZ Tray' });
+                            }
+
+                            var iframe = document.createElement('iframe');
+                            iframe.style.display = 'none';
+                            iframe.width = '0';
+                            iframe.height = '0';
+
+                            var encoded = encodeURIComponent(JSON.stringify(dataWithBusiness));
+                            var timeoutId = null;
+
+                            function cleanup(handlerFn, result) {
+                                try {
+                                    if (handlerFn) window.removeEventListener('message', handlerFn);
+                                } catch (e) {}
+                                if (timeoutId) clearTimeout(timeoutId);
+                                try { iframe.remove(); } catch (e) {}
+                                resolve(result);
+                            }
+
+                            function onMessage(event) {
+                                if (!event || !event.data || event.data.type !== 'printComplete') return;
+                                cleanup(onMessage, {
+                                    success: !!event.data.success,
+                                    message: event.data.message || 'QZ Tray print completed'
+                                });
+                            }
+
+                            timeoutId = setTimeout(function() {
+                                cleanup(onMessage, { success: false, message: 'QZ Tray print timeout' });
+                            }, 60000);
+
+                            window.addEventListener('message', onMessage);
+
+                            iframe.src = (window.location && window.location.origin ? window.location.origin : '') + '/qzreceipt.php?data=' + encoded;
+                            document.body.appendChild(iframe);
+                        });
+                    });
+
+                    return window.__qzTrayPrintQueue;
+                }
+
+                // Default: receipt.php (works for Android interceptor and ESC/POS server printing)
+                return fetch('receipt.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithBusiness)
+                }).then(function(r) {
+                    return r.json();
+                });
             }
-            
-            // Fallback to server-side printing
-            console.log('[sendToPrinter] Falling back to server printing');
-            return fetch('receipt.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataWithBusiness)
-            }).then(function(r) { return r.json(); });
         }
         
         // Debug function to check Android printer status
@@ -2008,6 +2234,9 @@ if (!$businessInfo) {
         }
 
         let cart = [];
+        // Expose cart state to global inactivity script
+        window.__hasCartItems = () => Array.isArray(cart) && cart.length > 0;
+        window.__isCartEmpty = () => !(Array.isArray(cart) && cart.length > 0);
 
         function addToCart(element) {
             const price = parseFloat(element.getAttribute('data-price'));
@@ -2171,35 +2400,26 @@ if (!$businessInfo) {
                 const newQuantity = parseInt(input.value);
                 
                 if (newQuantity && newQuantity > 0) {
-                    // Skip stock check if hideAvailableQuantity is enabled
-                    if (!hideAvailableQuantity) {
-                        // Check available stock
+                    // Check available stock unless skip stock checks is enabled
+                    if (!skipStockChecks) {
                         const productElement = document.querySelector(`.product-item[data-name="${cart[index].name}"]`);
-                        if (productElement) {
-                            const quantityElement = productElement.querySelector('p:last-child');
-                            if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                                const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                                
-                                // Add current cart quantity back to available stock for comparison
-                                const totalAvailable = availableQuantity + currentQuantity;
-                                
-                                if (newQuantity > totalAvailable) {
-                                    Swal.fire({
-                                        icon: 'warning',
-                                        title: 'Insufficient Stock',
-                                        text: `Only ${totalAvailable} units available for ${cart[index].name}`,
-                                        timer: 3000,
-                                        timerProgressBar: true
-                                    });
-                                    // Restore original quantity
-                                    cart[index].quantity = currentQuantity;
-                                    updateCart();
-                                    return;
-                                }
+                        const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                        if (availableQuantity !== null) {
+                            const totalAvailable = availableQuantity + currentQuantity;
+                            if (newQuantity > totalAvailable) {
+                                Swal.fire({
+                                    icon: 'warning',
+                                    title: 'Insufficient Stock',
+                                    text: `Only ${totalAvailable} units available for ${cart[index].name}`,
+                                    timer: 3000,
+                                    timerProgressBar: true
+                                });
+                                cart[index].quantity = currentQuantity;
+                                updateCart();
+                                return;
                             }
                         }
                     }
-                    
                     // Update cart with new quantity and recalculate price
                     cart[index].quantity = newQuantity;
                     cart[index].price = unitPrice * newQuantity;
@@ -2235,27 +2455,78 @@ if (!$businessInfo) {
         sound.play(); // Play the cash sound when adding cash
     }
 
-        function toggleExtraButtons() {
-            const container = document.getElementById('extraButtonsContainer');
+        function resetToggleButtons() {
+            const cashButtonsContainer = document.getElementById('cashButtonsContainer');
+            const extraButtonsContainer = document.getElementById('extraButtonsContainer');
             const toggleBtn = document.getElementById('toggleExtraButtons');
-            const icon = toggleBtn.querySelector('svg path');
+            const toggleBtn2 = document.getElementById('toggleExtraButtons2');
             
-            if (container.classList.contains('hidden')) {
-                container.classList.remove('hidden');
+            if (!cashButtonsContainer || !extraButtonsContainer) {
+                return;
+            }
+            
+            // Show cash buttons, hide extra buttons
+            cashButtonsContainer.classList.remove('hidden');
+            extraButtonsContainer.classList.add('hidden');
+            
+            // Reset icons to plus (+)
+            const icon = toggleBtn ? toggleBtn.querySelector('svg path') : null;
+            const icon2 = toggleBtn2 ? toggleBtn2.querySelector('svg path') : null;
+            if (icon) {
+                icon.setAttribute('d', 'M12 4v16m8-8H4');
+            }
+            if (icon2) {
+                icon2.setAttribute('d', 'M12 4v16m8-8H4');
+            }
+        }
+
+        function toggleExtraButtons() {
+            const cashButtonsContainer = document.getElementById('cashButtonsContainer');
+            const extraButtonsContainer = document.getElementById('extraButtonsContainer');
+            const toggleBtn = document.getElementById('toggleExtraButtons');
+            const toggleBtn2 = document.getElementById('toggleExtraButtons2');
+            
+            if (!cashButtonsContainer || !extraButtonsContainer) {
+                console.error('Required containers not found');
+                return;
+            }
+            
+            const icon = toggleBtn ? toggleBtn.querySelector('svg path') : null;
+            const icon2 = toggleBtn2 ? toggleBtn2.querySelector('svg path') : null;
+            
+            if (cashButtonsContainer.classList.contains('hidden')) {
+                // Show cash buttons, hide extra buttons
+                cashButtonsContainer.classList.remove('hidden');
+                extraButtonsContainer.classList.add('hidden');
+                // Change icon back to plus (+)
+                if (icon) {
+                    icon.setAttribute('d', 'M12 4v16m8-8H4');
+                }
+                if (icon2) {
+                    icon2.setAttribute('d', 'M12 4v16m8-8H4');
+                }
+            } else {
+                // Hide cash buttons, show extra buttons
+                cashButtonsContainer.classList.add('hidden');
+                extraButtonsContainer.classList.remove('hidden');
                 // Change icon to minus (-)
-                icon.setAttribute('d', 'M20 12H4');
+                if (icon) {
+                    icon.setAttribute('d', 'M20 12H4');
+                }
+                if (icon2) {
+                    icon2.setAttribute('d', 'M20 12H4');
+                }
                 // Re-initialize Lucide icons when container is shown
                 if (typeof lucide !== 'undefined') {
                     lucide.createIcons();
                 }
-            } else {
-                container.classList.add('hidden');
-                // Change icon back to plus (+)
-                icon.setAttribute('d', 'M12 4v16m8-8H4');
             }
         }
 
         function handleCashBack() {
+            // Get today's date as default
+            const today = new Date().toISOString().split('T')[0];
+            
             Swal.fire({
                 title: '<h1 class="text-2xl font-bold text-gray-700 mb-4">Cash Back</h1>',
                 html: `
@@ -2272,6 +2543,19 @@ if (!$businessInfo) {
                                           bg-gray-50 hover:bg-gray-100"
                                    placeholder="0.00">
                             <p class="text-xs text-gray-500 mt-1">Enter the amount for EFT payment and cash withdrawal</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Transaction Date:</label>
+                            <input type="date" 
+                                   id="cashBackDate" 
+                                   value="${today}"
+                                   max="${today}"
+                                   class="w-full px-4 py-2 border-2 border-gray-100 rounded-xl 
+                                          focus:border-gray-500 focus:ring-2 focus:ring-gray-200 
+                                          text-base font-medium shadow-sm transition-all duration-200
+                                          bg-gray-50 hover:bg-gray-100"
+                                   required>
+                            <p class="text-xs text-gray-500 mt-1">Select the date when the cash back occurred</p>
                         </div>
                         <div class="hidden">
                             <label class="block text-sm font-medium text-gray-700 mb-2">Transaction Reference (Optional):</label>
@@ -2290,11 +2574,9 @@ if (!$businessInfo) {
                                            focus:border-gray-500 focus:ring-2 focus:ring-gray-200 
                                            text-base font-medium shadow-sm transition-all duration-200
                                            bg-gray-50 hover:bg-gray-100">
-                                <option value="Cash Back">Cash Back</option>
-                                <option value="Kapana">Kapana</option>
                                 <option value="Hubbly">Hubbly</option>
-                                <option value="Kitchen">Kitchen</option>
-                                <option value="Other">Other</option>
+                                <option value="Beerhouse">Beerhouse</option>
+                                <option value="Customer">Customer</option>
                             </select>
                         </div>
                     </div>
@@ -2314,15 +2596,21 @@ if (!$businessInfo) {
                         Swal.showValidationMessage('Please enter a valid cash back amount');
                         return false;
                     }
+                    const transactionDate = document.getElementById('cashBackDate').value;
+                    if (!transactionDate) {
+                        Swal.showValidationMessage('Please select a transaction date');
+                        return false;
+                    }
                     const transactionRef = document.getElementById('cashBackRef').value.trim() || '';
-                    const walletProvider = document.getElementById('cashBackProvider').value || 'Cash Back';
-                    return { amount, transactionRef, walletProvider };
+                    const walletProvider = document.getElementById('cashBackProvider').value || 'Customer';
+                    return { amount, transactionDate, transactionRef, walletProvider };
                 }
             }).then((result) => {
                 if (result.isConfirmed) {
                     const amount = result.value.amount;
+                    const transactionDate = result.value.transactionDate;
                     const transactionRef = result.value.transactionRef || '';
-                    const walletProvider = result.value.walletProvider || 'Cash Back';
+                    const walletProvider = result.value.walletProvider || 'Customer';
                     
                     // Same amount is used for both payment and cash back
                     const eftTotal = amount;
@@ -2334,6 +2622,7 @@ if (!$businessInfo) {
                         eft_total: eftTotal,
                         cash_back: cashBackAmt,
                         sale_amount: saleAmount,
+                        transaction_date: transactionDate,
                         transaction_ref: transactionRef,
                         wallet_provider: walletProvider
                     };
@@ -2712,6 +3001,416 @@ if (!$businessInfo) {
             });
         }
 
+        // Change button: open drawer and show change amount
+        function handleChange() {
+            const changeEl = document.getElementById('changeAmount');
+            const changeAmount = changeEl ? parseFloat(changeEl.innerText.replace(/,/g, '')) || 0 : 0;
+            openCashDrawer().then(function(result) {
+                if (result && result.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Change',
+                        html: changeAmount > 0
+                            ? `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p><p class="text-sm text-gray-500 mt-2">Cash drawer opened.</p>`
+                            : '<p class="text-gray-600">Cash drawer opened.</p><p class="text-sm text-gray-500 mt-2">No change amount set. Enter cash received at checkout to see change.</p>',
+                        confirmButtonColor: '#0d9488'
+                    });
+                } else {
+                    Swal.fire({ icon: 'info', title: 'Change', html: `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p>`, confirmButtonColor: '#0d9488' });
+                }
+            }).catch(function() {
+                Swal.fire({ icon: 'info', title: 'Change', html: `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p>`, confirmButtonColor: '#0d9488' });
+            });
+        }
+
+        // Refund handling
+        let selectedRefundTransaction = null;
+        let refundItems = [];
+
+        function handleRefund() {
+            Swal.fire({
+                title: '<h1 class="text-2xl font-bold text-red-700 mb-4">Refund</h1>',
+                html: `
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Search Transaction:</label>
+                            <input type="text" 
+                                   id="refundTransactionSearch" 
+                                   class="w-full px-4 py-2 border-2 border-red-100 rounded-xl 
+                                          focus:border-red-500 focus:ring-2 focus:ring-red-200 
+                                          text-base font-medium shadow-sm transition-all duration-200
+                                          bg-red-50 hover:bg-red-100"
+                                   placeholder="Enter Order ID or search by date..."
+                                   onkeyup="searchTransactions(this.value)">
+                            <p class="text-xs text-gray-500 mt-1">Search by order ID or leave empty to see recent transactions</p>
+                        </div>
+                        <div id="transactionsList" class="max-h-60 overflow-y-auto border rounded-lg">
+                            <p class="text-gray-500 text-center py-4">Loading transactions...</p>
+                        </div>
+                    </div>
+                `,
+                showCancelButton: true,
+                showConfirmButton: false,
+                cancelButtonText: 'Close',
+                cancelButtonClass: 'swal2-cancel-btn bg-gray-100 hover:bg-gray-200 text-gray-700 px-6 py-2 rounded-lg',
+                customClass: {
+                    popup: 'rounded-2xl shadow-xl',
+                    htmlContainer: 'text-left'
+                },
+                width: '600px',
+                allowOutsideClick: false,
+                didOpen: () => {
+                    loadRecentTransactions();
+                }
+            });
+        }
+
+        function loadRecentTransactions() {
+            fetch('api/get_transactions.php?limit=20')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success && data.transactions && data.transactions.length > 0) {
+                        displayTransactions(data.transactions);
+                    } else {
+                        document.getElementById('transactionsList').innerHTML = 
+                            '<p class="text-gray-500 text-center py-4">No transactions found</p>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading transactions:', error);
+                    document.getElementById('transactionsList').innerHTML = 
+                        '<p class="text-red-500 text-center py-4">Error loading transactions: ' + error.message + '</p>';
+                });
+        }
+
+        function searchTransactions(query) {
+            if (query.length === 0) {
+                loadRecentTransactions();
+                return;
+            }
+            
+            fetch('api/get_transactions.php?search=' + encodeURIComponent(query))
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success && data.transactions && data.transactions.length > 0) {
+                        displayTransactions(data.transactions);
+                    } else {
+                        document.getElementById('transactionsList').innerHTML = 
+                            '<p class="text-gray-500 text-center py-4">No transactions found for "' + query + '"</p>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error searching transactions:', error);
+                    document.getElementById('transactionsList').innerHTML = 
+                        '<p class="text-red-500 text-center py-4">Error searching: ' + error.message + '</p>';
+                });
+        }
+
+        function displayTransactions(transactions) {
+            let html = '<div class="divide-y divide-gray-200">';
+            transactions.forEach(tx => {
+                const date = new Date(tx.created_at).toLocaleString();
+                html += `
+                    <div class="p-3 hover:bg-red-50 cursor-pointer transition-colors duration-200" 
+                         onclick="selectTransaction(${tx.id})">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <span class="font-semibold text-gray-800">Order #${tx.id}</span>
+                                <span class="text-xs text-gray-500 ml-2">${date}</span>
+                            </div>
+                            <span class="font-bold text-red-600">N$${parseFloat(tx.total).toFixed(2)}</span>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-1">${tx.item_count} item(s)</div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            document.getElementById('transactionsList').innerHTML = html;
+        }
+
+        function selectTransaction(orderId) {
+            Swal.close();
+            
+            // Show loading
+            Swal.fire({
+                title: 'Loading...',
+                allowOutsideClick: false,
+                didOpen: () => {
+                    Swal.showLoading();
+                }
+            });
+            
+            // Fetch transaction details and items
+            fetch('api/get_transaction_items.php?order_id=' + orderId)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success && data.items && data.items.length > 0) {
+                        selectedRefundTransaction = data.order;
+                        refundItems = data.items.map(item => ({
+                            ...item,
+                            refund_qty: 0,
+                            max_qty: parseInt(item.quantity) || 0
+                        }));
+                        showRefundItemsModal();
+                    } else {
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'Error',
+                            text: data.message || 'Could not load transaction details. ' + (data.error || '')
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Error',
+                        text: 'Failed to load transaction: ' + error.message
+                    });
+                });
+        }
+
+        function showRefundItemsModal() {
+            let itemsHtml = refundItems.map((item, index) => `
+                <div class="flex items-center justify-between p-3 border-b border-gray-100 hover:bg-gray-50">
+                    <div class="flex-1">
+                        <span class="font-medium text-gray-800">${item.product_name}</span>
+                        <div class="text-xs text-gray-500">Price: N$${parseFloat(item.price).toFixed(2)} × ${item.quantity}</div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button type="button" 
+                                class="w-8 h-8 bg-gray-200 hover:bg-gray-300 rounded-full flex items-center justify-center text-gray-700 font-bold"
+                                onclick="updateRefundQty(${index}, -1)">-</button>
+                        <input type="number" 
+                               id="refundQty_${index}" 
+                               class="w-16 text-center border rounded-lg py-1 px-2" 
+                               value="0" 
+                               min="0" 
+                               max="${item.quantity}"
+                               onchange="setRefundQty(${index}, this.value)">
+                        <button type="button" 
+                                class="w-8 h-8 bg-red-200 hover:bg-red-300 rounded-full flex items-center justify-center text-red-700 font-bold"
+                                onclick="updateRefundQty(${index}, 1)">+</button>
+                        <button type="button" 
+                                class="ml-2 px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 text-xs rounded"
+                                onclick="setRefundQty(${index}, ${item.quantity})">All</button>
+                    </div>
+                </div>
+            `).join('');
+
+            Swal.fire({
+                title: `<h1 class="text-xl font-bold text-red-700 mb-2">Refund Order #${selectedRefundTransaction.id}</h1>`,
+                html: `
+                    <div class="text-left">
+                        <div class="bg-gray-100 rounded-lg p-3 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-600">Original Total:</span>
+                                <span class="font-semibold">N$${parseFloat(selectedRefundTransaction.total).toFixed(2)}</span>
+                            </div>
+                            <div class="flex justify-between text-sm mt-1">
+                                <span class="text-gray-600">Date:</span>
+                                <span>${new Date(selectedRefundTransaction.created_at).toLocaleString()}</span>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Select items to refund:</h3>
+                            <div class="max-h-64 overflow-y-auto border rounded-lg">
+                                ${itemsHtml}
+                            </div>
+                        </div>
+                        <div class="bg-red-50 rounded-lg p-3">
+                            <div class="flex justify-between items-center">
+                                <span class="font-semibold text-red-700">Refund Total:</span>
+                                <span id="refundTotal" class="text-xl font-bold text-red-700">N$0.00</span>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Reason for Refund:</label>
+                            <select id="refundReason" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-200">
+                                <option value="Customer Request">Customer Request</option>
+                                <option value="Wrong Item">Wrong Item</option>
+                                <option value="Quality Issue">Quality Issue</option>
+                                <option value="Price Error">Price Error</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                        <div class="mt-3" id="otherReasonDiv" style="display: none;">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Specify Reason:</label>
+                            <input type="text" id="otherReason" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-red-200" placeholder="Enter reason...">
+                        </div>
+                    </div>
+                `,
+                showCancelButton: true,
+                confirmButtonText: 'Process Refund',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#dc2626',
+                customClass: {
+                    popup: 'rounded-2xl shadow-xl',
+                    confirmButton: 'bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg',
+                    cancelButton: 'bg-gray-100 hover:bg-gray-200 text-gray-700 px-6 py-2 rounded-lg'
+                },
+                width: '550px',
+                allowOutsideClick: false,
+                didOpen: () => {
+                    // Initialize refund total
+                    calculateRefundTotal();
+                    
+                    // Setup reason dropdown handler
+                    const reasonSelect = document.getElementById('refundReason');
+                    if (reasonSelect) {
+                        reasonSelect.addEventListener('change', function() {
+                            document.getElementById('otherReasonDiv').style.display = 
+                                this.value === 'Other' ? 'block' : 'none';
+                        });
+                    }
+                },
+                preConfirm: () => {
+                    const itemsToRefund = refundItems.filter(item => item.refund_qty > 0);
+                    if (itemsToRefund.length === 0) {
+                        Swal.showValidationMessage('Please select at least one item to refund');
+                        return false;
+                    }
+                    
+                    let reason = document.getElementById('refundReason').value;
+                    if (reason === 'Other') {
+                        reason = document.getElementById('otherReason').value || 'Other';
+                    }
+                    
+                    return {
+                        items: itemsToRefund,
+                        reason: reason
+                    };
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    processRefund(result.value);
+                }
+            });
+        }
+
+        function updateRefundQty(index, change) {
+            const input = document.getElementById('refundQty_' + index);
+            let newVal = parseInt(input.value) + change;
+            newVal = Math.max(0, Math.min(newVal, refundItems[index].max_qty));
+            input.value = newVal;
+            refundItems[index].refund_qty = newVal;
+            calculateRefundTotal();
+        }
+
+        function setRefundQty(index, value) {
+            const qty = Math.max(0, Math.min(parseInt(value) || 0, refundItems[index].max_qty));
+            document.getElementById('refundQty_' + index).value = qty;
+            refundItems[index].refund_qty = qty;
+            calculateRefundTotal();
+        }
+
+        function calculateRefundTotal() {
+            let total = 0;
+            refundItems.forEach(item => {
+                total += item.refund_qty * parseFloat(item.price);
+            });
+            document.getElementById('refundTotal').innerText = 'N$' + total.toFixed(2);
+        }
+
+        function processRefund(data) {
+            const refundData = {
+                order_id: selectedRefundTransaction.id,
+                items: data.items.map(item => ({
+                    order_item_id: item.id,
+                    product_name: item.product_name,
+                    quantity: item.refund_qty,
+                    price: item.price,
+                    buying_price: item.buying_price || 0
+                })),
+                reason: data.reason,
+                total: data.items.reduce((sum, item) => sum + (item.refund_qty * parseFloat(item.price)), 0)
+            };
+
+            fetch('api/process_refund.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(refundData)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    // Prepare receipt data for printing
+                    const receiptData = {
+                        is_refund_receipt: true,
+                        refund_id: result.refund_id,
+                        order_id: selectedRefundTransaction.id,
+                        items: data.items.map(item => ({
+                            product_name: item.product_name,
+                            quantity: item.refund_qty,
+                            price: item.price
+                        })),
+                        total: refundData.total,
+                        reason: data.reason,
+                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                        print_only: true,
+                        // Include business info
+                        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                        location: window.businessInfo?.location || businessInfo?.location,
+                        phone: window.businessInfo?.phone || businessInfo?.phone,
+                        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
+                    };
+                    
+                    // Print refund receipt
+                    if (typeof sendToPrinter === 'function') {
+                        sendToPrinter(receiptData).catch(printError => {
+                            console.error('Refund receipt printing error:', printError);
+                        });
+                    }
+                    
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Refund Processed',
+                        html: `
+                            <div class="text-left">
+                                <p class="mb-2">Refund #${result.refund_id} has been processed successfully.</p>
+                                <p class="font-semibold text-red-600">Amount: N$${refundData.total.toFixed(2)}</p>
+                                <p class="text-sm text-gray-600 mt-2">Receipt has been printed.</p>
+                            </div>
+                        `,
+                        confirmButtonColor: '#dc2626'
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Refund Failed',
+                        text: result.message || 'An error occurred while processing the refund'
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to process refund. Please try again.'
+                });
+            });
+        }
+
 
     function removeFromCart(index) {
             cart.splice(index, 1);
@@ -2738,22 +3437,15 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Check for out-of-stock items (skip if hideAvailableQuantity is enabled)
-            if (!hideAvailableQuantity) {
-                const outOfStockItems = cart.filter(item => {
+            // Check for out-of-stock items unless skip stock checks is enabled
+            if (!skipStockChecks) {
+                const outOfStockItemsEwallet = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
-
-                if (outOfStockItems.length > 0) {
-                    const itemNames = outOfStockItems.map(item => item.name).join(', ');
+                if (outOfStockItemsEwallet.length > 0) {
+                    const itemNames = outOfStockItemsEwallet.map(item => item.name).join(', ');
                     Swal.fire({
                         icon: 'error',
                         title: 'Out of Stock',
@@ -2815,8 +3507,18 @@ if (!$businessInfo) {
                         items: cart,
                         total: parseFloat(document.getElementById('cartTotal').innerText),
                         payment_method: 'e-wallet',
-                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                        // Always include business info from info.db
+                        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                        location: window.businessInfo?.location || businessInfo?.location,
+                        phone: window.businessInfo?.phone || businessInfo?.phone,
+                        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                     };
+
+                    // Store transaction data globally for reverse transaction
+                    window.pendingTransactionData = saleData;
 
                     // Ask for final confirmation and optionally receipt printing
                     Swal.fire({
@@ -2835,7 +3537,11 @@ if (!$businessInfo) {
                         allowOutsideClick: false,
                         focusConfirm: false
                     }).then((confirmRes) => {
-                        if (!confirmRes.isConfirmed) return;
+                        if (!confirmRes.isConfirmed) {
+                            // Clear pending transaction data if cancelled
+                            window.pendingTransactionData = null;
+                            return;
+                        }
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
                         // Process the e-wallet payment AFTER confirmation
                         fetch('process_order.php', {
@@ -2849,6 +3555,10 @@ if (!$businessInfo) {
                         .then(result => {
                             if (result.success) {
                                 saleData.order_id = result.order_id;
+                                
+                                // Clear pending transaction data after successful checkout
+                                window.pendingTransactionData = null;
+                                
                                 cashSound.play();
                                 if (printReceipt) {
                                     saleData.print_only = true;
@@ -2882,18 +3592,12 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Skip stock check if hideAvailableQuantity is enabled
-            if (!hideAvailableQuantity) {
+            // Skip stock check if skip stock checks is enabled
+            if (!skipStockChecks) {
                 const outOfStockItems = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
 
                 if (outOfStockItems.length > 0) {
@@ -2974,8 +3678,18 @@ if (!$businessInfo) {
                     eft_amount: eftAmount,
                     wallet_provider: provider,
                     transaction_ref: ref,
-                    cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                    cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                    // Always include business info from info.db
+                    business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                    location: window.businessInfo?.location || businessInfo?.location,
+                    phone: window.businessInfo?.phone || businessInfo?.phone,
+                    footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                    vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                    vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                 };
+
+                // Store transaction data globally for reverse transaction
+                window.pendingTransactionData = saleData;
 
                 // Final confirmation before processing and optional print
                 Swal.fire({
@@ -2994,7 +3708,11 @@ if (!$businessInfo) {
                     allowOutsideClick: false,
                     focusConfirm: false
                 }).then(ok => {
-                    if (!ok.isConfirmed) return;
+                    if (!ok.isConfirmed) {
+                        // Clear pending transaction data if cancelled
+                        window.pendingTransactionData = null;
+                        return;
+                    }
                     const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
 
                     fetch('process_order.php', {
@@ -3006,6 +3724,10 @@ if (!$businessInfo) {
                     .then(result => {
                         if (result.success) {
                             saleData.order_id = result.order_id;
+                            
+                            // Clear pending transaction data after successful checkout
+                            window.pendingTransactionData = null;
+                            
                             if (cashAmount > 0) {
                                 openCashDrawer();
                             }
@@ -3042,18 +3764,12 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Skip stock check if hideAvailableQuantity is enabled
-            if (!hideAvailableQuantity) {
+            // Skip stock check if skip stock checks is enabled
+            if (!skipStockChecks) {
                 const outOfStockItems = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
 
                 if (outOfStockItems.length > 0) {
@@ -3515,7 +4231,14 @@ if (!$businessInfo) {
                         items: cart,
                         total: parseFloat(document.getElementById('cartTotal').innerText),
                         cash_received: 0,
-                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                        // Always include business info from info.db
+                        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                        location: window.businessInfo?.location || businessInfo?.location,
+                        phone: window.businessInfo?.phone || businessInfo?.phone,
+                        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                     };
 
                     // Final confirmation and optional print before processing credit sale
@@ -3628,18 +4351,12 @@ if (!$businessInfo) {
 
     const change = cashReceived - cartTotal;
 
-    // Skip stock check if hideAvailableQuantity is enabled
-    if (!hideAvailableQuantity) {
+    // Skip stock check if skip stock checks is enabled
+    if (!skipStockChecks) {
         const outOfStockItems = cart.filter(item => {
             const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-            if (productElement) {
-                const quantityElement = productElement.querySelector('p:last-child');
-                if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                    const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                    return availableQuantity < item.quantity;
-                }
-            }
-            return false;
+            const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+            return availableQuantity !== null && availableQuantity < item.quantity;
         });
 
         if (outOfStockItems.length > 0) {
@@ -3690,8 +4407,19 @@ if (!$businessInfo) {
         items: cart,
         total: cartTotal,
         cash_received: cashReceived,
-        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+        payment_method: 'cash',  // Ensure payment_method is set for cash payments
+        cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+        // Always include business info from info.db
+        business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+        location: window.businessInfo?.location || businessInfo?.location,
+        phone: window.businessInfo?.phone || businessInfo?.phone,
+        footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+        vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+        vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
     };
+
+    // Store transaction data globally for reverse transaction
+    window.pendingTransactionData = data;
 
     // Ask for confirmation first; process only after OK
     Swal.fire({
@@ -3711,6 +4439,8 @@ if (!$businessInfo) {
         focusConfirm: false
     }).then(result => {
         if (!result.isConfirmed) {
+            // Clear pending transaction data if checkout is cancelled
+            window.pendingTransactionData = null;
             isProcessing = false;
             checkoutBtn.innerHTML = originalText;
             checkoutBtn.classList.remove('opacity-50', 'cursor-not-allowed');
@@ -3729,6 +4459,10 @@ if (!$businessInfo) {
         .then(result => {
             if (result.success) {
                 data.order_id = result.order_id;
+                
+                // Clear pending transaction data after successful checkout
+                window.pendingTransactionData = null;
+                
                 openCashDrawer();
                 cashSound.play();
                 if (printReceipt) {
@@ -3846,18 +4580,12 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Skip stock check if hideAvailableQuantity is enabled
-            if (!hideAvailableQuantity) {
+            // Skip stock check if skip stock checks is enabled
+            if (!skipStockChecks) {
                 const outOfStockItems = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
 
                 if (outOfStockItems.length > 0) {
@@ -3895,6 +4623,8 @@ if (!$businessInfo) {
         }
 
         function displayTableSelectionModal(tables) {
+            // Check if user can select all tables (managers and admins can)
+            const canSelectAllTables = ['manager', 'admin'].includes(currentUserRole);
 
             // Create table list HTML with search
             let tablesListHTML = '';
@@ -3913,21 +4643,41 @@ if (!$businessInfo) {
                     const balanceClass = balance > 0 ? 'text-orange-500 font-bold' : 'text-teal-600 font-semibold';
                     const balanceText = balance > 0 ? `N$${balance.toFixed(2)}` : 'N$0.00';
                     
+                    // Check if this table belongs to the current user or if user can select all
+                    const tableCashierId = table.cashier_id;
+                    const isOwnTable = !tableCashierId || tableCashierId == currentUserId;
+                    const canSelect = canSelectAllTables || isOwnTable;
+                    
+                    // Styling for selectable vs non-selectable tables
+                    const containerClass = canSelect 
+                        ? 'table-item bg-white rounded-lg p-2 mb-1 cursor-pointer hover:bg-gray-200 transition-colors duration-200 relative'
+                        : 'table-item bg-gray-100 rounded-lg p-2 mb-1 cursor-not-allowed opacity-50 relative';
+                    const onClickAttr = canSelect ? `onclick="selectTable(${table.id})"` : '';
+                    const iconClass = canSelect ? 'text-gray-500' : 'text-gray-400';
+                    const nameClass = canSelect ? 'text-gray-700' : 'text-gray-400';
+                    const lockedIcon = !canSelect ? `
+                        <svg class="w-3 h-3 text-gray-400 flex-shrink-0 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                        </svg>
+                    ` : '';
+                    
                     tablesListHTML += `
-                        <div class="table-item bg-white rounded-lg p-2 mb-1 cursor-pointer hover:bg-gray-200 transition-colors duration-200 relative" 
+                        <div class="${containerClass}" 
                              data-id="${table.id}" 
                              data-name="${table.name.toLowerCase()}"
                              data-number="${table.number}"
-                             onclick="selectTable(${table.id})">
+                             data-selectable="${canSelect}"
+                             ${onClickAttr}>
                             <div class="flex items-center justify-between gap-2 text-xs">
                                 <div class="flex items-center gap-2 min-w-0" style="max-width: 50%;">
-                                    <svg class="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg class="w-4 h-4 ${iconClass} flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
                                     </svg>
-                                    <span class="font-medium text-gray-700 truncate">${table.name}</span>
+                                    <span class="font-medium ${nameClass} truncate">${table.name}</span>
+                                    ${lockedIcon}
                                 </div>
                                 <div class="flex items-center gap-2 ml-auto flex-shrink-0">
-                                    <span class="${balanceClass} font-medium whitespace-nowrap px-2 py-0.5 rounded-full text-xs bg-gray-100 border border-gray-200" style="min-width: 65px; text-align: center;">
+                                    <span class="${canSelect ? balanceClass : 'text-gray-400'} font-medium whitespace-nowrap px-2 py-0.5 rounded-full text-xs bg-gray-100 border border-gray-200" style="min-width: 65px; text-align: center;">
                                         ${balanceText}
                                     </span>
                                 </div>
@@ -4191,7 +4941,14 @@ if (!$businessInfo) {
                 items: cart,
                 total: parseFloat(document.getElementById('cartTotal').innerText),
                 cash_received: 0,
-                cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+                cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
+                // Always include business info from info.db
+                business_name: window.businessInfo?.business_name || businessInfo?.business_name,
+                location: window.businessInfo?.location || businessInfo?.location,
+                phone: window.businessInfo?.phone || businessInfo?.phone,
+                footer_text: window.businessInfo?.footer_text || businessInfo?.footer_text,
+                vat_inclusive: window.businessInfo?.vat_inclusive || businessInfo?.vat_inclusive,
+                vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
             };
 
             // Final confirmation before processing tab sale
@@ -4267,7 +5024,10 @@ if (!$businessInfo) {
             updateCart();
             document.getElementById('cashReceived').value = '';
             document.getElementById('changeAmount').innerText = '0.00';
+            resetToggleButtons(); // Reset toggle to show cash buttons
         }
+
+        // (Inactivity logout handled globally via `cashier_inactivity.js`)
         
         // Mobile cart functions
         function toggleMobileCart() {
@@ -4319,9 +5079,74 @@ if (!$businessInfo) {
         
         function reverseTransaction(event) {
             if (event) event.preventDefault();
+            
+            // Get the pending transaction data
+            const transactionData = window.pendingTransactionData;
+            
+            if (!transactionData) {
+                if (typeof Swal !== 'undefined') {
+                    Swal.close();
+                }
+                return false;
+            }
+            
+            // Close the SweetAlert dialog
             if (typeof Swal !== 'undefined') {
                 Swal.close();
             }
+            
+            // Secretly insert void transaction into database via AJAX
+            fetch('void_transaction.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(transactionData)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    // Reset processing state and clear pending data
+                    isProcessing = false;
+                    window.pendingTransactionData = null;
+                    
+                    // Reset checkout button
+                    const checkoutBtn = document.querySelector('button[onclick="checkout()"]');
+                    if (checkoutBtn) {
+                        checkoutBtn.innerHTML = 'Checkout';
+                        checkoutBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    }
+                    
+                    // Show success message
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Transaction Reversed',
+                        text: 'The transaction has been voided.',
+                        timer: 2000,
+                        showConfirmButton: false
+                    });
+                } else {
+                    console.error('Error voiding transaction:', result.error);
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Error',
+                        text: 'Failed to void transaction. Please try again.',
+                        timer: 2000,
+                        showConfirmButton: false
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'There was an error voiding the transaction.',
+                    timer: 2000,
+                    showConfirmButton: false
+                });
+            });
+            
             return false;
         }
     </script>

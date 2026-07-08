@@ -78,6 +78,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
     <meta name="theme-color" content="#ffffff" media="(max-width: 767px)">
     <title>POS Solution</title>
     <link href="src/output.css" rel="stylesheet">
+    <script src="../receipt.php?js=true"></script>
     <script src="navigation.js" async></script>
     <script src="src/howler.min.js"></script>
     <script src="src/chart.js"></script>
@@ -2111,13 +2112,11 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 net_amount: cashupData.net_amount || 0
                             });
                             
-                            // Send data to receipt.php for printing
-                            fetch('receipt.php', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(printData)
-                            })
-                            .then(resp => resp.json())
+                            // Use sendToPrinter (routes to QZ Tray when enabled)
+                            const printFn = (typeof window.sendToPrinter === 'function')
+                                ? (d) => window.sendToPrinter(d)
+                                : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+                            printFn(printData)
                             .then(result => {
                                 if (result.success) {
                                     cashSound.play();
@@ -2374,13 +2373,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 cashSound.play();
                                 if (printReceipt) {
                                     saleData.print_only = true;
-                                    fetch('receipt.php', {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                        },
-                                        body: JSON.stringify(saleData),
-                                    }).catch(printError => console.error('Receipt printing error:', printError));
+                                    const pf = (typeof window.sendToPrinter === 'function') ? (d) => window.sendToPrinter(d) : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+                                    pf(saleData).catch(printError => console.error('Receipt printing error:', printError));
                                 }
                                 clearCart();
                                 refreshProductQuantities();
@@ -2540,11 +2534,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                             cashSound.play();
                             if (printReceipt) {
                                 saleData.print_only = true;
-                                fetch('receipt.php', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(saleData)
-                                }).catch(err => console.error('Receipt printing error:', err));
+                                const pf = (typeof window.sendToPrinter === 'function') ? (d) => window.sendToPrinter(d) : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+                                pf(saleData).catch(err => console.error('Receipt printing error:', err));
                             }
                             clearCart();
                             refreshProductQuantities();
@@ -3084,13 +3075,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 cashSound.play();
                                 if (printReceipt) {
                                     saleData.print_only = true;
-                                    fetch('receipt.php', {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                        },
-                                        body: JSON.stringify(saleData),
-                                    }).catch(printError => console.error('Receipt printing error:', printError));
+                                    const pf = (typeof window.sendToPrinter === 'function') ? (d) => window.sendToPrinter(d) : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+                                    pf(saleData).catch(printError => console.error('Receipt printing error:', printError));
                                 }
                                 clearCart();
                                 refreshProductQuantities();
@@ -3117,16 +3103,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 open_drawer_only: true,
                 cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
             };
-
-            // Return a promise like cash.php does
-            return fetch('receipt.php', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(drawerData),
-            })
-            .then(res => res.json())
+            const pf = (typeof window.sendToPrinter === 'function') ? (d) => window.sendToPrinter(d) : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+            return pf(drawerData)
             .then(result => {
                 if (result.success) {
                     console.log('Cash drawer opened successfully');
@@ -3278,13 +3256,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 cashSound.play();
                 if (printReceipt) {
                     data.print_only = true;
-                    fetch('receipt.php', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify(data),
-                    }).catch(err => console.error('Receipt printing error:', err));
+                    const pf = (typeof window.sendToPrinter === 'function') ? (d) => window.sendToPrinter(d) : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+                    pf(data).catch(err => console.error('Receipt printing error:', err));
                 }
                 clearCart();
                 refreshProductQuantities();
@@ -3784,13 +3757,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         cashSound.play();
                         // Always print kitchen ticket automatically
                         saleData.print_only = true;
-                        fetch('receipt.php', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify(saleData),
-                        }).catch(printError => console.error('Kitchen ticket printing error:', printError));
+                        const pf = (typeof window.sendToPrinter === 'function') ? (d) => window.sendToPrinter(d) : (d) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json());
+                        pf(saleData).catch(printError => console.error('Kitchen ticket printing error:', printError));
                         clearCart();
                         refreshProductQuantities();
                         closeMobileCart();

@@ -182,11 +182,11 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
         
         /* Ensure sidebar maintains proper z-index above overlay */
         .sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         #sidebar {
-            z-index: 9999 !important;
+            z-index: 10000 !important;
         }
         
         /* Mobile responsive adjustments */

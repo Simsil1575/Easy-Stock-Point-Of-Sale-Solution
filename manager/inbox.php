@@ -30,10 +30,10 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
             position: fixed;
             height: 100%;
             width: 250px;
-            z-index: 9999 !important; /* Prevent overlay from overlapping sidebar */
+            z-index: 10000 !important; /* Prevent overlay from overlapping sidebar */
         }
         #sidebar {
-            z-index: 9999 !important; /* Ensure sidebar stays above overlay */
+            z-index: 10000 !important; /* Ensure sidebar stays above overlay */
         }
         .content {
             margin-left: 250px;
@@ -132,7 +132,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
                 left: 0 !important;
                 transform: translateX(-100%) !important;
                 transition: transform 0.3s ease-in-out !important;
-                z-index: 9999 !important; /* Match reference guide - below hamburger (10000) */
+                z-index: 10000 !important; /* Match reference guide - same as hamburger (10000) */
                 width: 250px !important;
             }
             

@@ -1,0 +1,610 @@
+================================================================================
+          SCHOOL MANAGEMENT SYSTEM — COMPLETE LOGIC MAP
+          Source: schoolmanagementsystem.sql + folder tree
+          Generated: 2026-03-11
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — SYSTEM ENTRY POINTS (Root Level Files)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  index.php         → Splash/landing page. Redirects unauthenticated users.
+  login.php         → Authenticates user. Checks users.role_id, routes to portal.
+  signup.php        → New user self-registration (role: learner or parent).
+  home.php          → Post-login home shell (loads head.php + header.php).
+  head.php          → Global HTML <head> (CSS, meta).
+  header.php        → Global top navigation bar.
+  error.php         → Shared error display page.
+  get_spaces.php    → AJAX helper: fetch classroom space availability.
+  debug_ajax.php    → Dev/debug AJAX endpoint (should be removed in production).
+  test_*.php        → Dev test scripts (test_db, test_ajax, test_student_school,
+                       test_student_school_mapping) — remove in production.
+  setup_class_courses.php → One-time setup: populates class_courses table.
+
+  CONNECTION LAYER (conn/)
+  ─────────────────────────
+  conn/db.php       → Primary DB connection (used by all role portals).
+  conn/db1.php      → Alternate/legacy connection variant.
+  conn/db2.php      → Alternate/legacy connection variant.
+  conn/db4.php      → Alternate/legacy connection variant.
+  NOTE: All PHP files MUST include conn/db.php first. Consolidate to one file.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — AUTHENTICATION & ROLE ROUTING FLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [User visits site]
+        |
+        v
+  index.php ──► login.php
+                    |
+          Validates username + password_hash (users table)
+                    |
+          Reads users.role_id → maps to user_roles.role_name
+                    |
+          ┌─────────────────────────────────────────────┐
+          │  role_id → role_name → Portal Directory      │
+          │  ─────────────────────────────────────────── │
+          │  1  → learner  → /Learner/dashboard.php      │
+          │  2  → Parent   → /Parent/dashboard.php       │
+          │  3  → Teacher  → /Teacher/dashboard.php      │
+          │  4  → Admin    → /admin/dashboard.php        │
+          │  5  → School   → /School/dashboard.php       │
+          └─────────────────────────────────────────────┘
+                    |
+          Session: $_SESSION['user_id'], $_SESSION['role_id'],
+                   $_SESSION['school_id'] (where applicable)
+
+  LOGOUT: Each portal has its own logout.php → destroys session → login.php
+
+  PASSWORD RESET FLOW:
+    login.php → reset form → creates record in resetpasswords table
+    (code, email, expires) → user clicks link → validates code → new password
+    → updates users.password_hash
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — DATABASE SCHEMA: CORE TABLES & RELATIONSHIPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  FOUNDATION LAYER (must exist before anything else)
+  ────────────────────────────────────────────────────
+  user_roles        role_id, role_name
+        ↓ (FK: users.role_id → user_roles.role_id)
+  users             user_id, username, email, password_hash,
+                    first_name, last_name, role_id, account_status
+        ↓
+  ┌──────────────────────────────────────────────────────┐
+  │ PROFILE TABLES (extend users for each role)          │
+  │  learner_profiles  → learner_id, user_id (1-to-1)   │
+  │  parent_profiles   → parent_id,  user_id (1-to-1)   │
+  │  [Teachers use users table directly, role_id=3]      │
+  └──────────────────────────────────────────────────────┘
+
+  SCHOOLS LAYER
+  ──────────────
+  schools           school_id, school_name, location, type
+
+  MAPPING TABLES (link entities to schools)
+  ──────────────────────────────────────────
+  teacher_school_map   teacher_id (→users) + school_id (→schools)
+  learner_school_map   learner_id (→learner_profiles) + school_id
+  learner_schools      learner_id + school_id  [duplicate of above — consolidate]
+
+  ACADEMIC STRUCTURE (depends on schools + users)
+  ──────────────────────────────────────────────────
+  courses           course_id, course_code, course_name, department
+        ↓
+  classes           class_id, class_name, grade_level,
+                    teacher_id(→users), school_id(→schools), room_id(→classroom_spaces)
+        ↓
+  class_courses     class_id + course_id + academic_year  [many-to-many bridge]
+        ↓
+  class_enrollments learner_id(→learner_profiles) + class_id(→classes)
+        ↓
+  timetable         class_id + course_id + teacher_id + day/time/school
+  class_timetable   Per-learner schedule view (learner_id + course_id + teacher_id)
+
+  PHYSICAL SPACES
+  ────────────────
+  classroom_spaces  room_id, room_number, school_id, capacity, room_type
+  spaces            space_id, school_id, space_name, space_type
+  space_assignments space_id + class_id or teacher_id (scheduling)
+
+  ADMISSIONS PIPELINE
+  ─────────────────────
+  admission_applications  applicant_id(→users) + school_id(→schools)
+                          status: Submitted → Under Review → Accepted/Rejected
+
+  ACADEMIC ACTIVITY (depends on enrollment)
+  ──────────────────────────────────────────
+  lessons              course_id + teacher_id → title, video_link, lesson_date
+  assignments          course_id + teacher_id → title, due_date, max_score
+  assignment_submissions  assignment_id + learner_id → grade, status
+  exam_schedules       course_id → exam_type, exam_date, total_marks
+  learner_results      exam_id + learner_id + course_id → score
+  learner_grades       learner_id + course_id + academic_year
+                       → midterm_grade, final_grade, overall_grade, grade_point
+  attendance           learner_id + class_id + date → Present/Absent/Late/Excused
+  discipline_logs      learner_id + reported_by(→users) → incident, severity, action
+
+  FINANCIALS
+  ───────────
+  fee_structures       fee_id, fee_type, amount, academic_year, due_date
+  learner_fees         learner_id + fee_type + total_amount + paid_amount
+                       payment_status: Unpaid → Partially Paid → Fully Paid
+  payment_transactions fee_id(→learner_fees) + amount_paid + payment_method
+  invoices             learner_id + academic_year + status (Pending/Paid/Overdue)
+  invoice_items        invoice_id + fee_id + amount
+
+  COMMUNICATION
+  ──────────────
+  notifications        recipient_id(→users) + sender_id(→users)
+                       type: General/Academic/Attendance/Discipline/Fee
+                       is_read flag
+
+  RELATIONSHIPS (parent ↔ learner)
+  ─────────────────────────────────
+  learner_parents      learner_id(→learner_profiles) + parent_id(→parent_profiles)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — ROLE PORTALS: PAGE-BY-PAGE FUNCTION MAP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+════════════════════════════════════════
+4A. ADMIN PORTAL  (/admin/)
+════════════════════════════════════════
+  Shared Layout Files:
+    index.php         → Auth guard + redirect to dashboard
+    sidebar.php       → Navigation menu (included on every admin page)
+    functions.php     → Shared helper functions for admin pages
+    logout.php        → Destroys session → redirects to login.php
+
+  DASHBOARD
+    dashboard.php     → Summary stats: total learners, teachers, schools,
+                        pending admissions, fees due, recent notifications
+
+  USER MANAGEMENT
+    users.php         → List all users (query users + user_roles)
+    add_user.php      → Create user (INSERT into users)
+    edit_user.php     → Update user (UPDATE users WHERE user_id)
+    delete_user.php   → Soft/hard delete user
+    get_user.php      → AJAX: fetch single user data
+    view_teacher.php  → Teacher detail view (users + teacher_school_map)
+    view_parent.php   → Parent detail view (users + parent_profiles)
+    view_learner.php  → Learner detail view (learner_profiles + class_enrollments)
+    ajax_get_learner.php → AJAX: fetch learner data for inline editing
+
+  LEARNER MANAGEMENT
+    all_learners.php      → List all learner_profiles
+    add_learner.php       → CREATE user (role=1) + INSERT learner_profiles
+    edit_learner.php      → UPDATE learner_profiles + users
+    delete_learner.php    → Remove learner (cascades: enrollments, fees, grades)
+    promote_learner.php   → UPDATE learner_profiles.grade_level + academic_year
+
+  TEACHER MANAGEMENT
+    teachers.php          → List teachers (users WHERE role_id=3)
+    add_teacher.php       → CREATE user (role=3) + INSERT teacher_school_map
+    edit_teacher.php      → UPDATE users + teacher_school_map
+    delete_teacher.php    → Remove teacher (check class assignments first)
+    teacher_reports.php   → Reports: classes taught, attendance marked, grades given
+
+  PARENT MANAGEMENT
+    all_parents.php       → List parent_profiles + linked learners
+    add_parent.php        → CREATE user (role=2) + INSERT parent_profiles
+    edit_parent.php       → UPDATE parent_profiles + users
+    view_parent.php       → Detail view + linked learners via learner_parents
+
+  SCHOOL MANAGEMENT
+    schools.php           → List all schools
+    add_school.php        → INSERT into schools
+    edit_school.php       → UPDATE schools
+    all_schools.php       → Full schools listing with stats
+    school_management.php → Per-school deep view (classes, teachers, learners)
+    school_settings.php   → Configure school-level settings
+    school_analytics.php  → Analytics: enrollment trends, attendance rates
+
+  ACADEMIC MANAGEMENT
+    classes.php           → List classes (join schools, teachers)
+    courses.php           → List / manage courses table
+    lessons.php           → List / manage lessons (teacher + course)
+    assignments.php       → List / manage assignments (teacher + course)
+    grades.php            → View/edit learner_grades
+    enter_results.php     → INSERT/UPDATE learner_results (exam scores)
+    exams.php             → List exam_schedules
+    create_exams.php      → INSERT exam_schedules
+    timetable.php         → View/edit timetable table
+
+  ADMISSIONS
+    admissions.php           → List admission_applications
+    application_view.php     → Single application detail
+    view_application.php     → Full view of one application
+    get_application.php      → AJAX: fetch application data
+    approve_application.php  → UPDATE status='Accepted' → triggers learner creation
+    reject_application.php   → UPDATE status='Rejected'
+
+  ATTENDANCE
+    attendance.php         → Overview of attendance records
+    mark_attendance.php    → INSERT/UPDATE attendance (learner+class+date)
+    view_attendance.php    → View attendance per learner
+    attendance_report.php  → Single report view
+    attendance_reports.php → All attendance reports (filterable)
+
+  FINANCIALS
+    fees.php              → List learner_fees
+    fee_structure.php     → Manage fee_structures table
+    dues.php              → Overdue learner fees
+    payments.php          → List payment_transactions
+    invoices.php          → Manage invoices + invoice_items
+    financial_reports.php → Revenue summaries, payment status breakdowns
+
+  REPORTS & DOCUMENTS
+    reports.php               → Reports hub page
+    learner_reports.php       → Per-learner performance reports
+    exam_reports.php          → Per-exam result summaries
+    report_cards.php          → Generate report cards (learner_grades + learner_results)
+    generate_report_card.php  → Build and display single report card
+    generate_pdf_report.php   → Render report as PDF (uses TCPDF library)
+
+  COMMUNICATION
+    messages.php       → Send/view messages (notifications table)
+    notifications.php  → Admin notification centre
+    announcements.php  → Broadcast announcements to roles
+
+  SETTINGS & MISC
+    settings.php         → Global system settings
+    profile.php          → Admin's own profile view
+    update_profile.php   → UPDATE admin user record
+    setup_database.php   → One-time DB seeding (run once, then restrict access)
+    install_tcpdf.php    → TCPDF library installer helper
+    get_spaces.php       → AJAX: classroom space lookup
+    admin_routing_instructions.txt → Developer notes on routing logic
+
+
+════════════════════════════════════════
+4B. LEARNER PORTAL  (/Learner/)
+════════════════════════════════════════
+  Shared Layout:
+    index.php      → Auth guard (role_id must = 1) + redirect to dashboard
+    sidebar.php    → Learner navigation
+    logout.php     → Destroys session
+
+  dashboard.php    → Enrolled classes, upcoming assignments, attendance summary,
+                     unread notifications, fee balance
+
+  applications.php → Submit admission_applications + track status per school
+  classes.php      → View class_enrollments + class details
+  lessons.php (lesson.php) → Browse lessons by course (query lessons + courses)
+  assignments.php  → View assignments → submit via assignment_submissions
+  exams.php        → View exam_schedules for enrolled courses
+  grades.php       → View learner_grades + learner_results
+  attendance.php   → View own attendance record (attendance table)
+  fees.php         → View learner_fees balance + payment history
+  messages.php     → Inbox/send (notifications table, recipient_id = user_id)
+  profile.php      → View own user + learner_profiles data
+  update_profile.php → UPDATE users + learner_profiles
+
+
+════════════════════════════════════════
+4C. PARENT PORTAL  (/Parent/)
+════════════════════════════════════════
+  Shared Layout:
+    index.php / sidebar.php / logout.php
+
+  dashboard.php        → Overview of linked children, their attendance, grades,
+                          fees, pending admissions
+
+  admissions.php       → Apply for admission for a child (INSERT admission_applications)
+  admission_status.php → Track application status for each child
+
+  add_learner.php      → Link a new learner to parent account
+                         (INSERT users + learner_profiles + learner_parents)
+  add_student.php      → Alternate learner addition flow
+
+  fees.php             → View children's learner_fees + payment status
+  grades.php (via reports) → View children's academic performance
+  attendance.php       → View children's attendance records
+  messages.php         → Communication with teachers/admin (notifications)
+  profile.php / update_profile.php → Parent's own account management
+
+  NOTE: Parents also have copies of add_parent.php, add_school.php,
+  add_teacher.php, add_user.php — these are likely admin pages mistakenly
+  placed in this folder. Review access control.
+
+
+════════════════════════════════════════
+4D. TEACHER PORTAL  (/Teacher/)
+════════════════════════════════════════
+  Shared Layout:
+    index.php / sidebar.php / logout.php
+
+  dashboard.php       → Assigned classes, today's schedule, pending grading,
+                        unread messages
+
+  classes.php         → View classes WHERE teacher_id = session user_id
+  lessons.php         → View/create lessons (INSERT lessons: course_id + teacher_id)
+  assignments.php     → Create/manage assignments + view submissions
+                        (assignment_submissions: grade, status)
+  attendance.php      → Mark daily attendance (INSERT/UPDATE attendance)
+  grades.php          → Enter/update learner_grades per course
+  exams.php           → View exam_schedules for taught courses
+  results.php (enter_results) → INSERT learner_results per exam
+  timetable.php       → View own timetable (timetable WHERE teacher_id)
+  messages.php        → Messaging (notifications table)
+  profile.php / update_profile.php → Own account management
+  reports.php         → Class performance summaries
+
+
+════════════════════════════════════════
+4E. SCHOOL PORTAL  (/School/)
+════════════════════════════════════════
+  Shared Layout:
+    index.php / sidebar.php / logout.php
+
+  dashboard.php       → School-level overview: total learners, teachers,
+                        classes, upcoming exams, admissions pending
+
+  Manages content SCOPED to their own school_id:
+    classes.php       → Classes for this school (classes WHERE school_id)
+    teachers.php      → Teachers mapped to this school (teacher_school_map)
+    learners.php      → Learners mapped (learner_school_map + learner_profiles)
+    admissions.php    → Applications for this school (admission_applications)
+    timetable.php     → School timetable
+    attendance.php    → Attendance view for this school
+    fees.php          → Fees for this school's learners
+    announcements.php → School-level announcements
+    messages.php      → Internal messaging
+    settings.php      → School settings (UPDATE schools WHERE school_id)
+    profile.php / update_profile.php → School account management
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — KEY PROCESS FLOWS (Step-by-Step)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FLOW A: NEW LEARNER ADMISSION
+──────────────────────────────
+  1. User registers via signup.php OR Parent adds child in Parent portal
+  2. INSERT into users (role_id=1) + INSERT into learner_profiles
+  3. Learner/Parent submits application → INSERT admission_applications
+     (applicant_id=user_id, school_id, grade_level, status='Submitted')
+  4. Admin/School reviews → view_application.php
+  5. Admin approves → approve_application.php
+     → UPDATE admission_applications.status = 'Accepted'
+     → INSERT learner_school_map (learner_id, school_id)
+  6. Admin enrolls learner into class → INSERT class_enrollments
+     (learner_id, class_id, enrollment_date, status='Active')
+  7. Class enrollment triggers fee assignment → INSERT learner_fees
+  8. Timetable auto-populates for enrolled courses
+
+FLOW B: DAILY ATTENDANCE
+─────────────────────────
+  1. Teacher logs into Teacher portal → attendance.php
+  2. Selects class from their assigned classes (classes WHERE teacher_id)
+  3. System loads all learners in that class (class_enrollments WHERE class_id)
+  4. Teacher marks each learner: Present / Absent / Late / Excused
+  5. INSERT INTO attendance (learner_id, class_id, date, status)
+     UNIQUE constraint prevents duplicate entries per learner+class+date
+  6. Parent/Admin can view via view_attendance.php
+  7. Notifications can be triggered for Absent status → INSERT notifications
+
+FLOW C: ASSIGNMENT LIFECYCLE
+──────────────────────────────
+  1. Teacher creates assignment → INSERT assignments (course_id, teacher_id, due_date)
+  2. Learners view assignments filtered to their enrolled courses
+  3. Learner submits → INSERT assignment_submissions (assignment_id, learner_id)
+  4. Teacher grades submission → UPDATE assignment_submissions SET grade, graded_at, status='Graded'
+  5. Grade reflected in learner's grades view
+
+FLOW D: EXAM → RESULTS → REPORT CARD
+───────────────────────────────────────
+  1. Admin/Teacher creates exam → INSERT exam_schedules (course_id, exam_type, total_marks)
+  2. After exam: Admin/Teacher enters scores → INSERT learner_results
+     (exam_id, learner_id, course_id, score)
+  3. Grades computed → INSERT/UPDATE learner_grades
+     (learner_id, course_id, midterm_grade, final_grade, overall_grade, grade_point)
+  4. Report card generated → generate_report_card.php
+     Queries: learner_profiles + learner_grades + learner_results + courses
+  5. PDF export → generate_pdf_report.php (uses TCPDF library in /vendor/tcpdf/)
+
+FLOW E: FEE PAYMENT
+──────────────────────
+  1. Admin sets up fee structure → INSERT fee_structures (fee_type, amount, academic_year)
+  2. Fee assigned to learner → INSERT learner_fees (learner_id, fee_type, total_amount)
+  3. Invoice generated → INSERT invoices + INSERT invoice_items (referencing fee_structures)
+  4. Payment recorded → INSERT payment_transactions (fee_id, amount_paid, method)
+  5. UPDATE learner_fees SET paid_amount, payment_status (Unpaid→Partially Paid→Fully Paid)
+  6. UPDATE invoices SET status = 'Paid'
+
+FLOW F: TEACHER–LEARNER MESSAGING
+───────────────────────────────────
+  1. Sender (any role) composes message
+  2. INSERT notifications (sender_id, recipient_id, title, message, type)
+  3. Recipient portal shows unread count (SELECT WHERE recipient_id AND is_read=0)
+  4. Recipient reads → UPDATE notifications SET is_read=1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — SHARED INFRASTRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  PDF GENERATION
+    /vendor/tcpdf/           → TCPDF library
+    admin/generate_pdf_report.php  → Uses TCPDF to render reports
+    admin/generate_report_card.php → Report card builder
+
+  FILE UPLOADS
+    /uploads/profiles/       → User profile pictures (path stored in
+                                users.profile_picture_path)
+    /uploads/ (inferred)     → Assignment submission files
+                               (assignment_submissions.submission_file_path)
+
+  AJAX ENDPOINTS (used for dynamic UI without full page reload)
+    admin/ajax_get_learner.php   → Fetch learner data
+    admin/get_application.php    → Fetch application data
+    admin/get_user.php           → Fetch user data
+    admin/get_spaces.php         → Fetch space availability
+    root/get_spaces.php          → Root-level space AJAX (duplicate — consolidate)
+    root/debug_ajax.php          → Debug only (remove in production)
+
+  COMPOSER / DEPENDENCIES
+    composer.json / composer.lock → PHP dependency management
+    /vendor/                      → All Composer packages (including TCPDF)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — DATA DEPENDENCY ORDER (Build / Seed Sequence)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Must be created/populated in this exact order to satisfy foreign keys:
+
+  1.  user_roles              (role definitions — no FK dependencies)
+  2.  schools                 (school definitions — no FK dependencies)
+  3.  courses                 (course catalogue — no FK dependencies)
+  4.  users                   (requires user_roles)
+  5.  learner_profiles        (requires users)
+  6.  parent_profiles         (requires users)
+  7.  classroom_spaces        (requires schools)
+  8.  spaces                  (requires schools)
+  9.  classes                 (requires users[teacher], schools, classroom_spaces)
+  10. class_courses           (requires classes, courses)
+  11. teacher_school_map      (requires users[teacher], schools)
+  12. learner_school_map      (requires learner_profiles, schools)
+  13. learner_parents         (requires learner_profiles, parent_profiles)
+  14. class_enrollments       (requires learner_profiles, classes)
+  15. timetable               (requires classes, courses, users[teacher])
+  16. class_timetable         (requires users[teacher])
+  17. admission_applications  (requires users, schools)
+  18. lessons                 (requires courses, users[teacher])
+  19. assignments             (requires courses, users[teacher])
+  20. assignment_submissions  (requires assignments, learner_profiles)
+  21. exam_schedules          (requires courses)
+  22. learner_results         (requires exam_schedules, learner_profiles, courses)
+  23. learner_grades          (requires learner_profiles, courses)
+  24. attendance              (requires learner_profiles, classes)
+  25. discipline_logs         (requires learner_profiles, users)
+  26. fee_structures          (no FK dependencies)
+  27. learner_fees            (requires learner_profiles)
+  28. invoices                (requires learner_profiles)
+  29. invoice_items           (requires invoices, fee_structures)
+  30. payment_transactions    (requires learner_fees)
+  31. notifications           (requires users)
+  32. resetpasswords          (standalone — no FK)
+  33. space_assignments       (requires spaces, classes, users)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — ROLE CAPABILITY MATRIX
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  CAPABILITY                   | Admin | School | Teacher | Parent | Learner
+  ─────────────────────────────┼───────┼────────┼─────────┼────────┼────────
+  Manage all schools           |  YES  |   NO   |   NO    |   NO   |   NO
+  Manage own school            |  YES  |  YES   |   NO    |   NO   |   NO
+  Add/edit teachers            |  YES  |  YES   |   NO    |   NO   |   NO
+  Add/edit learners            |  YES  |  YES   |   NO    |  YES*  |   NO
+  Approve/reject admissions    |  YES  |  YES   |   NO    |   NO   |   NO
+  Submit admission application |   NO  |   NO   |   NO    |  YES   |  YES
+  Mark attendance              |  YES  |  YES   |  YES    |   NO   |   NO
+  View own attendance          |   NO  |   NO   |   NO    |  YES** |  YES
+  Create lessons               |  YES  |   NO   |  YES    |   NO   |   NO
+  View lessons                 |  YES  |  YES   |  YES    |   NO   |  YES
+  Create assignments           |  YES  |   NO   |  YES    |   NO   |   NO
+  Submit assignments           |   NO  |   NO   |   NO    |   NO   |  YES
+  Grade assignments            |  YES  |   NO   |  YES    |   NO   |   NO
+  View grades                  |  YES  |  YES   |  YES    |  YES** |  YES
+  Create exams                 |  YES  |   NO   |  YES    |   NO   |   NO
+  Enter exam results           |  YES  |   NO   |  YES    |   NO   |   NO
+  Generate report cards        |  YES  |  YES   |   NO    |   NO   |   NO
+  Manage fees/invoices         |  YES  |  YES   |   NO    |   NO   |   NO
+  View own fees                |   NO  |   NO   |   NO    |  YES** |  YES
+  Send notifications           |  YES  |  YES   |  YES    |   NO   |   NO
+  View notifications           |  YES  |  YES   |  YES    |  YES   |  YES
+  Manage timetable             |  YES  |  YES   |   NO    |   NO   |   NO
+  View timetable               |  YES  |  YES   |  YES    |   NO   |  YES
+  ─────────────────────────────┴───────┴────────┴─────────┴────────┴────────
+  * Parent can add/link a learner to their account
+  ** Parent views data for their linked children only
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — IDENTIFIED ISSUES & FIXES NEEDED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ISSUE 1 — Duplicate DB connection files
+    conn/db.php, db1.php, db2.php, db4.php all exist.
+    FIX: Standardise to one (conn/db.php). Remove db1, db2, db4.
+
+  ISSUE 2 — Duplicate school-learner mapping tables
+    Both learner_schools AND learner_school_map have identical structure.
+    Data is only in learner_school_map.
+    FIX: Remove learner_schools. Use only learner_school_map everywhere.
+
+  ISSUE 3 — Admin pages in Parent portal folder
+    /Parent/ contains add_school.php, add_teacher.php, add_user.php,
+    admin_routing_instructions.txt — admin functionality should not be
+    accessible from Parent portal.
+    FIX: Remove from /Parent/ or add strict role_id guard at top of each file.
+
+  ISSUE 4 — Dev/test files in production root
+    debug_ajax.php, test_db.php, test_ajax.php, test_student_school.php,
+    test_student_school_mapping.php, passwords.txt MUST be removed.
+    passwords.txt especially is a critical security risk.
+
+  ISSUE 5 — get_spaces.php duplicated at root AND admin level
+    FIX: Keep only in admin/ or make a shared /api/ directory.
+
+  ISSUE 6 — class_timetable vs timetable — two timetable tables
+    timetable is class-level. class_timetable is per-learner.
+    Both exist but usage may overlap. Ensure pages use the correct table.
+
+  ISSUE 7 — Learner ID 0 in learner_profiles
+    learner_profiles has learner_id=0. Auto-increment IDs should start at 1.
+    FIX: Clean seed data; enforce NOT NULL AUTO_INCREMENT > 0.
+
+  ISSUE 8 — learner_parents has learner_id=0 / parent_id=0
+    Referential integrity issue. orphan records.
+    FIX: Clean up data; add stricter application validation before insert.
+
+  ISSUE 9 — invoice system incomplete
+    fee_structures, invoices, invoice_items exist but no data is seeded and
+    the invoices system may not be fully wired to the payment flow.
+    FIX: Connect fee_structure → invoice generation flow in admin/fees.php.
+
+  ISSUE 10 — setup_database.php and install_tcpdf.php accessible post-setup
+    FIX: Add a check (e.g., lock file) so these only run once, then block access.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — QUICK REFERENCE: TABLE → PORTAL USAGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  TABLE                    | PRIMARY WRITER          | READERS
+  ─────────────────────────┼─────────────────────────┼────────────────────────
+  users                    | Admin / signup.php       | All portals
+  user_roles               | Admin (setup)            | login.php
+  learner_profiles         | Admin / Parent           | All portals
+  parent_profiles          | Admin / signup           | Admin, Parent
+  schools                  | Admin                    | All portals
+  courses                  | Admin                    | Teacher, Learner
+  classes                  | Admin / School           | All portals
+  class_courses            | Admin / setup script     | Teacher, Learner
+  class_enrollments        | Admin / School           | Teacher, Learner, Parent
+  timetable                | Admin / School           | Teacher, Learner
+  admission_applications   | Learner / Parent         | Admin, School
+  lessons                  | Teacher                  | Learner
+  assignments              | Teacher                  | Learner
+  assignment_submissions   | Learner                  | Teacher, Admin
+  exam_schedules           | Admin / Teacher          | All portals
+  learner_results          | Admin / Teacher          | Learner, Parent, Admin
+  learner_grades           | Admin / Teacher          | Learner, Parent, Admin
+  attendance               | Teacher                  | All portals
+  discipline_logs          | Teacher / Admin          | Admin, Parent
+  learner_fees             | Admin / School           | Learner, Parent
+  fee_structures           | Admin                    | Admin, School
+  invoices                 | Admin / School           | Learner, Parent
+  payment_transactions     | Admin / School           | Learner, Parent, Admin
+  notifications            | All portals (send)       | All portals (receive)
+  learner_parents          | Admin / Parent           | Parent
+  teacher_school_map       | Admin / School           | School, Teacher
+  learner_school_map       | Admin / School           | School, Learner, Parent
+  spaces / classroom_spaces| Admin / School           | Admin, School, Teacher
+  resetpasswords           | login.php (reset flow)   | login.php
+  ─────────────────────────┴─────────────────────────┴────────────────────────
+
+================================================================================
+END OF LOGIC MAP
+================================================================================
