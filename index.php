@@ -1,8 +1,5 @@
 <?php
-// Start session if not already started
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/config.php';
 
 // If user is already logged in, redirect to appropriate home page
 if ($_SERVER["REQUEST_METHOD"] == "GET" && isset($_SESSION['user_id']) && isset($_SESSION['role'])) {
@@ -48,12 +45,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 $pos_db_file = realpath(dirname(__FILE__) . '/pos.db');
                 $posDb = new PDO("sqlite:$pos_db_file");
                 $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-                
+
+                session_regenerate_id(true);
+
                 // Record login in POS database
                 $logStmt = $posDb->prepare("INSERT INTO user_log (user_id, action_type) VALUES (:username, 'login')");
                 $logStmt->execute([':username' => $user['username']]);
-                
-                // Set session variables
+
                 $_SESSION['user_id'] = $user['id'];
                 $_SESSION['username'] = $user['username'];
                 $_SESSION['role'] = $user['role'];
@@ -274,6 +272,8 @@ try {
         window.installPWA = installPWA;
     </script>
     
+    <?php $kbAssetPrefix = ''; $kbPart = 'styles'; include __DIR__ . '/includes/kioskboard_payment.php'; ?>
+
     <style>
 
     
@@ -369,7 +369,7 @@ try {
     </h1>
 
     <p class="text-base sm:text-lg mb-8 max-w-xl text-gray-700">
-        Start your business today! Our stock management system helps pubs, lounges, bars, tuckshops, and festival stalls succeed.
+        Smart Inventory Stronger Businesses! Our stock management system is designed to help small and medium-sized enterprises (SMEs) 
     </p>
 
     <div class="hidden md:flex items-center gap-4 mt-10 mb-4">
@@ -471,13 +471,15 @@ try {
                                         <i class="fas fa-times cursor-pointer" onclick="document.getElementById('errorAlert').style.display='none'"></i>
                                     </div>
                                 <?php endif; ?>
-                                <form class="space-y-6" method="POST" action="<?php echo htmlspecialchars(strtok($_SERVER["REQUEST_URI"], '?')); ?>">
+                                <form id="loginForm" class="space-y-6" method="POST" action="<?php echo htmlspecialchars(strtok($_SERVER["REQUEST_URI"], '?')); ?>" autocomplete="off">
                                     <div>
                                         <label for="username" class="block text-sm/6 font-medium text-black">Username</label>
-                                        <div class="mt-2 relative">
+                                        <div class="mt-2 relative kioskboard-input-wrap">
                                             <input type="text" id="username" name="username" required autocomplete="username"
-                                                   class="block w-full rounded-lg bg-gray-200 px-10 py-2 text-base text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200 sm:text-sm/6">
-                                            <i class="fas fa-user absolute left-3 top-2.5 text-gray-400"></i>
+                                                   data-kioskboard-placement="side"
+                                                   class="block w-full rounded-lg bg-gray-200 pl-10 pr-10 py-2 text-base text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200 sm:text-sm/6 js-kioskboard-input js-kioskboard-text">
+                                            <i class="fas fa-user absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
+                                            <svg class="kioskboard-touch-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M8 12h.001"/><path d="M12 12h.001"/><path d="M16 12h.001"/><path d="M7 16h10"/></svg>
                                         </div>
                                     </div>
                     
@@ -485,10 +487,12 @@ try {
                                         <div class="flex items-center justify-between">
                                             <label for="password" class="block text-sm/6 font-medium text-black">Password</label>
                                         </div>
-                                        <div class="mt-2 relative">
-                                            <input type="password" id="password" name="password" required autocomplete="current-password"
-                                                   class="block w-full rounded-lg bg-gray-200 px-10 py-2 text-base text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200 sm:text-sm/6">
-                                            <i class="fas fa-lock absolute left-3 top-2.5 text-gray-400"></i>
+                                        <div class="mt-2 relative kioskboard-input-wrap">
+                                            <input type="password" id="password" name="password" required autocomplete="off"
+                                                   data-kioskboard-placement="side"
+                                                   class="block w-full rounded-lg bg-gray-200 pl-10 pr-10 py-2 text-base text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200 sm:text-sm/6 js-kioskboard-input js-kioskboard-text">
+                                            <i class="fas fa-lock absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
+                                            <svg class="kioskboard-touch-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M8 12h.001"/><path d="M12 12h.001"/><path d="M16 12h.001"/><path d="M7 16h10"/></svg>
                                         </div>
                                     </div>
                                     <div class="mt-4 text-left">
@@ -506,6 +510,51 @@ try {
                     
                                     
                                 </form>
+
+                                    <div class="relative my-6">
+                                        <div class="absolute inset-0 flex items-center" aria-hidden="true">
+                                            <div class="w-full border-t border-gray-300"></div>
+                                        </div>
+                                        <div class="relative flex justify-center text-sm">
+                                            <span class="bg-gray-250 px-2 text-gray-500">or</span>
+                                        </div>
+                                    </div>
+
+                                    <button type="button" id="fpOpenModalBtn"
+                                            class="flex w-full items-center justify-center rounded-lg border-2 border-teal-600 bg-teal-50 px-4 py-2.5 text-sm/6 font-semibold text-teal-800 hover:bg-teal-100 hover:border-teal-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500 transition duration-200">
+                                        <i class="fas fa-fingerprint mr-2"></i>Sign in with fingerprint
+                                    </button>
+
+
+                                <div id="fpLoginModal" class="fixed inset-0 z-[200] hidden flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="fpLoginModalTitle">
+                                    <div id="fpLoginModalBackdrop" class="absolute inset-0 bg-black/50"></div>
+                                    <div class="relative z-10 w-full max-w-md rounded-xl bg-white p-6 shadow-xl ring-1 ring-gray-200">
+                                        <h3 id="fpLoginModalTitle" class="text-lg font-semibold text-gray-900">Fingerprint sign-in</h3>
+                                        <div class="mt-3 rounded-lg border border-teal-100 bg-teal-50 px-3 py-2.5 text-sm text-teal-900" role="note">
+                                            <p class="flex items-start gap-2">
+                                                <i class="fas fa-fingerprint mt-0.5 shrink-0 text-teal-700" aria-hidden="true"></i>
+                                                <span>When a reader is found, scanning <strong>starts automatically</strong>. <strong>Place your finger</strong> on the scanner and keep it flat and still until capture finishes. Entering your username first is optional but can help when several people are enrolled.</span>
+                                            </p>
+                                        </div>
+                                        <p id="fpLoginStatus" class="mt-3 min-h-[1.25rem] text-sm"></p>
+                                        <div id="fpLoginReaderRow" class="mt-4 hidden">
+                                            <label for="fpLoginReaderSelect" class="block text-sm/6 font-medium text-black">Fingerprint reader</label>
+                                            <p class="mt-1 text-xs text-gray-500">Only shown when more than one reader is connected. The first device is used automatically.</p>
+                                            <select id="fpLoginReaderSelect" class="mt-2 block w-full rounded-lg bg-gray-200 px-3 py-2 text-sm text-black outline outline-1 -outline-offset-1 outline-gray-300 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-400"></select>
+                                        </div>
+                                        <div class="mt-6 flex justify-end gap-2">
+                                            <button type="button" id="fpLoginCloseBtn"
+                                                    class="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                                                Cancel
+                                            </button>
+                                            <button type="button" id="fpLoginStartBtn"
+                                                    class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-500">
+                                                Scan again
+                                            </button>
+                                        </div>
+                                       
+                                    </div>
+                                </div>
                     
                             <div class="mt-8 text-center text-sm text-gray-500">
                                 <p>&copy; <?php echo date('Y'); ?> Easy Stock POS Solutions. All rights reserved.</p>
@@ -627,6 +676,34 @@ try {
 
     </script>
 
+    <script src="finger/scripts/es6-shim.js"></script>
+    <script src="finger/scripts/websdk.client.bundle.min.js"></script>
+    <script src="finger/scripts/fingerprint.sdk.min.js"></script>
+    <script src="fingerprint_fp_raw.js?v=20260630"></script>
+    <script>
+        window.FP_AUTH_ENDPOINT = 'fingerprint_auth.php';
+    </script>
+    <script src="fingerprint_login.js?v=20260703c"></script>
+    <?php $kbAssetPrefix = ''; $kbPart = 'script'; include __DIR__ . '/includes/kioskboard_payment.php'; ?>
+    <script>
+        (function () {
+            function initLoginKeypad() {
+                if (!window.PosKioskBoard || window.PosKioskBoard.isMobile()) {
+                    return;
+                }
+                window.PosKioskBoard.bindText('#loginForm #username, #loginForm #password', {
+                    placement: 'side',
+                    allowRealKeyboard: false
+                });
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initLoginKeypad);
+            } else {
+                initLoginKeypad();
+            }
+        })();
+    </script>
+    <script src="admin/3.4.16" async defer></script>
+
 </body>
 </html>
-<script src="admin/3.4.16" async defer></script>

@@ -14,14 +14,16 @@ $mysqli = new PDO('sqlite:../pos.db');
 
 
 <?php
+require_once __DIR__ . '/../ensure_laybye_schema.php';
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 
-// Fetch products from the database
+// Fetch products from the database (exclude synthetic lay-bye payment product)
 $stmt = $db->query('
     SELECT p.*, COALESCE(SUM(oi.quantity), 0) as total_sold
     FROM products p
     LEFT JOIN order_items oi ON p.name = oi.product_name
+    WHERE ' . laybyePaymentProductWhereExclude('p.name') . '
     GROUP BY p.id
     ORDER BY total_sold DESC
 ');
@@ -139,7 +141,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                 class='w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center'>
                         </td>
                         <td class='py-3 px-4'>
-                            <input type='number' name='buying_price' value='${parseFloat(product.buying_price).toFixed(2)}' step='1' 
+                            <input type='number' name='buying_price' value='${product.buying_price != null && product.buying_price !== "" ? parseFloat(product.buying_price).toFixed(2) : ""}' step='0.01' 
                                 class='w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center'>
                         </td>
                         <td class='py-3 px-4'>
@@ -321,7 +323,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                         <tbody class="divide-y divide-gray-200" id="productTableBody">
                             <?php
                             // Fetch all products
-                            $stmt = $mysqli->query("SELECT * FROM products");
+                            $stmt = $mysqli->query("SELECT * FROM products WHERE " . laybyePaymentProductWhereExclude('name'));
                             $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             if (count($products) > 0):
                                 foreach($products as $row):
@@ -338,7 +340,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                         <input type='number' name='price' value='<?= htmlspecialchars($row["price"]) ?>' step='1' class='w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center'>
                                     </td>
                                     <td class='py-3 px-4'>
-                                        <input type='number' name='buying_price' value='<?= htmlspecialchars($row["buying_price"]) ?>' step='1' class='w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center'>
+                                        <input type='number' name='buying_price' value='<?= htmlspecialchars($row["buying_price"] ?? '') ?>' step='0.01' class='w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-center'>
                                     </td>
                                     <td class='py-3 px-4'>
                                         <div class="flex flex-col items-center space-y-1">
@@ -379,7 +381,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                     <td class='py-3 px-4'><input type="text" name="name" class="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500" placeholder="New Product Name" required></td>
                                     <td class='py-3 px-4'><input type="number" name="quantity" class="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 text-center" placeholder="Qty" required value="20"></td>
                                     <td class='py-3 px-4'><input type="number" name="price" class="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 text-center" step="1" placeholder="Price" required value="80"></td>
-                                    <td class='py-3 px-4'><input type="number" name="buying_price" class="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 text-center" step="1" placeholder="Buy Price" required value="48"></td>
+                                    <td class='py-3 px-4'><input type="number" name="buying_price" class="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 text-center" step="0.01" placeholder="Buy Price"></td>
                                     <td class='py-3 px-4'>
                                         <input type="file" name="image" class="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500" required>
                                     </td>

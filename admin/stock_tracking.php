@@ -41,6 +41,12 @@ $receivingDatesQuery = $db->prepare("
 $receivingDatesQuery->execute();
 $receivingDates = $receivingDatesQuery->fetchAll(PDO::FETCH_COLUMN);
 
+// Categories for optional inventory PDF filter
+$categoriesStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
+$productCategories = $categoriesStmt->fetchAll(PDO::FETCH_COLUMN);
+
+$todayDate = date('Y-m-d');
+
 // Get total records for pagination
 $totalQuery = $db->prepare("
     SELECT COUNT(*) 
@@ -134,20 +140,27 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                 $this->Ln();
             } 
             else if ($this->pageType == 'inventory') {
-                $this->Cell(0, 10, 'Current Stock Inventory', 0, 1, 'C');
+                $title = !empty($GLOBALS['inventory_date_for_pdf']) && $GLOBALS['inventory_date_for_pdf'] !== date('Y-m-d')
+                    ? 'Stock Inventory (As of ' . $GLOBALS['inventory_date_for_pdf'] . ')'
+                    : 'Current Stock Inventory';
+                $this->Cell(0, 10, $title, 0, 1, 'C');
                 $this->SetFont('Arial', '', 12);
                 $this->Cell(0, 10, 'Stock On Hand', 0, 1, 'C');
+                if (!empty($GLOBALS['inventory_categories_for_pdf'])) {
+                    $this->Cell(0, 10, 'Categories: ' . implode(', ', $GLOBALS['inventory_categories_for_pdf']), 0, 1, 'C');
+                }
                 $this->Cell(0, 10, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
                 $this->Ln(5);
                 
                 // Table header for inventory
                 $this->SetFont('Arial', 'B', 11);
                 $this->Cell(10, 10, 'ID', 1);
-                $this->Cell(70, 10, 'Product Name', 1);
-                $this->Cell(20, 10, 'Quantity', 1);
-                $this->Cell(22, 10, 'Price', 1);
-                $this->Cell(22, 10, 'Cost', 1);
-                $this->Cell(22, 10, 'Restock', 1);
+                $this->Cell(55, 10, 'Product Name', 1);
+                $this->Cell(25, 10, 'Category', 1);
+                $this->Cell(18, 10, 'Quantity', 1);
+                $this->Cell(20, 10, 'Price', 1);
+                $this->Cell(20, 10, 'Cost', 1);
+                $this->Cell(18, 10, 'Restock', 1);
                 $this->Cell(24, 10, 'Value', 1);
                 $this->Ln();
             }
@@ -221,43 +234,112 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
         $pdf->Output('D', $fileName);
     }
     else if ($reportType == 'inventory') {
+        $selectedCategories = [];
+        if (isset($_GET['categories']) && is_array($_GET['categories'])) {
+            $selectedCategories = array_values(array_filter(array_map('trim', $_GET['categories'])));
+        } elseif (!empty($_GET['category'])) {
+            $selectedCategories = [trim($_GET['category'])];
+        }
+        $selectedCategories = array_values(array_intersect($selectedCategories, $productCategories));
+        if (!empty($selectedCategories)) {
+            $GLOBALS['inventory_categories_for_pdf'] = $selectedCategories;
+        }
+
+        $inventoryDate = isset($_GET['inventory_date']) ? trim($_GET['inventory_date']) : '';
+        if ($inventoryDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $inventoryDate)) {
+            $inventoryDate = '';
+        }
+        if ($inventoryDate && $inventoryDate > $todayDate) {
+            $inventoryDate = '';
+        }
+        if ($inventoryDate) {
+            $GLOBALS['inventory_date_for_pdf'] = $inventoryDate;
+        }
+
+        $useHistoricalInventory = ($inventoryDate !== '' && $inventoryDate !== $todayDate);
+
         $pdf->setPageType('inventory');
         $pdf->AddPage();
-        
-        // Get current inventory data
-        $inventoryStmt = $db->prepare("
-            SELECT 
-                id, name, quantity, price, buying_price, restock_level
-            FROM products
-            WHERE CAST(quantity AS INTEGER) > 0
-            ORDER BY name ASC
-        ");
-        $inventoryStmt->execute();
+
+        $inventoryParams = [];
+        $categoryPlaceholders = '';
+        if (!empty($selectedCategories)) {
+            $placeholders = [];
+            foreach ($selectedCategories as $i => $cat) {
+                $key = ':cat' . $i;
+                $placeholders[] = $key;
+                $inventoryParams[$key] = $cat;
+            }
+            $categoryPlaceholders = implode(', ', $placeholders);
+        }
+
+        if ($useHistoricalInventory) {
+            $inventoryParams[':inv_date'] = $inventoryDate;
+            $categoryFilterSql = $categoryPlaceholders ? ' AND p.category IN (' . $categoryPlaceholders . ')' : '';
+            $inventorySql = "
+                SELECT *
+                FROM (
+                    SELECT
+                        p.id,
+                        p.name,
+                        p.price,
+                        p.buying_price,
+                        p.restock_level,
+                        p.category,
+                        COALESCE(
+                            (SELECT dss.closing_quantity
+                             FROM daily_stock_summary dss
+                             WHERE dss.product_id = p.id AND dss.date = :inv_date),
+                            (SELECT sc.new_quantity
+                             FROM stock_changes sc
+                             WHERE sc.product_id = p.id
+                               AND date(datetime(sc.changed_at, '+2 hours')) <= :inv_date
+                             ORDER BY datetime(sc.changed_at, '+2 hours') DESC
+                             LIMIT 1),
+                            0
+                        ) AS quantity
+                    FROM products p
+                    WHERE 1=1 $categoryFilterSql
+                ) inv
+                WHERE CAST(quantity AS INTEGER) > 0
+                ORDER BY category ASC, name ASC
+            ";
+        } else {
+            $categoryFilterSql = $categoryPlaceholders ? ' AND category IN (' . $categoryPlaceholders . ')' : '';
+            $inventorySql = "
+                SELECT id, name, quantity, price, buying_price, restock_level, category
+                FROM products
+                WHERE CAST(quantity AS INTEGER) > 0 $categoryFilterSql
+                ORDER BY category ASC, name ASC
+            ";
+        }
+
+        $inventoryStmt = $db->prepare($inventorySql);
+        $inventoryStmt->execute($inventoryParams);
         $currentInventory = $inventoryStmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Add inventory data to PDF
-        $pdf->SetFont('Arial', '', 10);
+
+        $pdf->SetFont('Arial', '', 9);
         $totalProducts = 0;
         $totalItems = 0;
         $totalValue = 0;
-        
+
         foreach ($currentInventory as $product) {
             $lineValue = (float)$product['price'] * (int)$product['quantity'];
             $pdf->Cell(10, 8, $product['id'], 1);
-            $pdf->Cell(70, 8, $product['name'], 1);
-            $pdf->Cell(20, 8, $product['quantity'], 1);
-            $pdf->Cell(22, 8, 'N$' . number_format($product['price'], 2), 1);
-            $pdf->Cell(22, 8, 'N$' . number_format($product['buying_price'], 2), 1);
-            $pdf->Cell(22, 8, $product['restock_level'], 1);
+            $pdf->Cell(55, 8, $product['name'], 1);
+            $pdf->Cell(25, 8, $product['category'] ?? '', 1);
+            $pdf->Cell(18, 8, $product['quantity'], 1);
+            $pdf->Cell(20, 8, 'N$' . number_format($product['price'], 2), 1);
+            $pdf->Cell(20, 8, 'N$' . number_format($product['buying_price'], 2), 1);
+            $pdf->Cell(18, 8, $product['restock_level'], 1);
             $pdf->Cell(24, 8, 'N$' . number_format($lineValue, 2), 1);
             $pdf->Ln();
-            
+
             $totalProducts++;
             $totalItems += (int)$product['quantity'];
             $totalValue += (float)$product['price'] * (int)$product['quantity'];
         }
-        
-        // Add summary section
+
         $pdf->Ln(5);
         $pdf->SetFont('Arial', 'B', 12);
         $pdf->Cell(0, 10, 'Inventory Summary', 0, 1, 'L');
@@ -268,9 +350,12 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
         $pdf->Cell(50, 8, $totalItems, 0, 1, 'L');
         $pdf->Cell(100, 8, 'Total Inventory Value:', 0, 0, 'L');
         $pdf->Cell(50, 8, 'N$' . number_format($totalValue, 2), 0, 1, 'L');
-        
-        // Output PDF
-        $fileName = 'Current_Inventory_Report_' . date('Y-m-d') . '.pdf';
+
+        $fileSuffix = !empty($selectedCategories)
+            ? '_' . preg_replace('/[^a-zA-Z0-9_-]+/', '_', implode('-', $selectedCategories))
+            : '';
+        $dateSuffix = $useHistoricalInventory ? '_' . $inventoryDate : '';
+        $fileName = 'Inventory_Report' . $dateSuffix . $fileSuffix . '_' . date('Y-m-d') . '.pdf';
         $pdf->Output('D', $fileName);
     }
     else if ($reportType == 'stock_receiving') {
@@ -384,12 +469,22 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                             </svg>
                             Stock Changes
                         </a>
-                        <a href="?export_pdf=true&report_type=inventory" class="inline-flex items-center justify-center h-10 px-4 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap">
+                        <input type="date" id="inventoryDate" name="inventory_date" max="<?= htmlspecialchars($todayDate) ?>"
+                               title="Optional: pick a date for historical stock. Leave empty for current stock."
+                               class="h-10 px-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm">
+                        <select id="inventoryCategories" name="categories[]" multiple
+                               title="Optional: select one or more categories (Ctrl+click). Leave empty for all."
+                               class="h-10 min-w-[9rem] max-w-[11rem] px-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm">
+                            <?php foreach ($productCategories as $cat): ?>
+                                <option value="<?= htmlspecialchars($cat) ?>"><?= htmlspecialchars($cat) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button type="button" onclick="downloadInventoryReport()" class="inline-flex items-center justify-center h-10 px-4 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap">
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                             </svg>
                             Inventory
-                        </a>
+                        </button>
                         <select id="receivingDate" name="receiving_date" 
                                class="h-10 px-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white">
                             <option value="">Select date</option>
@@ -731,6 +826,21 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
             history.replaceState({page: <?= $page ?>, search: currentSearch}, '', window.location.href);
         });
         
+        // Function to download current inventory report (optional category filter)
+        function downloadInventoryReport() {
+            const select = document.getElementById('inventoryCategories');
+            const selected = Array.from(select.selectedOptions).map(function(opt) { return opt.value; }).filter(Boolean);
+            const inventoryDate = document.getElementById('inventoryDate').value;
+            let url = '?export_pdf=true&report_type=inventory';
+            if (inventoryDate) {
+                url += '&inventory_date=' + encodeURIComponent(inventoryDate);
+            }
+            selected.forEach(function(cat) {
+                url += '&categories[]=' + encodeURIComponent(cat);
+            });
+            window.location.href = url;
+        }
+
         // Function to download stock receiving report
         function downloadReceivingReport() {
             const receivingDate = document.getElementById('receivingDate').value;

@@ -24,6 +24,11 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Database connection
 $db = new PDO('sqlite:../pos.db');
+require_once __DIR__ . '/../recipe_stock_helper.php';
+require_once __DIR__ . '/../purchase_order_lib.php';
+require_once __DIR__ . '/../ensure_purchase_order_schema.php';
+configureSqlitePdo($db);
+ensurePurchaseOrderSchema($db);
 $userDb = new PDO('sqlite:../user.db');
 
 // Get user email from user database
@@ -42,6 +47,19 @@ try {
 
 // Set the default timezone to Namibian time
 date_default_timezone_set('Africa/Harare');
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['action'] ?? '') === 'po_lines') {
+    header('Content-Type: application/json');
+    $poId = (int) ($_GET['po_id'] ?? 0);
+    $data = poLinesForReceiving($db, $poId);
+    if (!$data) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Purchase order not found or not open for receiving.']);
+    } else {
+        echo json_encode(['success' => true, 'data' => $data]);
+    }
+    exit;
+}
 
 // Handle form submission for bulk receiving
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -78,6 +96,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $selectedDateTime = date('Y-m-d H:i:s');
             }
             $today = substr($selectedDateTime, 0, 10);
+
+            $purchaseOrderId = !empty($receivingData['purchase_order_id']) ? (int) $receivingData['purchase_order_id'] : null;
+            $supplierIdInput = !empty($receivingData['supplier_id']) ? (int) $receivingData['supplier_id'] : null;
+            $supplierNameForPdf = (string) ($receivingData['supplier_name'] ?? '');
+            $poNumberForPdf = (string) ($receivingData['po_number'] ?? '');
+
+            if (!$isPdfOnly) {
+                $resolved = poResolveSupplierForReceiving(
+                    $db,
+                    ($purchaseOrderId !== null && $purchaseOrderId > 0) ? $purchaseOrderId : null,
+                    $supplierIdInput
+                );
+                $purchaseOrderId = $resolved['purchase_order_id'];
+                $supplierId = $resolved['supplier_id'];
+                $supplierNameForPdf = (string) ($receivingData['supplier_name'] ?? '');
+                if ($supplierId !== null && $supplierId > 0) {
+                    $supRow = $db->prepare('SELECT name FROM suppliers WHERE id = ?');
+                    $supRow->execute([$supplierId]);
+                    $supplierNameForPdf = (string) ($supRow->fetchColumn() ?: $supplierNameForPdf);
+                }
+                if ($purchaseOrderId !== null) {
+                    $poNumberForPdf = poFormatNumber($purchaseOrderId);
+                }
+            } else {
+                $supplierId = ($supplierIdInput !== null && $supplierIdInput > 0) ? $supplierIdInput : null;
+                if ($purchaseOrderId !== null && $purchaseOrderId < 1) {
+                    $purchaseOrderId = null;
+                }
+            }
             
             // Running totals for the receiving record
             $totalItemsCount = 0;
@@ -105,8 +152,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         // For PDF only, calculate what the new quantity would be (don't update)
                         // For AJAX, this is before update so it's correct
                         $newQuantity = $isPdfOnly ? $oldQuantity : ($oldQuantity + $quantity);
-                        $itemValue = $quantity * $product['price'];
-                        $itemCost = $quantity * ($product['buying_price'] ?? $product['price']);
+                        $unitCost = array_key_exists('buying_price', $item)
+                            ? floatval($item['buying_price'])
+                            : floatval($product['buying_price'] ?? $product['price']);
+                        $itemValue = $quantity * floatval($product['price']);
+                        $itemCost = $quantity * $unitCost;
                         
                         // Store item details for PDF
                         $receivingItems[] = [
@@ -115,7 +165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'added_quantity' => $quantity,
                             'new_quantity' => $oldQuantity, // Current quantity (already updated for PDF)
                             'price' => $product['price'],
-                            'buying_price' => $product['buying_price'] ?? $product['price'],
+                            'buying_price' => $unitCost,
                             'total_value' => $itemValue,
                             'total_cost' => $itemCost
                         ];
@@ -136,14 +186,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'old_quantity' => $oldQuantity,
                                 'new_quantity' => $newQuantity,
                                 'unit_price' => $product['price'],
-                                'buying_price' => $product['buying_price'] ?? $product['price'],
+                                'buying_price' => $unitCost,
                                 'total_value' => $itemValue,
                                 'total_cost' => $itemCost
                             ];
                             
-                            // Update product quantity
-                            $updateStmt = $db->prepare("UPDATE products SET quantity = ? WHERE id = ?");
-                            $updateStmt->execute([$newQuantity, $productId]);
+                            // Update product quantity and cost price used for this receive
+                            $updateStmt = $db->prepare("UPDATE products SET quantity = ?, buying_price = ? WHERE id = ?");
+                            $updateStmt->execute([$newQuantity, $unitCost, $productId]);
+                            adjustRecipeStockByProductId($db, (int) $productId, (float) $quantity);
                             
                             // Log the stock change (use selected receiving date/time)
                             $logStmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, changed_at) VALUES (?, ?, ?, ?, ?, ?)");
@@ -180,8 +231,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Insert receiving record
                 $recordStmt = $db->prepare("
                     INSERT INTO receiving_records 
-                    (user_id, username, receiving_date, total_items, total_quantity, total_value, total_cost, email_status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+                    (user_id, username, receiving_date, total_items, total_quantity, total_value, total_cost, email_status, purchase_order_id, supplier_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
                 ");
                 $recordStmt->execute([
                     $_SESSION['user_id'],
@@ -190,7 +241,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $totalItemsCount,
                     $totalQuantity,
                     $totalValue,
-                    $totalCost
+                    $totalCost,
+                    $purchaseOrderId,
+                    $supplierId,
                 ]);
                 $receivingRecordId = $db->lastInsertId();
                 
@@ -214,6 +267,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $dbItem['total_cost']
                     ]);
                 }
+
+                $receivedForPo = [];
+                foreach ($receivingItemsForDb as $dbItem) {
+                    $receivedForPo[] = [
+                        'product_id' => (int) $dbItem['product_id'],
+                        'quantity' => (int) $dbItem['quantity_added'],
+                    ];
+                }
+                if ($purchaseOrderId !== null && $purchaseOrderId > 0) {
+                    poApplyReceiving($db, $purchaseOrderId, $receivedForPo);
+                }
             }
             
             // Commit transaction only if we started one
@@ -229,21 +293,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 require('../fpdf/fpdf.php');
                 
-                // Create new PDF instance
+                // Create new PDF instance (receiving date passed in as displayDate)
                 class ReceivingPDF extends FPDF {
+                    var $displayDate;
+                    var $supplierName;
+                    var $poNumber;
                     function Header() {
                         $this->SetFont('Arial', 'B', 15);
                         $this->Cell(0, 10, 'Stock Receiving Report', 0, 1, 'C');
                         $this->SetFont('Arial', '', 12);
-                        $this->Cell(0, 10, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
-                        $this->Ln(10);
+                        $this->Cell(0, 8, 'Receiving date: ' . $this->displayDate, 0, 1, 'C');
+                        if ($this->supplierName !== '') {
+                            $this->Cell(0, 8, 'Supplier: ' . $this->supplierName, 0, 1, 'C');
+                        }
+                        if ($this->poNumber !== '') {
+                            $this->Cell(0, 8, 'Purchase order: ' . $this->poNumber, 0, 1, 'C');
+                        }
+                        $this->Ln(6);
                         
-                        // Table header
-                        $this->SetFont('Arial', 'B', 10);
-                        $this->Cell(80, 10, 'Product', 1);
-                        $this->Cell(35, 10, 'Added', 1);
-                        $this->Cell(35, 10, 'Unit Price', 1);
-                        $this->Cell(35, 10, 'Value Added', 1);
+                        // Table header (fits A4 portrait ~190mm)
+                        $this->SetFont('Arial', 'B', 9);
+                        $this->Cell(62, 10, 'Product', 1);
+                        $this->Cell(16, 10, 'Added', 1);
+                        $this->Cell(26, 10, 'Sell Price', 1);
+                        $this->Cell(26, 10, 'Cost Price', 1);
+                        $this->Cell(28, 10, 'Value Added', 1);
+                        $this->Cell(28, 10, 'Total Cost', 1);
                         $this->Ln();
                     }
                     
@@ -254,8 +329,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 
-                // Initialize PDF
+                // Initialize PDF with selected receiving date
                 $pdf = new ReceivingPDF();
+                $pdf->displayDate = $selectedDateTime;
+                $pdf->supplierName = $supplierNameForPdf;
+                $pdf->poNumber = $poNumberForPdf;
                 $pdf->AliasNbPages();
                 $pdf->AddPage();
                 $pdf->SetFont('Arial', '', 9);
@@ -265,10 +343,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // Add data to PDF
                 foreach ($receivingItems as $item) {
-                    $pdf->Cell(80, 8, $item['product_name'], 1);
-                    $pdf->Cell(35, 8, '+' . $item['added_quantity'], 1);
-                    $pdf->Cell(35, 8, 'N$' . number_format($item['price'], 2), 1);
-                    $pdf->Cell(35, 8, 'N$' . number_format($item['total_value'], 2), 1);
+                    $name = $item['product_name'];
+                    if (strlen($name) > 38) {
+                        $name = substr($name, 0, 35) . '...';
+                    }
+                    $pdf->Cell(62, 8, $name, 1);
+                    $pdf->Cell(16, 8, '+' . $item['added_quantity'], 1, 0, 'C');
+                    $pdf->Cell(26, 8, 'N$' . number_format($item['price'], 2), 1, 0, 'R');
+                    $pdf->Cell(26, 8, 'N$' . number_format($item['buying_price'], 2), 1, 0, 'R');
+                    $pdf->Cell(28, 8, 'N$' . number_format($item['total_value'], 2), 1, 0, 'R');
+                    $pdf->Cell(28, 8, 'N$' . number_format($item['total_cost'], 2), 1, 0, 'R');
                     $pdf->Ln();
                     
                     $totalItems += $item['added_quantity'];
@@ -284,9 +368,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdf->Cell(50, 8, $totalItems, 0, 1, 'L');
                 $pdf->Cell(100, 8, 'Total Restock Value:', 0, 0, 'L');
                 $pdf->Cell(50, 8, 'N$' . number_format($totalValue, 2), 0, 1, 'L');
+                $pdf->Cell(100, 8, 'Total Cost (at cost price):', 0, 0, 'L');
+                $pdf->Cell(50, 8, 'N$' . number_format($totalCost, 2), 0, 1, 'L');
                 
-                // Generate filename
-                $fileName = 'Stock_Receiving_Report_' . date('Y-m-d_H-i-s') . '.pdf';
+                // Generate filename using selected receiving date
+                $fileName = 'Stock_Receiving_Report_' . date('Y-m-d_H-i-s', strtotime($selectedDateTime)) . '.pdf';
                 
                 // Set proper headers for PDF download
                 header('Content-Type: application/pdf');
@@ -354,6 +440,11 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $lowStock[] = $row;
     }
 }
+
+$openPurchaseOrders = poListOpenForReceiving($db);
+$activeSuppliers = poListActiveSuppliers($db);
+$preselectedPoId = isset($_GET['po_id']) ? (int) $_GET['po_id'] : 0;
+$preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'] : 0;
 ?>
 
 <!DOCTYPE html>
@@ -372,11 +463,36 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     <script src="3.4.16"></script>
     <style>
         .toast-notification {
-            transition: opacity 0.5s, transform 0.5s;
-            transform: translateX(100%);
-            opacity: 0;
-            animation: slideIn 0.5s forwards;
+            transition: opacity 0.3s ease;
         }
+        #receivingToastHost {
+            position: fixed;
+            top: 5.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+            width: min(22rem, calc(100vw - 2rem));
+            pointer-events: none;
+        }
+        .receiving-toast {
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            color: #fff;
+            font-size: 0.875rem;
+            line-height: 1.35;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            pointer-events: auto;
+        }
+        .receiving-toast--success { background: #0d9488; }
+        .receiving-toast--error { background: #e11d48; }
+        .receiving-toast--info { background: #0369a1; }
         @keyframes slideIn {
             from {
                 transform: translateX(100%);
@@ -426,6 +542,37 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         }
         .bulk-actions {
             transition: all 0.3s ease;
+        }
+        
+        .calculator-popup {
+            min-width: 250px;
+        }
+        .calculator-icon {
+            padding: 8px;
+            margin: -8px;
+            display: inline-block;
+            position: relative;
+        }
+        .calculator-icon::after {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: -8px;
+            right: -8px;
+            bottom: -8px;
+            z-index: -1;
+        }
+        .buying-price-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.125rem;
+            min-width: 0;
+            max-width: 100%;
+        }
+        .buying-price-wrap .buying-price-input {
+            flex: 1 1 0;
+            min-width: 0;
         }
         
         /* Premium Loading Overlay */
@@ -762,9 +909,9 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             
             /* Equal size for inputs in same column - receiving quantity and buying price */
             table td:nth-child(7) .receiving-quantity,
-            table td:nth-child(5) .buying-price-input {
+            table td:nth-child(5) .buying-price-wrap .buying-price-input {
                 width: 100% !important;
-                max-width: calc(100% - 0.25rem) !important;
+                max-width: 100% !important;
                 min-width: 0 !important;
             }
             
@@ -914,59 +1061,66 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <!-- Fixed Header -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 sm:py-4 px-4 lg:px-8 shadow-sm">
-                <div class="w-full max-w-7xl mx-auto">
-                    <!-- Row 1: Title, Navigation, and Controls (same row on desktop) -->
-                    <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-4 lg:gap-6 mb-2 sm:mb-0">
-                        <!-- Left side: Hamburger, Title, Go Back -->
-                        <div class="flex items-center gap-2 sm:gap-4 lg:gap-6">
-                            <!-- Mobile Hamburger Menu Button -->
-                            <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded" onclick="toggleSidebar()">
+            <div id="receivingFixedHeader" class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 sm:py-4 px-4 lg:px-8 shadow-sm border-b border-gray-200">
+                <div class="w-full max-w-7xl mx-auto space-y-3">
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+                            <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded flex-shrink-0" onclick="toggleSidebar()">
                                 <span></span>
                                 <span></span>
                                 <span></span>
                             </div>
-                            <h1 class="text-xl sm:text-2xl lg:text-3xl font-bold">Stock Receiving</h1>
-                            <a href="inventory" class="inline-flex items-center px-2 sm:px-4 py-2 text-xs sm:text-sm lg:text-base border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
-                                <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-                                </svg>
-                                <span class="hidden sm:inline">Go Back</span>
-                                <span class="sm:hidden">Back</span>
-                            </a>
+                            <h1 class="text-lg sm:text-xl lg:text-2xl font-bold whitespace-nowrap">Stock Receiving</h1>
                         </div>
-                        
-                        <!-- Right side: Controls (Category, Date, Search) -->
-                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:ml-auto w-full sm:w-auto">
-                            <!-- Mobile: Category and Date in one row, evenly split -->
-                            <div class="flex items-center gap-2 w-full sm:w-auto sm:flex-initial">
-                                <select id="categoryFilter" class="flex-1 sm:flex-initial px-2 sm:px-4 py-2 text-xs sm:text-sm lg:text-base border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm transition-colors min-w-0">
-                                    <option value="">All Categories</option>
-                                    <?php foreach ($categories as $category): ?>
-                                        <option value="<?= htmlspecialchars($category) ?>"><?= htmlspecialchars($category) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <div class="flex items-center gap-2 flex-1 sm:flex-initial">
-                                    <label for="receivingDate" class="text-xs sm:text-sm text-gray-700 hidden sm:inline whitespace-nowrap">Receiving date</label>
-                                    <input type="datetime-local" id="receivingDate" class="flex-1 sm:flex-initial px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm transition-colors min-w-0"/>
-                                </div>
-                            </div>
-                            <!-- Search - full width on mobile, separate row -->
-                            <div class="relative w-full sm:w-auto sm:flex-1 sm:max-w-md">
-                                <input type="text" id="searchInput" placeholder="Search..." class="w-full pl-8 sm:pl-10 pr-2 sm:pr-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm transition-colors">
-                                <svg class="w-4 h-4 sm:w-5 sm:h-5 absolute left-2 top-2.5 sm:top-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                                </svg>
-                            </div>
+                        <a href="inventory" class="inline-flex items-center flex-shrink-0 px-2 sm:px-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
+                            <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">Go Back</span>
+                            <span class="sm:hidden">Back</span>
+                        </a>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-2">
+                        <select id="poFilter" class="w-full sm:w-auto sm:min-w-[160px] flex-1 sm:flex-initial px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
+                            <option value="">No PO (ad-hoc)</option>
+                            <?php foreach ($openPurchaseOrders as $opo): ?>
+                                <option value="<?= (int) $opo['id'] ?>" data-supplier-id="<?= (int) $opo['supplier_id'] ?>" <?= $preselectedPoId === (int) $opo['id'] ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars(poFormatNumber((int) $opo['id']) . ' — ' . $opo['supplier_name']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <select id="supplierFilter" class="w-full sm:w-auto sm:min-w-[140px] flex-1 sm:flex-initial px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
+                            <option value="">Supplier (optional)</option>
+                            <?php foreach ($activeSuppliers as $sup): ?>
+                                <option value="<?= (int) $sup['id'] ?>" <?= $preselectedSupplierId === (int) $sup['id'] && $preselectedPoId < 1 ? 'selected' : '' ?>><?= htmlspecialchars($sup['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <select id="categoryFilter" class="w-full sm:w-auto sm:min-w-[140px] flex-1 sm:flex-initial px-2 sm:px-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
+                            <option value="">All Categories</option>
+                            <?php foreach ($categories as $category): ?>
+                                <option value="<?= htmlspecialchars($category) ?>"><?= htmlspecialchars($category) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <div class="flex items-center gap-2 w-full sm:w-auto flex-1 sm:flex-initial sm:min-w-[200px]">
+                            <label for="receivingDate" class="text-xs sm:text-sm text-gray-700 whitespace-nowrap flex-shrink-0">Receiving date</label>
+                            <input type="datetime-local" id="receivingDate" class="flex-1 min-w-0 px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm"/>
+                        </div>
+                        <div class="relative w-full sm:w-auto sm:min-w-[180px] flex-1 sm:flex-initial sm:max-w-xs">
+                            <input type="text" id="searchInput" placeholder="Search..." class="w-full pl-8 sm:pl-10 pr-2 sm:pr-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
+                            <svg class="w-4 h-4 sm:w-5 sm:h-5 absolute left-2 top-2.5 sm:top-2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                            </svg>
                         </div>
                     </div>
                 </div>
             </div>
             
-            <!-- Spacer for fixed header -->
-            <div class="h-20 sm:h-20 mb-4"></div>
+            <!-- Spacer for fixed header (height synced via JS) -->
+            <div id="receivingHeaderSpacer" class="mb-4" style="height: 9rem;"></div>
+            <div id="receivingToastHost" aria-live="polite" aria-atomic="true"></div>
             
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
 
                 <!-- Bulk Actions Panel -->
                 <div id="bulkActionsPanel" class="hidden bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6 bulk-actions">
@@ -1057,10 +1211,15 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                         <span class="product-price font-medium text-teal-600">N$ <?= number_format($product['price'], 2) ?></span>
                                     </td>
                                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="number" min="0" step="0.01" class="buying-price-input quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" 
-                                               placeholder="<?= number_format($product['buying_price'] ?? $product['price'], 2) ?>" 
-                                               value="<?= number_format($product['buying_price'] ?? $product['price'], 2) ?>"
-                                               data-original-buying-price="<?= $product['buying_price'] ?? $product['price'] ?>">
+                                        <div class="buying-price-wrap">
+                                            <input type="number" step="0.01" class="buying-price-input quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" 
+                                                   placeholder="<?= number_format($product['buying_price'] ?? $product['price'], 2) ?>" 
+                                                   value="<?= number_format($product['buying_price'] ?? $product['price'], 2) ?>"
+                                                   data-original-buying-price="<?= $product['buying_price'] ?? $product['price'] ?>">
+                                            <span class="receiving-cost-calculator-icon calculator-icon" title="Cost calculator">
+                                                <i class="fas fa-calculator text-gray-500 hover:text-teal-500 cursor-pointer text-[10px] sm:text-xs"></i>
+                                            </span>
+                                        </div>
                                     </td>
                                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500">
                                         <span class="current-stock"><?= $product['quantity'] ?></span>
@@ -1235,6 +1394,16 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     </div>
 
     <script>
+        function syncReceivingHeaderSpacer() {
+            const header = document.getElementById('receivingFixedHeader');
+            const spacer = document.getElementById('receivingHeaderSpacer');
+            if (header && spacer) {
+                spacer.style.height = (header.offsetHeight + 8) + 'px';
+            }
+        }
+        window.addEventListener('load', syncReceivingHeaderSpacer);
+        window.addEventListener('resize', syncReceivingHeaderSpacer);
+
         // Dynamic rows per page: 10 on mobile, 6 on desktop
         function getRowsPerPage() {
             return window.innerWidth < 640 ? 10 : 6;
@@ -1267,10 +1436,200 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         const bulkActionsPanel = document.getElementById('bulkActionsPanel');
         const selectedCount = document.getElementById('selectedCount');
         const submitReceivingBtn = document.getElementById('submitReceivingBtn');
+        const poFilter = document.getElementById('poFilter');
+        const supplierFilter = document.getElementById('supplierFilter');
+        let linkedPoMeta = { supplier_id: null, supplier_name: '', po_number: '' };
+
+        function updateSupplierFieldState() {
+            const poId = poFilter ? poFilter.value : '';
+            if (!supplierFilter) return;
+            if (poId) {
+                const opt = poFilter.options[poFilter.selectedIndex];
+                const sid = opt ? opt.getAttribute('data-supplier-id') : '';
+                if (sid) {
+                    supplierFilter.value = sid;
+                }
+                supplierFilter.disabled = true;
+                supplierFilter.classList.add('bg-gray-100');
+            } else {
+                supplierFilter.disabled = false;
+                supplierFilter.classList.remove('bg-gray-100');
+            }
+        }
+
+        async function loadPoLines(poId) {
+            if (!poId) {
+                linkedPoMeta = { supplier_id: null, supplier_name: '', po_number: '' };
+                return;
+            }
+            const resp = await fetch('receiving.php?action=po_lines&po_id=' + encodeURIComponent(poId));
+            const json = await resp.json();
+            if (!json.success || !json.data) {
+                showToast(json.message || 'Could not load purchase order lines', 'error');
+                return;
+            }
+            linkedPoMeta = {
+                supplier_id: json.data.supplier_id,
+                supplier_name: json.data.supplier_name || '',
+                po_number: json.data.po_number || ''
+            };
+            document.querySelectorAll('.receiving-row').forEach(row => {
+                row.querySelector('.receiving-quantity').value = '';
+                updateNewTotal(row);
+            });
+            (json.data.lines || []).forEach(line => {
+                const row = document.querySelector('.receiving-row[data-product-id="' + line.product_id + '"]');
+                if (!row) return;
+                const qtyInput = row.querySelector('.receiving-quantity');
+                const priceInput = row.querySelector('.buying-price-input');
+                qtyInput.value = line.quantity_remaining;
+                if (priceInput && line.unit_cost) {
+                    priceInput.value = parseFloat(line.unit_cost).toFixed(2);
+                }
+                updateNewTotal(row);
+            });
+            scheduleUpdateItems();
+            const searchVal = searchInput ? searchInput.value.trim().toLowerCase() : '';
+            if (searchVal) {
+                filterRows();
+            } else {
+                showPage(currentPage);
+            }
+        }
+
+        function getReceivingMeta() {
+            const poId = poFilter && poFilter.value ? parseInt(poFilter.value, 10) : null;
+            let supplierId = supplierFilter && supplierFilter.value ? parseInt(supplierFilter.value, 10) : null;
+            let supplierName = linkedPoMeta.supplier_name || '';
+            let poNumber = linkedPoMeta.po_number || '';
+            if (poId) {
+                supplierId = linkedPoMeta.supplier_id || supplierId;
+            } else if (supplierFilter && supplierFilter.selectedIndex > 0) {
+                supplierName = supplierFilter.options[supplierFilter.selectedIndex].text;
+            }
+            return {
+                purchase_order_id: poId || null,
+                supplier_id: supplierId || null,
+                supplier_name: supplierName,
+                po_number: poNumber
+            };
+        }
+
+        if (poFilter) {
+            poFilter.addEventListener('change', async () => {
+                updateSupplierFieldState();
+                await loadPoLines(poFilter.value);
+            });
+        }
+        updateSupplierFieldState();
+        if (poFilter && poFilter.value) {
+            loadPoLines(poFilter.value);
+        }
         
         // Cache for better performance
         let itemsBeingAddedCache = [];
         let updateItemsTimeout = null;
+
+        // Cost calculator next to buying price (same pattern as inventory.php)
+        (function initReceivingCostCalculator() {
+            const popup = document.createElement('div');
+            popup.className = 'calculator-popup hidden absolute bg-white p-4 rounded-lg shadow-lg border border-gray-200 z-[10000]';
+            popup.innerHTML = `
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Total Cost</label>
+                    <input type="number" id="receivingCalcTotalCost" class="w-full px-3 py-2 border rounded-md" placeholder="Enter total cost" step="0.01">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Number of Items</label>
+                    <input type="number" id="receivingCalcItemCount" class="w-full px-3 py-2 border rounded-md" placeholder="Receiving qty" min="0" step="1">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Cost per Item</label>
+                    <div id="receivingCalcCostPerItem" class="w-full px-3 py-2 bg-gray-50 rounded-md">0.00</div>
+                </div>
+                <button type="button" id="receivingCalcApply" class="w-full bg-teal-600 text-white px-4 py-2 rounded-md hover:bg-teal-700">Apply</button>
+            `;
+            document.body.appendChild(popup);
+
+            const totalCostInput = popup.querySelector('#receivingCalcTotalCost');
+            const itemCountInput = popup.querySelector('#receivingCalcItemCount');
+            const costPerItemDiv = popup.querySelector('#receivingCalcCostPerItem');
+            const applyBtn = popup.querySelector('#receivingCalcApply');
+
+            let hideTimeout;
+            let currentIcon = null;
+            let targetBuyingInput = null;
+
+            const updatePopupPosition = (iconEl) => {
+                const rect = iconEl.getBoundingClientRect();
+                const left = Math.min(rect.left + window.scrollX, window.scrollX + Math.max(8, window.innerWidth - 268));
+                popup.style.top = `${rect.bottom + window.scrollY + 5}px`;
+                popup.style.left = `${left}px`;
+            };
+
+            const calculateCost = () => {
+                const totalCost = parseFloat(totalCostInput.value) || 0;
+                const itemCount = parseFloat(itemCountInput.value) || 0;
+                const costPerItem = itemCount > 0 ? totalCost / itemCount : 0;
+                costPerItemDiv.textContent = costPerItem.toFixed(2);
+            };
+
+            totalCostInput.addEventListener('input', calculateCost);
+            itemCountInput.addEventListener('input', calculateCost);
+            totalCostInput.addEventListener('click', function () { this.select(); });
+            itemCountInput.addEventListener('click', function () { this.select(); });
+
+            applyBtn.addEventListener('click', () => {
+                const costPerItem = parseFloat(costPerItemDiv.textContent);
+                if (!isNaN(costPerItem) && targetBuyingInput) {
+                    targetBuyingInput.value = costPerItem.toFixed(2);
+                    targetBuyingInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    scheduleUpdateItems();
+                    popup.classList.add('hidden');
+                }
+            });
+
+            document.addEventListener('click', (e) => {
+                if (!popup.contains(e.target) && !(e.target.closest && e.target.closest('.receiving-cost-calculator-icon'))) {
+                    popup.classList.add('hidden');
+                }
+            });
+
+            document.querySelectorAll('.receiving-cost-calculator-icon').forEach((calculatorIcon) => {
+                calculatorIcon.addEventListener('mouseenter', (e) => {
+                    e.stopPropagation();
+                    clearTimeout(hideTimeout);
+                    currentIcon = calculatorIcon;
+                    targetBuyingInput = calculatorIcon.closest('.buying-price-wrap')?.querySelector('.buying-price-input');
+                    const row = calculatorIcon.closest('tr');
+                    const qtyInput = row?.querySelector('.receiving-quantity');
+                    const qty = qtyInput ? (parseInt(qtyInput.value, 10) || 0) : 0;
+                    itemCountInput.value = qty > 0 ? String(qty) : '';
+                    calculateCost();
+                    popup.classList.remove('hidden');
+                    updatePopupPosition(calculatorIcon);
+                });
+
+                calculatorIcon.addEventListener('mouseleave', (e) => {
+                    const toElement = e.relatedTarget;
+                    if (!popup.contains(toElement)) {
+                        hideTimeout = setTimeout(() => {
+                            popup.classList.add('hidden');
+                        }, 500);
+                    }
+                });
+            });
+
+            popup.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+            popup.addEventListener('mouseleave', (e) => {
+                const toElement = e.relatedTarget;
+                if (currentIcon && !currentIcon.contains(toElement)) {
+                    hideTimeout = setTimeout(() => {
+                        popup.classList.add('hidden');
+                    }, 500);
+                }
+            });
+        })();
 
         // Initialize
         showPage(currentPage);
@@ -1728,9 +2087,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 const quantity = parseInt(quantityInput.value) || 0;
                 
                 if (quantity > 0) {
+                    const buyingPriceInput = row.querySelector('.buying-price-input');
+                    const buyingPrice = buyingPriceInput
+                        ? (parseFloat(buyingPriceInput.value) || parseFloat(buyingPriceInput.dataset.originalBuyingPrice) || 0)
+                        : 0;
                     items.push({
                         product_id: productId,
-                        quantity: quantity
+                        quantity: quantity,
+                        buying_price: buyingPrice
                     });
                 }
             });
@@ -1739,6 +2103,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 showToast('Please enter quantities for at least one product', 'error');
                 return;
             }
+
+            const meta = getReceivingMeta();
             
             try {
                 // Show premium loading overlay
@@ -1762,7 +2128,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ items: items, receiving_date: receivingDate })
+                    body: JSON.stringify({
+                        items: items,
+                        receiving_date: receivingDate,
+                        purchase_order_id: meta.purchase_order_id,
+                        supplier_id: meta.supplier_id,
+                        supplier_name: meta.supplier_name,
+                        po_number: meta.po_number
+                    })
                 });
                 
                 const ajaxResult = await ajaxResponse.json();
@@ -1777,7 +2150,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 showToast('Stock received successfully! Downloading PDF...', 'success');
                 
                 // Step 2: Download PDF first using iframe (doesn't navigate away)
-                await downloadPDF(items, receivingDate);
+                await downloadPDF(items, receivingDate, meta);
                 
                 // Step 3: After PDF download initiated, send email
                 showToast('PDF downloaded! Sending email report...', 'info');
@@ -1834,8 +2207,16 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         });
         
         // Function to download PDF using hidden iframe
-        function downloadPDF(items, receivingDate) {
+        function downloadPDF(items, receivingDate, meta) {
             return new Promise((resolve) => {
+                const payload = {
+                    items: items,
+                    receiving_date: receivingDate,
+                    purchase_order_id: meta ? meta.purchase_order_id : null,
+                    supplier_id: meta ? meta.supplier_id : null,
+                    supplier_name: meta ? meta.supplier_name : '',
+                    po_number: meta ? meta.po_number : ''
+                };
                 // Create hidden iframe for PDF download
                 const iframe = document.createElement('iframe');
                 iframe.style.display = 'none';
@@ -1852,7 +2233,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 const input = document.createElement('input');
                 input.type = 'hidden';
                 input.name = 'receiving_data';
-                input.value = JSON.stringify({ items: items, receiving_date: receivingDate });
+                input.value = JSON.stringify(payload);
                 
                 form.appendChild(input);
                 document.body.appendChild(form);
@@ -1910,41 +2291,24 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
 
         // Toast notification function
         function showToast(message, type = 'info') {
-            const existingToasts = document.querySelectorAll('.toast-notification');
-            existingToasts.forEach(toast => toast.remove());
+            const host = document.getElementById('receivingToastHost');
+            if (!host) return;
 
             const icons = {
-                success: `<svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>`,
-                error: `<svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-                </svg>`,
-                info: `<svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>`
+                success: '<i class="fas fa-check-circle mt-0.5 flex-shrink-0"></i>',
+                error: '<i class="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>',
+                info: '<i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>'
             };
 
             const toast = document.createElement('div');
-            toast.className = `toast-notification fixed top-4 right-4 px-4 py-3 rounded-md text-white shadow-lg z-50 flex items-center gap-2 ${
-                type === 'success' ? 'bg-teal-500' : 
-                type === 'error' ? 'bg-rose-600' : 
-                'bg-sky-500'
-            }`;
-            
-            toast.innerHTML = `
-                ${icons[type]}
-                <span>${message}</span>
-            `;
-
-            document.body.appendChild(toast);
+            toast.className = `receiving-toast receiving-toast--${type} toast-notification`;
+            toast.innerHTML = `${icons[type] || icons.info}<span>${message}</span>`;
+            host.appendChild(toast);
 
             setTimeout(() => {
-                toast.classList.add('opacity-0', 'translate-x-full');
-                setTimeout(() => {
-                    toast.remove();
-                }, 500);
-            }, 3000);
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
         }
     </script>
 

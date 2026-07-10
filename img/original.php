@@ -1966,11 +1966,11 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 
                 const selectedDate = dateResult.value.selectedDate;
                 
-                // First fetch expected cash amount from fetch_report_data.php
                 const formData = new FormData();
                 formData.append('date', selectedDate);
+                formData.append('cash_up_hide_expected', '1');
                 
-                fetch('fetch_report_data.php', {
+                fetch('../fetch_report_data.php', {
                     method: 'POST',
                     body: formData
                 })
@@ -1987,16 +1987,11 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         return;
                     }
                     
-                    const expectedAmount = parseFloat(data.cashAvailableInTill || 0);
-                    
                     Swal.fire({
                         title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">Cash Up - ' + selectedDate + '</h1>',
                         html: `
                             <div class="space-y-4">
-                                <div class="w-full flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-gray-700">Expected Cash in Till:</span>
-                                    <span class="text-lg font-bold text-teal-700">N$${expectedAmount.toFixed(2)}</span>
-                                </div>
+                                <p class="text-sm text-gray-600 text-left">Enter the cash you counted. System expected cash appears on the printed report after you submit.</p>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-2">Actual Cash in Till:</label>
                                     <input type="number" 
@@ -2027,21 +2022,17 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 Swal.showValidationMessage('Please enter a valid cash amount');
                                 return false;
                             }
-                            return { actualAmount, expectedAmount };
+                            return { actualAmount };
                         }
                     }).then((result) => {
                         if (result.isConfirmed) {
                             const actualAmount = result.value.actualAmount;
-                            const expectedAmount = result.value.expectedAmount;
-                            const difference = actualAmount - expectedAmount;
                             
-                            // Fetch full cash up data
                             const cashupFormData = new FormData();
                             cashupFormData.append('date', selectedDate);
                             cashupFormData.append('actual_cash_in_till', actualAmount);
-                            cashupFormData.append('cash_difference', difference);
                         
-                        fetch('fetch_report_data.php', {
+                        fetch('../fetch_report_data.php', {
                             method: 'POST',
                             body: cashupFormData
                         })
@@ -2058,13 +2049,16 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 return;
                             }
                             
+                            const expectedAmount = parseFloat(cashupData.expected_cash_at_cashup || 0);
+                            const difference = typeof cashupData.cash_difference === 'number' ? cashupData.cash_difference : (actualAmount - expectedAmount);
+                            
                             // Open cash drawer before generating report
                             openCashDrawer();
                             
                             // Create a form to submit for PDF generation
                             const form = document.createElement('form');
                             form.method = 'POST';
-                            form.action = 'cash-pdf.php';
+                            form.action = '../cash-pdf.php';
                             
                             // Add all data as hidden fields
                             const pdfData = {
@@ -2076,7 +2070,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 unpaid_credit: cashupData.unpaidCredit || 0,
                                 cash_on_hand: cashupData.cashOnHand || 0,
                                 cash_available_in_till: cashupData.cashAvailableInTill || 0,
-                                expected_cash: expectedAmount, // Add expected cash amount
+                                expected_cash: expectedAmount,
                                 actual_cash_in_till: actualAmount,
                                 cash_difference: difference,
                                 total_cash_in: cashupData.totalCashIn || 0,

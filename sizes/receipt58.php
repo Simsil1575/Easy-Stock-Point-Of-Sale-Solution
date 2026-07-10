@@ -5,6 +5,7 @@ ini_set('display_errors', 0);
 if (ob_get_level()) ob_clean();
 /* Call this file 'hello-world.php' */
 require __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/../receipt_payment_helper.php';
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
@@ -688,10 +689,9 @@ try {
             $printer->text(str_repeat('-', 32) . "\n");
             $printer->text(sprintf("%-20s%11s\n", "Total:", "N$" . number_format($subtotal, 2)));
             
-            // Calculate and show change if cash amount is greater than total
-            if (isset($orderData['cash_amount']) && $orderData['cash_amount'] > $subtotal) {
-                $change = max(0, $orderData['cash_amount'] - $subtotal);
-                $printer->text(sprintf("%-20s%11s\n", "Change:", "N$" . number_format($change, 2)));
+            $mixedChange = receipt_mixed_payment_change($orderData, $subtotal);
+            if ($mixedChange > 0.004) {
+                $printer->text(sprintf("%-20s%11s\n", "Change:", "N$" . number_format($mixedChange, 2)));
             }
         } else if (isset($orderData['table_id']) || isset($orderData['tab_id'])) {
             // Tab sale - no payment received

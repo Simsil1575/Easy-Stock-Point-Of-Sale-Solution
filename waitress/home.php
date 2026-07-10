@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/../ensure_laybye_schema.php';
 
 session_start();
 
@@ -32,13 +33,46 @@ try {
     // Column already exists, continue
 }
 
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_ip TEXT");
+} catch (PDOException $e) {
+}
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_port INTEGER NOT NULL DEFAULT 9100");
+} catch (PDOException $e) {
+}
+
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN skip_stock_checks BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists, continue
+}
+
+foreach ([
+    "ALTER TABLE product_settings ADD COLUMN gratuity_percent REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE product_settings ADD COLUMN gratuity_default_enabled INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE product_settings ADD COLUMN gratuity_default_include_in_total INTEGER NOT NULL DEFAULT 1",
+] as $_gratuityMigrateSql) {
+    try {
+        $db->exec($_gratuityMigrateSql);
+    } catch (PDOException $e) {
+    }
+}
+
 // Fetch the show_all_products setting
-$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity, use_qz_tray FROM product_settings LIMIT 1");
+$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity, skip_stock_checks, use_qz_tray, kitchen_printer_ip, kitchen_printer_port FROM product_settings LIMIT 1");
 $setting = $settingStmt->fetch(PDO::FETCH_ASSOC);
 $show_all_products = $setting['show_all_products'] ?? 0; // Default to 0 if not set
 $default_print_receipt = $setting['default_print_receipt'] ?? 0; // Default to 0 if not set
 $hide_available_quantity = $setting['hide_available_quantity'] ?? 0; // Default to 0 if not set
+$skip_stock_checks = isset($setting['skip_stock_checks']) ? (int) $setting['skip_stock_checks'] : 0;
 $use_qz_tray = isset($setting['use_qz_tray']) ? (int)$setting['use_qz_tray'] : 0;
+$kitchen_printer_ip = trim((string)($setting['kitchen_printer_ip'] ?? ''));
+$kitchen_printer_port = isset($setting['kitchen_printer_port']) ? (int)$setting['kitchen_printer_port'] : 9100;
+if ($kitchen_printer_port <= 0 || $kitchen_printer_port > 65535) {
+    $kitchen_printer_port = 9100;
+}
+$kitchen_printer_configured = $kitchen_printer_ip !== '' ? 1 : 0;
 
 // Fetch products from the database
 $query = '
@@ -47,9 +81,12 @@ $query = '
     LEFT JOIN order_items oi ON p.name = oi.product_name
 ';
 
-// Add a condition to filter out products with quantity <= 0 if show_all_products is unchecked
+// Hide lay-bye payment ledger product from the grid; optional qty filter
+$laybyePosExclude = laybyePaymentProductWhereExclude('p.name');
 if (!$show_all_products) {
-    $query .= ' WHERE p.quantity > 0';
+    $query .= ' WHERE p.quantity > 0 AND ' . $laybyePosExclude;
+} else {
+    $query .= ' WHERE ' . $laybyePosExclude;
 }
 
 $query .= ' GROUP BY p.id ORDER BY total_sold DESC';
@@ -73,7 +110,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
 $creditors = $db->query("SELECT * FROM creditors WHERE active = 1")->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch unique categories from products (custom order: Bar, Restaurant, Laundry, Rooms, then others alphabetically)
-$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' 
+$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND " . laybyePaymentProductWhereExclude('name') . " 
 ORDER BY 
     CASE 
         WHEN LOWER(category) = 'bar' THEN 1
@@ -122,6 +159,7 @@ if (!$businessInfo) {
     <script src="../src/howler.min.js"></script>
     <script src="../src/chart.js"></script>
     <script src="../lucide.js"></script>
+    <?php $kbAssetPrefix = '../'; include __DIR__ . '/../includes/kioskboard_payment.php'; ?>
     <!-- Load sendToPrinter function from receipt.php -->
     <script src="../receipt.php?js=true"></script>
     <meta name="google" content="notranslate">
@@ -1449,6 +1487,7 @@ if (!$businessInfo) {
                     <div class="bg-white rounded-xl shadow-lg overflow-hidden cursor-pointer transition-transform duration-300 hover:scale-105 product-item select-none" 
                         data-price="<?= $product['price'] ?>" 
                         data-name="<?= htmlspecialchars($product['name']) ?>" 
+                        data-available-quantity="<?= (int)$product['quantity'] ?>"
                         data-barcode="<?= htmlspecialchars($product['barcode']) ?>"
                         data-category="<?= htmlspecialchars($product['category'] ?? '') ?>"
                         data-discount="<?= $product['discount'] ?? 0 ?>"
@@ -1545,8 +1584,11 @@ if (!$businessInfo) {
             return; // Exit the function, allowing the input to handle the key press
         }
 
-        // Skip if we're editing a quantity (input field with quantity-input class)
-        if (document.activeElement.classList && document.activeElement.classList.contains('quantity-input')) {
+        // Skip if we're editing a quantity or kioskboard field
+        if (document.activeElement.classList && (
+            document.activeElement.classList.contains('quantity-input') ||
+            document.activeElement.classList.contains('js-kioskboard-input')
+        )) {
             return;
         }
 
@@ -1815,8 +1857,11 @@ if (!$businessInfo) {
               // Add event listener for backspace key
               document.addEventListener('keydown', function(event) {
             if (event.key === 'Backspace') {
-                // Skip if we're editing a quantity (input field with quantity-input class)
-                if (document.activeElement.classList && document.activeElement.classList.contains('quantity-input')) {
+                // Skip if we're editing a quantity or kioskboard field
+                if (document.activeElement.classList && (
+                    document.activeElement.classList.contains('quantity-input') ||
+                    document.activeElement.classList.contains('js-kioskboard-input')
+                )) {
                     return;
                 }
                 clearSearch();
@@ -1852,6 +1897,13 @@ if (!$businessInfo) {
         <ul id="cartItems" class="mb-6 space-y-4 border border-gray-300 rounded-lg p-4 text-base flex-grow">
             <!-- Cart items will be added here dynamically -->
         </ul>
+
+        <div class="mb-6 rounded-xl border border-gray-200 bg-gray-50 p-3">
+            <p class="text-base font-bold text-gray-900 flex items-center shrink-0 whitespace-nowrap">
+                <svg class="w-5 h-5 mr-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                Change: N$<span id="changeAmount" class="text-teal-700 text-xl">0.00</span>
+            </p>
+        </div>
 
         <div class="mt-4">
  
@@ -1945,10 +1997,25 @@ if (!$businessInfo) {
 
         // Settings from PHP
         const hideAvailableQuantity = <?php echo $hide_available_quantity; ?>;
+        const skipStockChecks = <?php echo $skip_stock_checks; ?>;
         const defaultPrintReceipt = <?php echo $default_print_receipt; ?>;
+        const kitchenPrinterConfigured = <?php echo (int)$kitchen_printer_configured; ?>;
         // receipt.php?js=true may already define `useQzTray` as a var.
         if (typeof useQzTray === 'undefined') {
             var useQzTray = <?php echo $use_qz_tray ? 'true' : 'false'; ?>;
+        }
+
+        // Get available quantity from product element (data attribute or "Available:" text). Used for stock checks even when quantity is hidden.
+        function getAvailableQuantity(productElement) {
+            if (!productElement) return null;
+            const dataQty = productElement.getAttribute('data-available-quantity');
+            if (dataQty !== null && dataQty !== '') return parseInt(dataQty, 10);
+            const quantityElement = productElement.querySelector('p:last-child');
+            if (quantityElement && quantityElement.textContent.includes('Available:')) {
+                const m = quantityElement.textContent.match(/Available:\s*(\d+)/);
+                return m ? parseInt(m[1], 10) : null;
+            }
+            return null;
         }
         
         // Current user info for table ownership
@@ -1988,6 +2055,14 @@ if (!$businessInfo) {
                     vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
                     vat_rate: receiptData.vat_rate || businessInfo.vat_rate
                 });
+
+                if (dataWithBusiness.print_to_kitchen_printer === true) {
+                    return fetch('../receipt.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(dataWithBusiness)
+                    }).then(function(r) { return r.json(); });
+                }
 
                 var ua = (navigator.userAgent || '').toLowerCase();
                 var isAndroidLike = ua.indexOf('android') !== -1 || ua.indexOf('median') !== -1;
@@ -2117,6 +2192,29 @@ if (!$businessInfo) {
 
         let cart = [];
 
+        function roundMoney(v) {
+            return Math.round(Number(v) * 100) / 100;
+        }
+
+        function getSaleTotal() {
+            const el = document.getElementById('cartTotal');
+            if (!el) return 0;
+            const t = parseFloat(String(el.innerText).replace(/,/g, ''));
+            return isNaN(t) ? 0 : t;
+        }
+
+        function orderItemsForCheckout() {
+            return cart.slice();
+        }
+
+        function getPayloadOrderTotal() {
+            return roundMoney(orderItemsForCheckout().reduce((sum, item) => sum + item.price, 0));
+        }
+
+        function getAmountDue() {
+            return getSaleTotal();
+        }
+
         function addToCart(element) {
             const price = parseFloat(element.getAttribute('data-price'));
             const name = element.getAttribute('data-name');
@@ -2197,6 +2295,8 @@ if (!$businessInfo) {
             });
 
             cartTotal.innerText = total.toFixed(2);
+
+            calculateChange();
             
             // Update mobile cart counter
             if (totalItems > 0) {
@@ -2264,47 +2364,51 @@ if (!$businessInfo) {
             input.type = 'number';
             input.value = currentQuantity;
             input.min = '1';
-            input.className = 'w-16 px-2 py-1 text-center border border-gray-300 rounded text-sm quantity-input';
+            input.className = 'w-16 px-2 py-1 text-center border border-gray-300 rounded text-sm quantity-input js-kioskboard-input js-kioskboard-decimal';
+            input.setAttribute('data-pos-kb-placement', 'bottom');
             input.style.backgroundColor = '#dbeafe';
             input.style.color = '#1e40af';
             
             // Replace span with input
             quantitySpan.parentNode.replaceChild(input, quantitySpan);
-            
-            // Focus and select the input
-            input.focus();
-            input.select();
+
+            if (window.PosKioskBoard) {
+                window.PosKioskBoard.bindDecimal(input, { placement: 'bottom', allowRealKeyboard: false });
+            }
+
+            requestAnimationFrame(function () {
+                input.focus();
+                input.select();
+                if (window.PosKioskBoard && window.PosKioskBoard.openInput) {
+                    window.PosKioskBoard.openInput(input);
+                }
+            });
             
             // Handle input completion
             function finishEditing() {
+                if (window.PosKioskBoard) {
+                    window.PosKioskBoard.close();
+                }
                 const newQuantity = parseInt(input.value);
                 
                 if (newQuantity && newQuantity > 0) {
-                    // Skip stock check if hideAvailableQuantity is enabled
-                    if (!hideAvailableQuantity) {
-                        // Check available stock
+                    // Check available stock unless skip stock checks is enabled
+                    if (!skipStockChecks) {
                         const productElement = document.querySelector(`.product-item[data-name="${cart[index].name}"]`);
-                        if (productElement) {
-                            const quantityElement = productElement.querySelector('p:last-child');
-                            if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                                const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                                
-                                // Add current cart quantity back to available stock for comparison
-                                const totalAvailable = availableQuantity + currentQuantity;
-                                
-                                if (newQuantity > totalAvailable) {
-                                    Swal.fire({
-                                        icon: 'warning',
-                                        title: 'Insufficient Stock',
-                                        text: `Only ${totalAvailable} units available for ${cart[index].name}`,
-                                        timer: 3000,
-                                        timerProgressBar: true
-                                    });
-                                    // Restore original quantity
-                                    cart[index].quantity = currentQuantity;
-                                    updateCart();
-                                    return;
-                                }
+                        const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                        if (availableQuantity !== null) {
+                            const totalAvailable = availableQuantity + currentQuantity;
+                            if (newQuantity > totalAvailable) {
+                                Swal.fire({
+                                    icon: 'warning',
+                                    title: 'Insufficient Stock',
+                                    text: `Only ${totalAvailable} units available for ${cart[index].name}`,
+                                    timer: 3000,
+                                    timerProgressBar: true
+                                });
+                                cart[index].quantity = currentQuantity;
+                                updateCart();
+                                return;
                             }
                         }
                     }
@@ -2329,6 +2433,9 @@ if (!$businessInfo) {
                 }
                 if (event.key === 'Escape') {
                     // Cancel editing, restore original quantity
+                    if (window.PosKioskBoard) {
+                        window.PosKioskBoard.close();
+                    }
                     cart[index].quantity = currentQuantity;
                     updateCart();
                 }
@@ -2560,6 +2667,7 @@ if (!$businessInfo) {
                 // First fetch expected cash amount from fetch_report_data.php
                 const formData = new FormData();
                 formData.append('date', selectedDate);
+                formData.append('cash_up_hide_expected', '1');
                 
                 fetch('../fetch_report_data.php', {
                     method: 'POST',
@@ -2578,16 +2686,11 @@ if (!$businessInfo) {
                         return;
                     }
                     
-                    const expectedAmount = parseFloat(data.cashAvailableInTill || 0);
-                    
                     Swal.fire({
                         title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">Cash Up - ' + selectedDate + '</h1>',
                         html: `
                             <div class="space-y-4">
-                                <div class="w-full flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-gray-700">Expected Cash in Till:</span>
-                                    <span class="text-lg font-bold text-teal-700">N$${expectedAmount.toFixed(2)}</span>
-                                </div>
+                                <p class="text-sm text-gray-600 text-left">Enter the cash you counted. System expected cash is shown on the printed report after you submit.</p>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-2">Actual Cash in Till:</label>
                                     <input type="number" 
@@ -2618,19 +2721,15 @@ if (!$businessInfo) {
                                 Swal.showValidationMessage('Please enter a valid cash amount');
                                 return false;
                             }
-                            return { actualAmount, expectedAmount };
+                            return { actualAmount };
                         }
                     }).then((result) => {
                         if (result.isConfirmed) {
                             const actualAmount = result.value.actualAmount;
-                            const expectedAmount = result.value.expectedAmount;
-                            const difference = actualAmount - expectedAmount;
                             
-                            // Fetch full cash up data
                             const cashupFormData = new FormData();
                             cashupFormData.append('date', selectedDate);
                             cashupFormData.append('actual_cash_in_till', actualAmount);
-                            cashupFormData.append('cash_difference', difference);
                         
                         fetch('../fetch_report_data.php', {
                             method: 'POST',
@@ -2648,6 +2747,9 @@ if (!$businessInfo) {
                                 });
                                 return;
                             }
+                            
+                            const expectedAmount = parseFloat(cashupData.expected_cash_at_cashup || 0);
+                            const difference = typeof cashupData.cash_difference === 'number' ? cashupData.cash_difference : (actualAmount - expectedAmount);
                             
                             // Open cash drawer before generating report
                             openCashDrawer();
@@ -2667,7 +2769,7 @@ if (!$businessInfo) {
                                 unpaid_credit: cashupData.unpaidCredit || 0,
                                 cash_on_hand: cashupData.cashOnHand || 0,
                                 cash_available_in_till: cashupData.cashAvailableInTill || 0,
-                                expected_cash: expectedAmount, // Add expected cash amount
+                                expected_cash: expectedAmount,
                                 actual_cash_in_till: actualAmount,
                                 cash_difference: difference,
                                 total_cash_in: cashupData.totalCashIn || 0,
@@ -2829,10 +2931,13 @@ if (!$businessInfo) {
         }
 
         function calculateChange() {
-            const cartTotal = parseFloat(document.getElementById('cartTotal').innerText) || 0; // Ensure cartTotal is a number
-            const cashReceived = parseFloat(document.getElementById('cashReceived').value) || 0;
-            const change = cashReceived - cartTotal;
-            document.getElementById('changeAmount').innerText = change >= 0 ? change.toFixed(2) : '0.00';
+            const cashEl = document.getElementById('cashReceived');
+            const changeEl = document.getElementById('changeAmount');
+            if (!cashEl || !changeEl) return;
+            const amountDue = typeof getAmountDue === 'function' ? getAmountDue() : (parseFloat(document.getElementById('cartTotal').innerText) || 0);
+            const cashReceived = parseFloat(cashEl.value) || 0;
+            const change = cashReceived - amountDue;
+            changeEl.innerText = change >= 0 ? change.toFixed(2) : '0.00';
         }
 
         function handleEWalletPurchase() {
@@ -2847,22 +2952,15 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Check for out-of-stock items (skip if hideAvailableQuantity is enabled)
-            if (!hideAvailableQuantity) {
-                const outOfStockItems = cart.filter(item => {
+            // Check for out-of-stock items unless skip stock checks is enabled
+            if (!skipStockChecks) {
+                const outOfStockItemsEwallet = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
-
-                if (outOfStockItems.length > 0) {
-                    const itemNames = outOfStockItems.map(item => item.name).join(', ');
+                if (outOfStockItemsEwallet.length > 0) {
+                    const itemNames = outOfStockItemsEwallet.map(item => item.name).join(', ');
                     Swal.fire({
                         icon: 'error',
                         title: 'Out of Stock',
@@ -2921,8 +3019,8 @@ if (!$businessInfo) {
                     const saleData = {
                         transaction_ref: result.value.transactionRef,
                         wallet_provider: result.value.walletProvider,
-                        items: cart,
-                        total: parseFloat(document.getElementById('cartTotal').innerText),
+                        items: orderItemsForCheckout(),
+                        total: getPayloadOrderTotal(),
                         payment_method: 'e-wallet',
                         cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
                         // Always include business info from info.db
@@ -2998,18 +3096,12 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Skip stock check if hideAvailableQuantity is enabled
-            if (!hideAvailableQuantity) {
+            // Skip stock check if skip stock checks is enabled
+            if (!skipStockChecks) {
                 const outOfStockItems = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
 
                 if (outOfStockItems.length > 0) {
@@ -3024,7 +3116,7 @@ if (!$businessInfo) {
                 }
             }
 
-            const total = parseFloat(document.getElementById('cartTotal').innerText) || 0;
+            const total = getPayloadOrderTotal();
 
             Swal.fire({
                 title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">Cash + EFT</h1>',
@@ -3083,7 +3175,7 @@ if (!$businessInfo) {
                 const { cashAmount, eftAmount, provider, ref } = result.value;
 
                 const saleData = {
-                    items: cart,
+                    items: orderItemsForCheckout(),
                     total: total,
                     payment_method: 'mixed',
                     cash_amount: cashAmount,
@@ -3165,18 +3257,12 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Skip stock check if hideAvailableQuantity is enabled
-            if (!hideAvailableQuantity) {
+            // Skip stock check if skip stock checks is enabled
+            if (!skipStockChecks) {
                 const outOfStockItems = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
 
                 if (outOfStockItems.length > 0) {
@@ -3211,7 +3297,36 @@ if (!$businessInfo) {
                 });
         }
 
+        function formatCreditMoney(amount) {
+            return 'N$' + parseFloat(amount || 0).toFixed(2);
+        }
+
+        function getCreditorAvailableLabel(creditor) {
+            if (!creditor || !creditor.is_limit_enforced) return '';
+            const available = parseFloat(creditor.available_credit || 0);
+            const limit = parseFloat(creditor.credit_limit || 0);
+            return `${formatCreditMoney(available)} / ${formatCreditMoney(limit)}`;
+        }
+
+        function checkCreditSaleWithinLimit(creditorId, saleAmount) {
+            const creditors = window._lastCreditorsList || [];
+            const creditor = creditors.find(c => String(c.id) === String(creditorId));
+            if (!creditor || !creditor.is_limit_enforced) return true;
+            const sale = parseFloat(saleAmount || 0);
+            const available = parseFloat(creditor.available_credit || 0);
+            if (sale > available + 0.005) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Credit Limit Exceeded',
+                    html: `Limit: <b>${formatCreditMoney(creditor.credit_limit)}</b><br>Outstanding: <b>${formatCreditMoney(creditor.outstanding_balance)}</b><br>Available: <b>${formatCreditMoney(available)}</b><br>Requested: <b>${formatCreditMoney(sale)}</b>`
+                });
+                return false;
+            }
+            return true;
+        }
+
         function showCreditorSelectionModal(creditors) {
+            window._lastCreditorsList = creditors || [];
             // Create creditor list HTML with search
             let creditorsListHTML = '';
             if (creditors.length === 0) {
@@ -3229,6 +3344,11 @@ if (!$businessInfo) {
                     const balance = parseFloat(creditor.outstanding_balance || 0);
                     const balanceClass = balance > 0 ? 'text-orange-500 font-bold' : 'text-teal-600 font-semibold';
                     const balanceText = balance > 0 ? `N$${balance.toFixed(2)}` : 'N$0.00';
+                    const available = parseFloat(creditor.available_credit || 0);
+                    const limitEnforced = !!creditor.is_limit_enforced;
+                    const availableClass = !limitEnforced ? balanceClass : (available <= 0.005 ? 'text-red-600 font-bold' : (available < parseFloat(creditor.credit_limit || 0) * 0.2 ? 'text-orange-500 font-bold' : 'text-teal-600 font-semibold'));
+                    const rightLabel = limitEnforced ? getCreditorAvailableLabel(creditor) : balanceText;
+                    const rightSub = limitEnforced ? `<div class="text-[10px] text-gray-500">Bal: ${balanceText}</div>` : '';
                     
                     creditorsListHTML += `
                         <div class="creditor-item bg-white rounded-lg p-2 mb-1 cursor-pointer hover:bg-gray-200 transition-colors duration-200 relative" 
@@ -3246,10 +3366,11 @@ if (!$businessInfo) {
                                     <span class="font-medium text-gray-700 truncate">${creditor.name}</span>
                                 </div>
                                 ${creditor.phone ? `<span class="text-gray-500 whitespace-nowrap absolute left-1/2 transform -translate-x-1/2">${creditor.phone}</span>` : ''}
-                                <div class="flex items-center gap-2 ml-auto flex-shrink-0">
-                                    <span class="${balanceClass} font-medium whitespace-nowrap px-2 py-0.5 rounded-full text-xs bg-gray-100 border border-gray-200" style="min-width: 65px; text-align: center;">
-                                        ${balanceText}
+                                <div class="flex flex-col items-end ml-auto flex-shrink-0">
+                                    <span class="${availableClass} font-medium whitespace-nowrap px-2 py-0.5 rounded-full text-xs bg-gray-100 border border-gray-200" style="min-width: 65px; text-align: center;">
+                                        ${limitEnforced ? 'Avail: ' + rightLabel : rightLabel}
                                     </span>
+                                    ${rightSub}
                                 </div>
                             </div>
                         </div>
@@ -3296,7 +3417,7 @@ if (!$businessInfo) {
                                     </svg>
                                 </div>
                                 <div class="flex items-center gap-1.5 cursor-pointer hover:text-gray-700 transition-colors sort-header ml-auto flex-shrink-0" data-sort="balance">
-                                    <span>Balance</span>
+                                    <span>Available</span>
                                     <svg class="w-3 h-3 sort-icon transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path>
                                     </svg>
@@ -3476,6 +3597,9 @@ if (!$businessInfo) {
                         }
                         // Automatically proceed to next step
                         setTimeout(() => {
+                            if (!checkCreditSaleWithinLimit(id, getPayloadOrderTotal())) {
+                                return;
+                            }
                             Swal.close();
                             proceedWithCreditor(selectedCreditorId);
                         }, 200); // Small delay for visual feedback
@@ -3520,6 +3644,12 @@ if (!$businessInfo) {
                                    placeholder="Enter phone" 
                                    autocomplete="off">
                         </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1.5">Credit Limit (N$)</label>
+                            <input type="number" id="newCreditorLimit" min="0" step="0.01"
+                                   class="w-full px-3 py-2.5 bg-[#f3f4f6] border-none rounded-lg text-gray-700 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-300 transition-all duration-200" 
+                                   placeholder="0 = unlimited" value="0" autocomplete="off">
+                        </div>
                     </div>
                 `,
                 showCancelButton: true,
@@ -3535,13 +3665,14 @@ if (!$businessInfo) {
                 preConfirm: () => {
                     const name = document.getElementById('newCreditorName').value.trim();
                     const phone = document.getElementById('newCreditorPhone').value.trim();
+                    const credit_limit = parseFloat(document.getElementById('newCreditorLimit').value || '0');
                     
                     if (!name) {
                         Swal.showValidationMessage('<span class="text-red-500">Creditor name is required</span>');
                         return false;
                     }
                     
-                    return { name, phone };
+                    return { name, phone, credit_limit: isNaN(credit_limit) ? 0 : Math.max(0, credit_limit) };
                 }
             }).then((result) => {
                 if (result.isConfirmed) {
@@ -3585,6 +3716,9 @@ if (!$businessInfo) {
         }
 
         function proceedWithCreditor(creditorId) {
+            if (!checkCreditSaleWithinLimit(creditorId, getPayloadOrderTotal())) {
+                return;
+            }
             // Show due date input modal
             Swal.fire({
                 title: '<h1 class="text-xl font-semibold text-gray-700 mb-3">Set Due Date</h1>',
@@ -3635,8 +3769,8 @@ if (!$businessInfo) {
                     const saleData = {
                         creditor_id: secondResult.value.creditorId,
                         due_date: secondResult.value.dueDate,
-                        items: cart,
-                        total: parseFloat(document.getElementById('cartTotal').innerText),
+                        items: orderItemsForCheckout(),
+                        total: getPayloadOrderTotal(),
                         cash_received: 0,
                         cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
                         // Always include business info from info.db
@@ -3737,7 +3871,7 @@ if (!$businessInfo) {
         Checkout`;
     checkoutBtn.classList.add('opacity-50', 'cursor-not-allowed');
 
-    const cartTotal = parseFloat(document.getElementById('cartTotal').innerText);
+    const chargeTotal = getPayloadOrderTotal();
     const cashInput = document.getElementById('cashReceived');
     const cashReceived = parseFloat(cashInput.value);
 
@@ -3756,20 +3890,14 @@ if (!$businessInfo) {
         return;
     }
 
-    const change = cashReceived - cartTotal;
+    const change = cashReceived - chargeTotal;
 
-    // Skip stock check if hideAvailableQuantity is enabled
-    if (!hideAvailableQuantity) {
+    // Skip stock check if skip stock checks is enabled
+    if (!skipStockChecks) {
         const outOfStockItems = cart.filter(item => {
             const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-            if (productElement) {
-                const quantityElement = productElement.querySelector('p:last-child');
-                if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                    const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                    return availableQuantity < item.quantity;
-                }
-            }
-            return false;
+            const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+            return availableQuantity !== null && availableQuantity < item.quantity;
         });
 
         if (outOfStockItems.length > 0) {
@@ -3788,7 +3916,7 @@ if (!$businessInfo) {
         }
     }
 
-    if (cashReceived < cartTotal) {
+    if (cashReceived < chargeTotal) {
         Swal.fire({
             icon: 'error',
             title: 'Insufficient Cash',
@@ -3817,8 +3945,8 @@ if (!$businessInfo) {
     }
 
     const data = {
-        items: cart,
-        total: cartTotal,
+        items: orderItemsForCheckout(),
+        total: chargeTotal,
         cash_received: cashReceived,
         payment_method: 'cash',  // Ensure payment_method is set for cash payments
         cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
@@ -3910,6 +4038,7 @@ if (!$businessInfo) {
                 data.forEach(product => {
                     const productElement = document.querySelector(`.product-item[data-name="${product.name}"]`);
                     if (productElement) {
+                        productElement.setAttribute('data-available-quantity', String(Math.max(0, parseInt(product.quantity, 10) || 0)));
                         // Update quantity (conditionally hide if setting is enabled)
                         const quantityElement = productElement.querySelector('p:last-child');
                         if (quantityElement) {
@@ -3984,18 +4113,12 @@ if (!$businessInfo) {
                 return;
             }
 
-            // Skip stock check if hideAvailableQuantity is enabled
-            if (!hideAvailableQuantity) {
+            // Skip stock check if skip stock checks is enabled
+            if (!skipStockChecks) {
                 const outOfStockItems = cart.filter(item => {
                     const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                    if (productElement) {
-                        const quantityElement = productElement.querySelector('p:last-child');
-                        if (quantityElement && quantityElement.textContent.includes('Available:')) {
-                            const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                            return availableQuantity < item.quantity;
-                        }
-                    }
-                    return false;
+                    const availableQuantity = productElement ? getAvailableQuantity(productElement) : null;
+                    return availableQuantity !== null && availableQuantity < item.quantity;
                 });
 
                 if (outOfStockItems.length > 0) {
@@ -4101,16 +4224,21 @@ if (!$businessInfo) {
                 title: '<h1 class="text-xl font-semibold text-gray-700 mb-3">Choose Table</h1>',
                 html: `
                     <div class="space-y-3" style="max-width: 500px;">
+                        <p class="text-sm text-teal-700 bg-teal-50 border border-teal-100 rounded-lg px-3 py-2">
+                            Touch screen: tap the search field — the keyboard opens on the right side.
+                        </p>
                         <!-- Search Bar and Create Table Button in same row -->
                         <div class="flex items-center gap-2">
-                            <div class="relative flex-1">
+                            <div class="kioskboard-input-wrap relative flex-1">
                                 <input type="text" 
                                        id="tableSearch" 
-                                       class="w-full h-10 px-3 pl-9 bg-[#f3f4f6] border-none rounded-lg text-gray-700 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-300 transition-all duration-200" 
-                                       placeholder="Search...">
-                                <svg class="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                       class="w-full h-10 px-3 pl-9 pr-10 bg-[#f3f4f6] border-none rounded-lg text-gray-700 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-300 transition-all duration-200 js-kioskboard-input js-kioskboard-text" 
+                                       placeholder="Search..."
+                                       autocomplete="off">
+                                <svg class="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
+                                <svg class="kioskboard-touch-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M8 12h.001"/><path d="M12 12h.001"/><path d="M16 12h.001"/><path d="M7 16h10"/></svg>
                             </div>
                             <button id="createTableBtn" 
                                     class="h-10 bg-[#f3f4f6] hover:bg-gray-200 text-gray-700 font-medium px-3 rounded-lg transition-colors duration-200 flex items-center justify-center flex-shrink-0">
@@ -4162,6 +4290,10 @@ if (!$businessInfo) {
                 },
                 didOpen: () => {
                     let selectedTableId = null;
+
+                    if (window.PosKioskBoard) {
+                        window.PosKioskBoard.bindSwalFields();
+                    }
                     
                     // Search functionality
                     const searchInput = document.getElementById('tableSearch');
@@ -4243,6 +4375,11 @@ if (!$businessInfo) {
                             proceedWithTable(selectedTableId, tableName);
                         }, 200); // Small delay for visual feedback
                     };
+                },
+                willClose: () => {
+                    if (window.PosKioskBoard) {
+                        window.PosKioskBoard.close();
+                    }
                 }
             }).then((result) => {
                 // Handle if user clicks Next without selection
@@ -4267,13 +4404,19 @@ if (!$businessInfo) {
                 title: '<h1 class="text-xl font-semibold text-gray-700 mb-3">Create New Table</h1>',
                 html: `
                     <div class="space-y-3" style="max-width: 500px;">
+                        <p class="text-sm text-teal-700 bg-teal-50 border border-teal-100 rounded-lg px-3 py-2">
+                            Touch screen: tap the table name field — the keyboard opens on the right side.
+                        </p>
                         <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1.5">Table Name <span class="text-red-500">*</span></label>
-                            <input type="text" 
-                                   id="newTableName" 
-                                   class="w-full px-3 py-2.5 bg-[#f3f4f6] border-none rounded-lg text-gray-700 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-300 transition-all duration-200" 
-                                   placeholder="Enter table name" 
-                                   autocomplete="off">
+                            <label class="block text-xs font-medium text-gray-600 mb-1.5" for="newTableName">Table Name <span class="text-red-500">*</span></label>
+                            <div class="kioskboard-input-wrap">
+                                <input type="text" 
+                                       id="newTableName" 
+                                       class="w-full px-3 py-2.5 pr-10 bg-[#f3f4f6] border-none rounded-lg text-gray-700 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-300 transition-all duration-200 js-kioskboard-input js-kioskboard-text" 
+                                       placeholder="Enter table name" 
+                                       autocomplete="off">
+                                <svg class="kioskboard-touch-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M8 12h.001"/><path d="M12 12h.001"/><path d="M16 12h.001"/><path d="M7 16h10"/></svg>
+                            </div>
                         </div>
                     </div>
                 `,
@@ -4287,6 +4430,20 @@ if (!$businessInfo) {
                     popup: 'rounded-xl shadow-lg bg-white',
                 },
                 allowOutsideClick: false,
+                didOpen: () => {
+                    if (window.PosKioskBoard) {
+                        window.PosKioskBoard.bindSwalFields();
+                    }
+                    const nameInput = document.getElementById('newTableName');
+                    if (nameInput) {
+                        nameInput.focus();
+                    }
+                },
+                willClose: () => {
+                    if (window.PosKioskBoard) {
+                        window.PosKioskBoard.close();
+                    }
+                },
                 preConfirm: () => {
                     const name = document.getElementById('newTableName').value.trim();
                     
@@ -4348,8 +4505,8 @@ if (!$businessInfo) {
             const saleData = {
                 table_id: tableId,
                 table_name: tableName,
-                items: cart,
-                total: parseFloat(document.getElementById('cartTotal').innerText),
+                items: orderItemsForCheckout(),
+                total: getPayloadOrderTotal(),
                 cash_received: 0,
                 cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
                 // Always include business info from info.db
@@ -4371,15 +4528,15 @@ if (!$businessInfo) {
                         <a href='#' onclick='return reverseTransaction(event)' style='color: #a1a1a1; text-decoration: none; font-weight: 500; font-size: 1.05em; margin-right: 18px;'>
                             <i class='fas fa-undo' style='margin-right: 6px;'></i> Reverse transaction
                         </a>
-                        <input type='checkbox' id='printReceiptCheckbox' style='transform: scale(1.2); margin-right: 8px; vertical-align: middle;' ${defaultPrintReceipt ? 'checked' : ''}>
-                        <label for='printReceiptCheckbox' style='font-size: 1.05em; vertical-align: middle; cursor:pointer;'>Print with receipt</label>
+                        <input type='checkbox' id='sendToKitchenCheckbox' style='transform: scale(1.2); margin-right: 8px; vertical-align: middle;' ${defaultPrintReceipt ? 'checked' : ''} ${kitchenPrinterConfigured ? '' : 'disabled'}>
+                        <label for='sendToKitchenCheckbox' style='font-size: 1.05em; vertical-align: middle; cursor:pointer;'>Send to kitchen</label>
                     </div>
                 `,
                 allowOutsideClick: false,
                 focusConfirm: false
             }).then(ok => {
                 if (!ok.isConfirmed) return;
-                const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
+                const sendToKitchen = document.getElementById('sendToKitchenCheckbox')?.checked && kitchenPrinterConfigured;
                 
                 // Process the tab sale using process_tab.php
                 fetch('../process_tab.php', {
@@ -4402,16 +4559,19 @@ if (!$businessInfo) {
                         saleData.table_name = tableName;
                         cashSound.play();
                         
-                        // Only print if checkbox is checked
-                        if (printReceipt) {
-                            // Print kitchen ticket
+                        if (sendToKitchen) {
                             const kitchenTicketData = {
                                 ...saleData,
-                                print_only: true
+                                print_only: true,
+                                print_to_kitchen_printer: true
                             };
                             delete kitchenTicketData.is_payment_receipt;
-                            
-                            sendToPrinter(kitchenTicketData).catch(printError => console.error('Kitchen ticket printing error:', printError));
+                            sendToPrinter(kitchenTicketData).then(function(pr) {
+                                if (pr && pr.success === false) {
+                                    console.error('Kitchen print:', pr.message);
+                                    Swal.fire({ icon: 'warning', title: 'Kitchen print', text: pr.message || 'Could not print to kitchen printer.', timer: 2500, showConfirmButton: false });
+                                }
+                            }).catch(printError => console.error('Kitchen ticket printing error:', printError));
                         }
                         
                         clearCart();
@@ -4433,6 +4593,7 @@ if (!$businessInfo) {
             cart = [];
             updateCart();
         }
+
         
         // Mobile cart functions
         function toggleMobileCart() {

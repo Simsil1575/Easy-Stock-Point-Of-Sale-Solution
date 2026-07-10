@@ -11,6 +11,11 @@ if (!validateCashierSession()) {
     exit();
 }
 
+if (strtolower(trim((string) ($_SESSION['role'] ?? ''))) === 'waitress') {
+    echo json_encode(['success' => false, 'message' => 'Waitresses cannot record tips. Ask a cashier or manager.']);
+    exit();
+}
+
 // Get JSON input
 $input = json_decode(file_get_contents('php://input'), true);
 
@@ -80,22 +85,6 @@ try {
                     ->execute([$productId, 'tip', -$quantity, $oldQty, $newQty]);
             }
             
-            $hasCashTx = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='cash_transactions'")->fetch();
-            if ($hasCashTx) {
-                $cols = $db->query("PRAGMA table_info(cash_transactions)")->fetchAll(PDO::FETCH_ASSOC);
-                $hasCashierId = false;
-                foreach ($cols as $c) {
-                    if ($c['name'] === 'cashier_id') { $hasCashierId = true; break; }
-                }
-                if ($hasCashierId) {
-                    $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, ?)")
-                        ->execute(['cash-out', $amount, $description, $cashier['username'], $timestamp]);
-                } else {
-                    $db->prepare("INSERT INTO cash_transactions (type, amount, description, created_at) VALUES (?, ?, ?, ?)")
-                        ->execute(['cash-out', $amount, $description, $timestamp]);
-                }
-            }
-            
             $db->commit();
         } catch (Exception $e) {
             $db->rollBack();
@@ -123,24 +112,6 @@ try {
     $db->exec("CREATE TABLE IF NOT EXISTS tips (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL NOT NULL, payment_method TEXT NOT NULL, cashier_id TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL)");
     $stmt = $db->prepare("INSERT INTO tips (amount, payment_method, cashier_id, notes, created_at) VALUES (?, ?, ?, ?, ?)");
     $stmt->execute([$amount, $paymentMethod, $cashier['username'], $notes, $timestamp]);
-    
-    // Record in cash_transactions so cash-up/reports see tips
-    $hasCashTx = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='cash_transactions'")->fetch();
-    if ($hasCashTx) {
-        $cols = $db->query("PRAGMA table_info(cash_transactions)")->fetchAll(PDO::FETCH_ASSOC);
-        $hasCashierId = false;
-        foreach ($cols as $c) {
-            if ($c['name'] === 'cashier_id') { $hasCashierId = true; break; }
-        }
-        $desc = 'Tips' . ($notes !== '' ? ' - ' . $notes : '');
-        if ($hasCashierId) {
-            $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, ?)")
-                ->execute(['cash-out', $amount, $desc, $cashier['username'], $timestamp]);
-        } else {
-            $db->prepare("INSERT INTO cash_transactions (type, amount, description, created_at) VALUES (?, ?, ?, ?)")
-                ->execute(['cash-out', $amount, $desc, $timestamp]);
-        }
-    }
     
     echo json_encode([
         'success' => true,

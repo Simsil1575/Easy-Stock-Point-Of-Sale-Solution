@@ -109,22 +109,27 @@ $unpaidCreditQuery->bindValue(':isAfterMidnight', $isAfterMidnight ? 1 : 0, PDO:
 $unpaidCreditQuery->execute();
 $unpaidCredit = $unpaidCreditQuery->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch income transactions for this date - Credit Sales (Paid with Cash)
+// Fetch income transactions for this date - Credit Sales (Paid with Cash, including cash portion of mixed)
 $paidCreditCashQuery = $db->prepare("
     SELECT 
         cs.id, 
-        cs.total_amount as amount, 
+        CASE 
+            WHEN cs.payment_status = 'paid' THEN cs.total_amount
+            WHEN cs.payment_status = 'paid_mixed' THEN cs.total_amount - COALESCE((SELECT SUM(e.amount) FROM eft_payments e WHERE e.order_id = cs.id), 0)
+            ELSE cs.total_amount
+        END as amount, 
         cs.created_at,
         'Credit (Paid Cash)' as type,
         GROUP_CONCAT(csi.product_name || ' (x' || csi.quantity || ')', ', ') as details
     FROM credit_sales cs
     JOIN credit_sale_items csi ON cs.id = csi.sale_id
-    WHERE cs.payment_status = 'paid'
+    WHERE cs.payment_status IN ('paid', 'paid_mixed')
     AND (
         (DATE(cs.created_at) = :date AND strftime('%H:%M', cs.created_at) >= :closingTime) OR
         (DATE(cs.created_at) = :nextDay AND strftime('%H:%M', cs.created_at) < :closingTime AND :isAfterMidnight = 1)
     )
     GROUP BY cs.id
+    HAVING amount > 0.005
 ");
 $paidCreditCashQuery->bindParam(':date', $date);
 $paidCreditCashQuery->bindParam(':nextDay', $nextDay);
@@ -133,22 +138,23 @@ $paidCreditCashQuery->bindValue(':isAfterMidnight', $isAfterMidnight ? 1 : 0, PD
 $paidCreditCashQuery->execute();
 $paidCreditCash = $paidCreditCashQuery->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch income transactions for this date - Credit Sales (Paid with EFT)
+// Fetch income transactions for this date - Credit Sales (Paid with EFT; amount from eft_payments for mixed)
 $paidCreditEftQuery = $db->prepare("
     SELECT 
         cs.id, 
-        cs.total_amount as amount, 
+        COALESCE((SELECT SUM(e.amount) FROM eft_payments e WHERE e.order_id = cs.id), 0) as amount, 
         cs.created_at,
         'Credit (Paid EFT)' as type,
         GROUP_CONCAT(csi.product_name || ' (x' || csi.quantity || ')', ', ') as details
     FROM credit_sales cs
     JOIN credit_sale_items csi ON cs.id = csi.sale_id
-    WHERE cs.payment_status = 'eft'
+    WHERE cs.payment_status IN ('eft', 'paid_mixed')
     AND (
         (DATE(cs.created_at) = :date AND strftime('%H:%M', cs.created_at) >= :closingTime) OR
         (DATE(cs.created_at) = :nextDay AND strftime('%H:%M', cs.created_at) < :closingTime AND :isAfterMidnight = 1)
     )
     GROUP BY cs.id
+    HAVING amount > 0.005
 ");
 $paidCreditEftQuery->bindParam(':date', $date);
 $paidCreditEftQuery->bindParam(':nextDay', $nextDay);

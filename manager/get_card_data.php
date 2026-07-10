@@ -10,13 +10,13 @@ try {
 
 // Get business closing time from business_info
 $businessInfo = [];
-$closingTime = '00:00';
+$closingTime = '22:00';
 try {
     $businessInfoDb = new PDO('sqlite:../info.db');
     $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00';
+    $closingTime = $businessInfo['closing_time'] ?? '22:00';
 } catch (PDOException $e) {
-    $closingTime = '00:00';
+    $closingTime = '22:00';
 }
 
 // Calculate business day boundaries
@@ -24,10 +24,19 @@ $closingHour = (int)substr($closingTime, 0, 2);
 $closingMinute = (int)substr($closingTime, 3, 2);
 $isAfterMidnight = $closingHour < 12;
 
+function getCurrentBusinessDate($closingTime, $isAfterMidnight) {
+    $today = date('Y-m-d');
+    $yesterday = date('Y-m-d', strtotime('-1 day'));
+    $currentTime = date('H:i');
+
+    if ($isAfterMidnight && $currentTime >= '00:00' && $currentTime < $closingTime) {
+        return $yesterday;
+    }
+    return ($currentTime < $closingTime) ? $yesterday : $today;
+}
+
 // Function to get date range based on view (using business days)
 function getDateRange($view, $closingTime, $isAfterMidnight) {
-    $today = date('Y-m-d');
-    
     switch($view) {
         case 'weekly':
             // Get Monday to Sunday of current week
@@ -49,33 +58,32 @@ function getDateRange($view, $closingTime, $isAfterMidnight) {
             break;
         case 'daily':
         default:
-            // Always return today's date for daily view
-            $startDate = $today;
-            $endDate = $today;
+            $businessDate = getCurrentBusinessDate($closingTime, $isAfterMidnight);
+            $startDate = $businessDate;
+            $endDate = $businessDate;
             break;
     }
     
     return [$startDate, $endDate];
 }
 
-// Function to build business day WHERE clause
+// Function to build business day WHERE clause (matches admin/cash.php)
 function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
-    // Simplified business day logic - if business closes after midnight, include early morning hours of next day
-    if ($isAfterMidnight && $closingTime !== '00:00') {
-        // Business day spans midnight
-        if ($startDate === $endDate) {
-            // Single day
-            $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-            return "(DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime')";
-        } else {
-            // Multiple days
-            $endDatePlusOne = date('Y-m-d', strtotime($endDate . ' +1 day'));
-            return "(DATE($dateField) >= '$startDate' AND DATE($dateField) <= '$endDate') OR (DATE($dateField) = '$endDatePlusOne' AND strftime('%H:%M', $dateField) < '$closingTime')";
-        }
-    } else {
-        // Normal business day (closes before midnight or at midnight)
-        return "DATE($dateField) >= '$startDate' AND DATE($dateField) <= '$endDate'";
+    if ($startDate === $endDate) {
+        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
+        return "(DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)";
     }
+
+    $whereClauses = [];
+    $currentDate = new DateTime($startDate);
+    $endDateTime = new DateTime($endDate);
+    while ($currentDate <= $endDateTime) {
+        $dateStr = $currentDate->format('Y-m-d');
+        $nextDayStr = (clone $currentDate)->modify('+1 day')->format('Y-m-d');
+        $whereClauses[] = "(DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)";
+        $currentDate->modify('+1 day');
+    }
+    return '(' . implode(') OR (', $whereClauses) . ')';
 }
 
 // Function to get total cash in for date range (using business days)

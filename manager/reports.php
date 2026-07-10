@@ -36,6 +36,8 @@ $db = new PDO('sqlite:../pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
+require_once __DIR__ . '/../ensure_laybye_schema.php';
+ensureLaybyeSchema($db);
 
 // Ensure tab tips column exists (ignore if already added)
 try {
@@ -184,14 +186,14 @@ $eftSalesQuery->bindParam(':nextDay', $nextDay);
 $eftSalesQuery->execute();
 $eftSalesTotal = $eftSalesQuery->fetchColumn() ?: 0;
 
-// Get EFT payments for credit sales based on payment date
+// Get EFT amounts received for credit sales on payment dates (includes mixed-settled credit sales)
 $eftCreditSalesQuery = $db->prepare("
-    SELECT SUM(p.amount) 
-    FROM payments p
-    JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE cs.payment_status = 'eft' AND (
-        (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-        (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+    SELECT COALESCE(SUM(e.amount), 0)
+    FROM eft_payments e
+    JOIN credit_sales cs ON e.order_id = cs.id
+    WHERE (
+        (DATE(e.payment_date) = :selectedDate AND strftime('%H:%M', e.payment_date) >= '$closingTime') OR
+        (DATE(e.payment_date) = :nextDay AND strftime('%H:%M', e.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
     )
 ");
 $eftCreditSalesQuery->bindParam(':selectedDate', $selectedDate);
@@ -256,7 +258,7 @@ $paidCreditQuery = $db->prepare("
     WHERE (
         (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
         (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    ) AND cs.payment_status IN ('paid', 'partial', 'eft')
+    ) AND cs.payment_status IN ('paid', 'partial', 'eft', 'paid_mixed')
 ");
 $paidCreditQuery->bindParam(':selectedDate', $selectedDate);
 $paidCreditQuery->bindParam(':nextDay', $nextDay);
@@ -306,6 +308,7 @@ $topProductsQuery = $db->prepare("
             created_at,
             CASE 
                 WHEN cs.payment_status = 'eft' THEN 'eft'
+                WHEN cs.payment_status = 'paid_mixed' THEN 'credit'
                 WHEN cs.payment_status = 'paid' THEN 'cash'
                 ELSE 'credit'
             END as payment_method
@@ -324,6 +327,34 @@ $topProductsQuery->bindParam(':selectedDate', $selectedDate);
 $topProductsQuery->bindParam(':nextDay', $nextDay);
 $topProductsQuery->execute();
 $topProducts = $topProductsQuery->fetchAll(PDO::FETCH_ASSOC);
+
+// Damaged stock for selected business day (same window as sales)
+$damagedStockRowsQuery = $db->prepare("
+    SELECT dg.id,
+           dg.product_id,
+           p.name AS product_name,
+           dg.quantity,
+           dg.reason,
+           dg.date AS damaged_at,
+           (CAST(dg.quantity AS REAL) * COALESCE(p.price, 0)) AS line_value
+    FROM damaged_goods dg
+    INNER JOIN products p ON p.id = dg.product_id
+    WHERE (
+        (DATE(dg.date) = :selectedDateDamaged AND strftime('%H:%M', dg.date) >= '$closingTime') OR
+        (DATE(dg.date) = :nextDayDamaged AND strftime('%H:%M', dg.date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+    )
+    ORDER BY dg.date DESC
+");
+$damagedStockRowsQuery->bindParam(':selectedDateDamaged', $selectedDate);
+$damagedStockRowsQuery->bindParam(':nextDayDamaged', $nextDay);
+$damagedStockRowsQuery->execute();
+$damagedStockRows = $damagedStockRowsQuery->fetchAll(PDO::FETCH_ASSOC);
+$damagedStockTotalQty = 0.0;
+$damagedStockTotalValue = 0.0;
+foreach ($damagedStockRows as $dr) {
+    $damagedStockTotalQty += (float) $dr['quantity'];
+    $damagedStockTotalValue += (float) $dr['line_value'];
+}
 
 // Fetch sales data with business day logic
 $ordersQuery = $db->prepare("
@@ -344,26 +375,37 @@ $ordersQuery = $db->prepare("
         FROM tab_payments tp
         JOIN tabs t ON tp.tab_id = t.id
         GROUP BY tp.order_id, t.tab_name
+    ), order_laybye AS (
+        SELECT lp.order_id, lp.laybye_id, lp.payment_kind AS laybye_payment_kind,
+               la.reference AS laybye_reference, cr.name AS laybye_creditor_name
+        FROM laybye_payments lp
+        INNER JOIN laybye_accounts la ON la.id = lp.laybye_id
+        LEFT JOIN creditors cr ON cr.id = la.creditor_id
     ), order_splits AS (
         SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
                MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
                MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
-               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips
+               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips,
+               MAX(olb.laybye_id) AS laybye_id, MAX(olb.laybye_reference) AS laybye_reference,
+               MAX(olb.laybye_payment_kind) AS laybye_payment_kind, MAX(olb.laybye_creditor_name) AS laybye_creditor_name
         FROM orders o
         LEFT JOIN order_sums os ON os.order_id = o.id
         LEFT JOIN order_products op ON op.order_id = o.id
         LEFT JOIN order_tab_info oti ON oti.order_id = o.id
+        LEFT JOIN order_laybye olb ON olb.order_id = o.id
         WHERE (
             (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
             (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
         )
         GROUP BY o.id
     )
-    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name
     FROM order_splits
     WHERE cash_amount > 0
     UNION ALL
-    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name
     FROM order_splits
     WHERE eft_amount > 0
     ORDER BY created_at DESC
@@ -379,6 +421,7 @@ $creditQuery = $db->prepare("
         CASE 
             WHEN cs.payment_status = 'paid' THEN 'paid' 
             WHEN cs.payment_status = 'eft' THEN 'eft'
+            WHEN cs.payment_status = 'paid_mixed' THEN 'mixed'
             WHEN cs.payment_status = 'partial' THEN 'partial'
             ELSE 'credit' 
         END as sale_type,
@@ -387,7 +430,13 @@ $creditQuery = $db->prepare("
         cr.name as creditor_name,
         (SELECT MAX(payment_date) FROM payments WHERE sale_id = cs.id) as payment_date,
         cs.paid_amount as paid_amount,
-        COALESCE((SELECT cashier_id FROM payments WHERE sale_id = cs.id ORDER BY payment_date DESC LIMIT 1), cs.cashier_id) as cashier_id
+        COALESCE((SELECT cashier_id FROM payments WHERE sale_id = cs.id ORDER BY payment_date DESC LIMIT 1), cs.cashier_id) as cashier_id,
+        NULL as tab_name,
+        NULL as tab_cashier_id,
+        NULL as laybye_id,
+        NULL as laybye_reference,
+        NULL as laybye_payment_kind,
+        NULL as laybye_creditor_name
     FROM credit_sales cs
     JOIN credit_sale_items csi ON cs.id = csi.sale_id
     LEFT JOIN creditors cr ON cs.creditor_id = cr.id
@@ -400,7 +449,7 @@ $creditQuery = $db->prepare("
     )
     OR (
         -- Show paid/eft credit sales only on their payment date
-        cs.payment_status IN ('paid', 'eft', 'partial') AND cs.id IN (
+        cs.payment_status IN ('paid', 'eft', 'partial', 'paid_mixed') AND cs.id IN (
             SELECT sale_id FROM payments 
             WHERE (
                 (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
@@ -501,7 +550,12 @@ $dailyBreakdownQuery = $db->prepare("
             END AS business_date,
             p.amount as amount,
             CASE
-                WHEN cs.payment_status = 'eft' THEN 'credit_eft'
+                WHEN EXISTS (
+                    SELECT 1 FROM eft_payments ep
+                    WHERE ep.order_id = p.sale_id AND ABS(CAST(ep.amount AS REAL) - CAST(p.amount AS REAL)) < 0.021
+                    AND date(ep.payment_date) = date(p.payment_date)
+                    AND strftime('%H:%M', ep.payment_date) = strftime('%H:%M', p.payment_date)
+                ) THEN 'credit_eft'
                 ELSE 'credit_payment'
             END as source,
             'income' as transaction_type
@@ -1079,7 +1133,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <div class="absolute inset-y-0 left-0 flex items-center pl-2 sm:pl-3 pointer-events-none">
                                     <!-- calendar icon -->
                                     <svg class="w-3 h-3 sm:w-4 sm:h-4 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                        <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 0 0 -2H6z" clip-rule="evenodd"/>
+                                        <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd"/>
                                     </svg>
                                 </div>
                                 <select id="date" name="date" onchange="updateReport();" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs sm:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-7 sm:pl-8 pr-7 sm:pr-8 py-1.5 sm:py-2 shadow-sm transition-colors cursor-pointer whitespace-nowrap">
@@ -1270,6 +1324,11 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 14a6 6 0 110-12 6 6 0 010 12z"></path><path d="M10 5a1 1 0 011 1v3.586l2.707 2.707a1 1 0 01-1.414 1.414l-3-3A1 1 0 019 10V6a1 1 0 011-1z"></path></svg>
                                         <span>Partial Payment (N$<?= number_format($row['paid_amount'], 2) ?>)</span>
                                     </span>
+                                    <?php elseif ($row['payment_status'] === 'paid_mixed' || ($row['sale_type'] ?? '') === 'mixed'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-violet-100 text-violet-800 border border-violet-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"></path></svg>
+                                        <span>Cash + EFT Credit</span>
+                                    </span>
                                     <?php elseif ($row['payment_status'] === 'eft'): ?>
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
@@ -1316,12 +1375,15 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <?php if (isset($row['provider_name']) && $row['provider_name']): ?>
                                 <span class="text-xs text-purple-500 font-medium">via <?= htmlspecialchars($row['provider_name']) ?></span>
                                 <?php endif; ?>
+                                <?php if (!empty($row['laybye_reference'])): ?>
+                                <span class="block text-xs text-amber-800 font-medium mt-0.5">Lay-bye <?= htmlspecialchars($row['laybye_reference']) ?><?= !empty($row['laybye_payment_kind']) ? ' · ' . htmlspecialchars($row['laybye_payment_kind']) : '' ?><?= !empty($row['laybye_creditor_name']) ? ' — ' . htmlspecialchars($row['laybye_creditor_name']) : '' ?></span>
+                                <?php endif; ?>
                             </td>
                             <td class="py-1 px-2 text-sm text-gray-500" data-label="Date">
                                 <?php
                                 // Use payment_date for paid/eft credits, otherwise use created_at
                                 $displayDate = isset($row['payment_date']) && $row['payment_date'] && 
-                                               ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft') ? 
+                                               ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft' || $row['payment_status'] === 'paid_mixed') ? 
                                                $row['payment_date'] : $row['created_at'];
                                 echo date('d M Y H:i', strtotime($displayDate));
                                 ?>
@@ -1330,15 +1392,25 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <?= htmlspecialchars($row['cashier_id'] ?? '-') ?>
                             </td>
                             <td class="py-4 px-6" data-label="Action">
+                                <div class="flex flex-wrap items-center gap-2 justify-center">
                                 <?php
-                                // Show delete button for:
-                                // - Credit sales that are paid or EFT (reset credit payment)
-                                // - Cash sales (delete sale)
-                                // - EFT sales (delete sale or reset EFT credit sale)
-                                // - Paid credit sales (reset credit payment)
-                                // - Credit sales that are unpaid or partial (delete credit record)
+                                $ps = $row['payment_status'] ?? '';
+                                $st = $row['sale_type'] ?? '';
+                                ?>
+                                <?php
+                                $reprintSaleType = (($st === 'cash' || $st === 'eft') && empty($row['creditor_name'])) ? $st : 'credit';
+                                ?>
+                                <button type="button" onclick="reprintReceipt('<?= htmlspecialchars((string) $row['id'], ENT_QUOTES) ?>', '<?= htmlspecialchars($reprintSaleType, ENT_QUOTES) ?>', '<?= htmlspecialchars((string) $ps, ENT_QUOTES) ?>')" class="text-gray-600 hover:text-gray-900 transition-colors" title="Reprint receipt">
+                                    <i class="fas fa-print"></i>
+                                </button>
+                                <?php if (!empty($row['laybye_id'])): ?>
+                                <button type="button" onclick="reprintLaybyeBalance(<?= (int) $row['laybye_id'] ?>)" class="text-amber-700 hover:text-amber-900 transition-colors" title="Lay-bye statement">
+                                    <i class="fas fa-file-invoice"></i>
+                                </button>
+                                <?php endif; ?>
+                                <?php
                                 if (
-                                    ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft'))
+                                    ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft' || $row['payment_status'] === 'paid_mixed'))
                                 ) : ?>
                                     <button onclick="deleteRecord('credit', '<?= $row['id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Reset Paid/EFT Credit Sale">
                                         <i class="fas fa-trash"></i>
@@ -1366,6 +1438,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                         <i class="fas fa-trash-alt"></i>
                                     </button>
                                 <?php endif; ?>
+                                </div>
                             </td>
 
 
@@ -1599,6 +1672,55 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
+</div>
+
+<div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 bg-rose-100 border-b border-rose-200">
+        <h2 class="text-xl font-bold text-rose-900">
+            <i class="fas fa-exclamation-triangle mr-2" aria-hidden="true"></i>Damaged stock
+        </h2>
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+            <span class="text-rose-800">
+                <span class="font-semibold"><?= count($damagedStockRows) ?></span> record<?= count($damagedStockRows) === 1 ? '' : 's' ?>
+                · <span class="font-semibold"><?= rtrim(rtrim(number_format($damagedStockTotalQty, 4, '.', ''), '0'), '.') ?></span> units
+                · <span class="font-semibold">N$<?= number_format($damagedStockTotalValue, 2) ?></span> at retail
+            </span>
+            <a href="damaged_goods.php" class="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-medium text-white bg-rose-600 hover:bg-rose-700 shadow-sm transition-colors">
+                <i class="fas fa-plus mr-1.5" aria-hidden="true"></i> Record damage
+            </a>
+        </div>
+    </div>
+    <div class="table-container overflow-x-auto">
+        <table class="min-w-full table-auto">
+            <thead>
+                <tr class="bg-gray-100 border-b-2 border-gray-200 text-sm">
+                    <th class="py-2 px-3 text-left text-gray-700">Product</th>
+                    <th class="py-2 px-3 text-right text-gray-700">Qty</th>
+                    <th class="py-2 px-3 text-left text-gray-700">Reason</th>
+                    <th class="py-2 px-3 text-left text-gray-700">Recorded</th>
+                    <th class="py-2 px-3 text-right text-gray-700">Retail value</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                <?php if (count($damagedStockRows) > 0): ?>
+                    <?php foreach ($damagedStockRows as $drow): ?>
+                        <tr class="hover:bg-gray-50">
+                            <td class="py-2 px-3 text-sm font-medium text-gray-900"><?= htmlspecialchars($drow['product_name']) ?></td>
+                            <td class="py-2 px-3 text-sm text-right text-gray-800"><?= htmlspecialchars((string) $drow['quantity']) ?></td>
+                            <td class="py-2 px-3 text-sm text-gray-600"><?= htmlspecialchars((string) ($drow['reason'] ?? '')) ?: '—' ?></td>
+                            <td class="py-2 px-3 text-sm text-gray-600"><?= htmlspecialchars(date('d M Y H:i', strtotime($drow['damaged_at']))) ?></td>
+                            <td class="py-2 px-3 text-sm text-right font-medium text-rose-800">N$<?= number_format((float) $drow['line_value'], 2) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr>
+                        <td colspan="5" class="py-8 px-4 text-center text-gray-500">No damaged stock for this business day.</td>
+                    </tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+    <p class="px-4 py-2 text-xs text-gray-500 bg-gray-50 border-t border-gray-200">Uses the same business-day window as transactions (closing time from business settings).</p>
 </div>
 
 <script>
@@ -1844,6 +1966,129 @@ window.addEventListener('DOMContentLoaded', function() {
     </div>
 
     <script>
+    <?php
+    $mgrPrintInfo = [
+        'name' => 'POS SOLUTION', 'location' => '', 'phone' => '', 'footer_text' => 'Thank you!',
+        'vat_inclusive' => 'exclusive', 'vat_rate' => 15.0,
+    ];
+    try {
+        $biDbM = new PDO('sqlite:' . __DIR__ . '/../info.db');
+        $rM = $biDbM->query('SELECT * FROM business_info LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+        if ($rM) {
+            $mgrPrintInfo = array_merge($mgrPrintInfo, $rM);
+        }
+    } catch (Exception $e) {
+    }
+    ?>
+    var businessInfo = {
+        business_name: <?= json_encode($mgrPrintInfo['name'] ?? 'POS SOLUTION') ?>,
+        location: <?= json_encode($mgrPrintInfo['location'] ?? '') ?>,
+        phone: <?= json_encode($mgrPrintInfo['phone'] ?? '') ?>,
+        footer_text: <?= json_encode($mgrPrintInfo['footer_text'] ?? 'Thank you!') ?>,
+        vat_inclusive: <?= json_encode($mgrPrintInfo['vat_inclusive'] ?? 'exclusive') ?>,
+        vat_rate: <?= json_encode(floatval($mgrPrintInfo['vat_rate'] ?? 15.0)) ?>
+    };
+    if (typeof sendToPrinter === 'undefined') {
+        function sendToPrinter(receiptData) {
+            if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt && !receiptData.is_laybye_balance_receipt) {
+                receiptData.print_only = true;
+            }
+            var dataWithBusiness = Object.assign({}, receiptData, {
+                business_name: receiptData.business_name || businessInfo.business_name,
+                location: receiptData.location || businessInfo.location,
+                phone: receiptData.phone || businessInfo.phone,
+                footer_text: receiptData.footer_text || businessInfo.footer_text,
+                vat_inclusive: receiptData.vat_inclusive || businessInfo.vat_inclusive,
+                vat_rate: receiptData.vat_rate || businessInfo.vat_rate,
+                items: receiptData.items || []
+            });
+            return fetch('../receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dataWithBusiness)
+            }).then(function(r) { return r.json(); });
+        }
+    }
+    function reprintReceipt(transactionId, saleType, paymentStatus) {
+        if (typeof showNotification === 'function') {
+            showNotification('Processing', 'Fetching receipt data...', 'info');
+        }
+        fetch('../reprint_receipt.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                transaction_id: transactionId,
+                sale_type: saleType,
+                payment_status: paymentStatus || ''
+            })
+        })
+        .then(async (response) => {
+            const text = await response.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (e) { /* non-JSON */ }
+            if (!response.ok) {
+                throw new Error((data && data.message) ? data.message : (text || 'Server error'));
+            }
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : 'Unknown error');
+            }
+            if (data.receipt_data) {
+                return sendToPrinter(data.receipt_data);
+            }
+            return Promise.resolve({ success: true });
+        })
+        .then(result => {
+            if (result && result.success && typeof showNotification === 'function') {
+                showNotification('Success', 'Receipt sent to printer.', 'success');
+            } else if (!result || !result.success) {
+                throw new Error(result?.message || 'Printing failed');
+            }
+        })
+        .catch(error => {
+            console.error(error);
+            if (typeof showNotification === 'function') {
+                showNotification('Error', 'Reprint: ' + (error.message || 'Unknown error'), 'error');
+            }
+        });
+    }
+    function reprintLaybyeBalance(laybyeId) {
+        if (typeof showNotification === 'function') {
+            showNotification('Processing', 'Preparing lay-bye statement...', 'info');
+        }
+        fetch('../reprint_laybye_balance.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ laybye_id: String(laybyeId) })
+        })
+        .then(async (response) => {
+            const text = await response.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (e) { /* non-JSON */ }
+            if (!response.ok) {
+                throw new Error((data && data.message) ? data.message : (text || 'Server error'));
+            }
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : 'Unknown error');
+            }
+            if (data.receipt_data) {
+                return sendToPrinter(data.receipt_data);
+            }
+            return Promise.resolve({ success: true });
+        })
+        .then(result => {
+            if (result && result.success && typeof showNotification === 'function') {
+                showNotification('Success', 'Lay-bye statement sent to printer.', 'success');
+            } else if (!result || !result.success) {
+                throw new Error(result?.message || 'Printing failed');
+            }
+        })
+        .catch(error => {
+            console.error(error);
+            if (typeof showNotification === 'function') {
+                showNotification('Error', 'Lay-bye statement: ' + (error.message || 'Unknown error'), 'error');
+            }
+        });
+    }
     // Function to update report data via form submission
     function updateReport() {
         // Simply submit the form to reload the page with the new date
@@ -1882,7 +2127,9 @@ window.addEventListener('DOMContentLoaded', function() {
         // Assuming the search bar filters multiple tables or just the main 'All Transactions' table
         filterTable('search', 'salesTableBody');
         filterTable('search', 'topProductsTableBody'); // If search should also filter products
-        filterTable('search', 'dailyBreakdownTableBody'); // If search should also filter daily breakdown
+        if (document.getElementById('dailyBreakdownTableBody')) {
+            filterTable('search', 'dailyBreakdownTableBody');
+        }
     }
 
     // --- Global Pagination Managers ---
@@ -2114,19 +2361,59 @@ window.addEventListener('DOMContentLoaded', function() {
     }
 
 
+    // --- Manager PIN modal (void / delete sales or credit) ---
+    function openManagerPinModal(onPin) {
+        const overlay = document.createElement('div');
+        overlay.id = 'manager-void-pin-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;z-index:99999;background:rgba(0,0,0,0.5);padding:1rem;box-sizing:border-box;overflow:auto;';
+        overlay.innerHTML = `
+            <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full" style="margin:auto;max-height:min(90vh,100%);overflow:auto">
+                <h3 class="text-lg font-semibold text-gray-900 mb-1">Manager PIN</h3>
+                <p class="text-sm text-gray-600 mb-4">Enter the manager PIN to void this transaction.</p>
+                <input type="password" id="manager-void-pin-input" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-gray-500 focus:border-gray-500 mb-4" autocomplete="off" inputmode="numeric" placeholder="PIN">
+                <div class="flex justify-end gap-2">
+                    <button type="button" id="manager-void-pin-cancel" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
+                    <button type="button" id="manager-void-pin-ok" class="px-4 py-2 rounded-md text-white bg-gray-800 hover:bg-gray-900">Void</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('#manager-void-pin-input');
+        const close = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+        overlay.querySelector('#manager-void-pin-cancel').onclick = close;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('#manager-void-pin-ok').onclick = () => {
+            const pin = input.value || '';
+            close();
+            onPin(pin);
+        };
+        setTimeout(() => input.focus(), 0);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                overlay.querySelector('#manager-void-pin-ok').click();
+            }
+        });
+    }
+
     // --- Delete Functions ---
     function deleteRecord(type, id) {
-        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+        const needsPin = (type === 'sales' || type === 'credit');
+        const runDelete = (managerPin) => {
+            let body = `type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`;
+            if (needsPin) {
+                body += `&manager_pin=${encodeURIComponent(managerPin)}`;
+            }
             fetch('delete_record.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `type=${type}&id=${id}`
+                body: body
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
                     showNotification('Success', 'Record deleted successfully.', 'success');
-                    // Reload the page after deletion
                     location.reload();
                 } else {
                     showNotification('Error', 'Error deleting record: ' + (data.message || 'Unknown error'), 'error');
@@ -2136,6 +2423,13 @@ window.addEventListener('DOMContentLoaded', function() {
                 console.error('Error:', error);
                 showNotification('Error', 'An error occurred while deleting the record.', 'error');
             });
+        };
+        if (needsPin) {
+            openManagerPinModal((pin) => runDelete(pin));
+            return;
+        }
+        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+            runDelete();
         });
     }
 

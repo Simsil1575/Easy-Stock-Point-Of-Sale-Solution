@@ -143,12 +143,18 @@ for ($i = 0; $i < 7; $i++) {
     $creditIssuedQuery->execute();
     $creditIssued = $creditIssuedQuery->fetchColumn() ?: 0;
 
-    // CREDIT PAYMENTS: Cash payments received for credit sales (excluding EFT payments)
+    // CREDIT PAYMENTS: Cash installments on credit sales (payments not mirrored as EFT rows)
     $creditPaymentsQuery = $db->prepare("
         SELECT COALESCE(SUM(p.amount), 0) 
         FROM payments p
         JOIN credit_sales cs ON p.sale_id = cs.id
-        WHERE cs.payment_status IN ('paid', 'partial') AND (
+        WHERE NOT EXISTS (
+            SELECT 1 FROM eft_payments ep
+            WHERE ep.order_id = p.sale_id
+            AND ABS(CAST(ep.amount AS REAL) - CAST(p.amount AS REAL)) < 0.021
+            AND date(ep.payment_date) = date(p.payment_date)
+            AND strftime('%H:%M', ep.payment_date) = strftime('%H:%M', p.payment_date)
+        ) AND (
             (DATE(p.payment_date) = :date AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
             (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
         )
@@ -158,14 +164,14 @@ for ($i = 0; $i < 7; $i++) {
     $creditPaymentsQuery->execute();
     $creditPayments = $creditPaymentsQuery->fetchColumn() ?: 0;
 
-    // EFT CREDIT PAYMENTS: EFT payments for credit sales based on payment date
+    // EFT CREDIT PAYMENTS: Amounts from eft_payments for credit sales
     $eftCreditPaymentsQuery = $db->prepare("
-        SELECT COALESCE(SUM(p.amount), 0) 
-        FROM payments p
-        JOIN credit_sales cs ON p.sale_id = cs.id
-        WHERE cs.payment_status = 'eft' AND (
-            (DATE(p.payment_date) = :date AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-            (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+        SELECT COALESCE(SUM(e.amount), 0) 
+        FROM eft_payments e
+        JOIN credit_sales cs ON e.order_id = cs.id
+        WHERE (
+            (DATE(e.payment_date) = :date AND strftime('%H:%M', e.payment_date) >= '$closingTime') OR
+            (DATE(e.payment_date) = :nextDay AND strftime('%H:%M', e.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
         )
     ");
     $eftCreditPaymentsQuery->bindParam(':date', $dateStr);

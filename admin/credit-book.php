@@ -12,7 +12,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 }
 
 // Check activation status
-$pdo = new PDO('sqlite:../active.db'); // Re-establish the database connection
+$pdo = new PDO('sqlite:' . __DIR__ . '/../active.db');
 $activationStatus = $pdo->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();
 if ($activationStatus == 0) {
     header('Location: settings');
@@ -23,7 +23,8 @@ if ($activationStatus == 0) {
 
 <?php
 // New SQLite connection
-$db = new PDO('sqlite:../pos.db');
+$db = new PDO('sqlite:' . __DIR__ . '/../pos.db');
+require_once __DIR__ . '/../credit_limit_helper.php';
 
 
 
@@ -55,16 +56,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Handle add/edit
         $name = $_POST['name'];
         $phone = $_POST['phone'];
+        $creditLimit = normalizeCreditLimit($_POST['credit_limit'] ?? 0);
         $active = 1;
 
         if (empty($_POST['id'])) {
             // Add new creditor
-            $stmt = $db->prepare("INSERT INTO creditors (name, phone, active) VALUES (?, ?, ?)");
-            $stmt->execute([$name, $phone, $active]);
+            $stmt = $db->prepare("INSERT INTO creditors (name, phone, credit_limit, active) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$name, $phone, $creditLimit, $active]);
         } else {
             // Update creditor
-            $stmt = $db->prepare("UPDATE creditors SET name = ?, phone = ?, active = ? WHERE id = ?");
-            $stmt->execute([$name, $phone, $active, $_POST['id']]);
+            $stmt = $db->prepare("UPDATE creditors SET name = ?, phone = ?, credit_limit = ?, active = ? WHERE id = ?");
+            $stmt->execute([$name, $phone, $creditLimit, $active, $_POST['id']]);
         }
         header('Location: credit-book');
         exit();
@@ -92,6 +94,21 @@ $creditSales = $db->query("
 $salesByCreditor = [];
 foreach ($creditSales as $sale) {
     $salesByCreditor[$sale['creditor_id']] = $sale;
+}
+
+$latestCashierByCreditor = [];
+$latestCashierStmt = $db->query("
+    SELECT cs.creditor_id, cs.cashier_id
+    FROM credit_sales cs
+    INNER JOIN (
+        SELECT creditor_id, MAX(created_at) AS max_created
+        FROM credit_sales
+        GROUP BY creditor_id
+    ) latest ON cs.creditor_id = latest.creditor_id AND cs.created_at = latest.max_created
+    GROUP BY cs.creditor_id
+");
+foreach ($latestCashierStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    $latestCashierByCreditor[(int) $row['creditor_id']] = $row['cashier_id'];
 }
 
 // Fetch upcoming due credit sales (within 7 days)
@@ -551,14 +568,20 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                 <!-- Header Row: Creditor Management + Controls -->
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <a href="admin-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm font-medium flex-shrink-0" title="Back to Admin Center">
+                            <svg class="w-5 h-5 sm:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">Back</span>
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>
                             <span></span>
                             <span></span>
                         </div>
-                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0">Creditor Management</h1>
+                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0 truncate">Creditor Management</h1>
                     </div>
                     
                     <!-- Right side: Notification Icon -->
@@ -729,6 +752,20 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                 </div>
                                 <p class="text-xs text-gray-500 mt-1">Mobile number for contact purposes</p>
                             </div>
+
+                            <!-- Credit Limit Field -->
+                            <div class="space-y-2 group md:col-span-2">
+                                <label class="block text-md font-semibold text-gray-700 flex items-center">
+                                    <i class="fas fa-credit-card mr-2 text-gray-500"></i>Credit Limit (N$)
+                                </label>
+                                <div class="relative">
+                                    <input type="number" name="credit_limit" min="0" step="0.01"
+                                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-gray-500 focus:ring-2 focus:ring-gray-200 transition duration-200 placeholder-gray-400 shadow-sm"
+                                        value="<?= isset($editCreditor) ? htmlspecialchars(number_format((float)($editCreditor['credit_limit'] ?? 0), 2, '.', '')) : '0.00' ?>"
+                                        placeholder="0.00">
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">Set to 0 for unlimited credit</p>
+                            </div>
                         </div>
 
                         <div class="flex justify-between items-center pt-4 mt-6 border-t border-gray-100">
@@ -786,9 +823,18 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                                     Contact <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(3)">
+                                                    Cashier <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(4)">
                                                     Status <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
-                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(4, true)">
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(5, true)">
+                                                    Credit Limit <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(6, true)">
+                                                    Available <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortCreditorsTable(7, true)">
                                                     Balance <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
@@ -802,6 +848,12 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                     // Get creditor's balance from creditSales data
                                     $saleData = $salesByCreditor[$creditor['id']] ?? null;
                                     $creditorBalance = $saleData ? ($saleData['total_amount'] - $saleData['paid_amount']) : 0;
+                                    $creditInfo = getCreditorCreditInfo($db, (int) $creditor['id']);
+                                    $creditLimit = $creditInfo['credit_limit'];
+                                    $globalOutstanding = $creditInfo['outstanding_balance'];
+                                    $availableCredit = $creditInfo['available_credit'];
+                                    $isOverLimit = $creditInfo['is_limit_enforced'] && $globalOutstanding > $creditLimit + 0.005;
+                                    $availableClass = !$creditInfo['is_limit_enforced'] ? 'text-gray-500' : ($availableCredit <= 0.005 ? 'text-red-600 font-semibold' : ($availableCredit < $creditLimit * 0.2 ? 'text-orange-500 font-medium' : 'text-teal-600 font-medium'));
                                 ?>
                                 <tr class="creditor-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer" data-creditor-id="<?= htmlspecialchars($creditor['id']) ?>" onclick="viewCreditor(<?= $creditor['id'] ?>)">
                                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">
@@ -813,6 +865,9 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200">
                                         <?= !empty($creditor['phone']) ? htmlspecialchars($creditor['phone']) : 'N/A' ?>
                                     </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
+                                        <?= !empty($latestCashierByCreditor[$creditor['id']]) ? htmlspecialchars($latestCashierByCreditor[$creditor['id']]) : '—' ?>
+                                    </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-sm">
                                         <span class="px-2 py-1 text-xs font-semibold rounded-full
                                             <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'bg-gray-100 text-gray-800' : 
@@ -821,24 +876,36 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                             <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'New' : ($creditorBalance > 0 ? 'Unpaid' : 'Paid') ?>
                                         </span>
                                     </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm <?= $isOverLimit ? 'text-red-600 font-semibold' : 'text-gray-700 dark:text-gray-300' ?>">
+                                        <?= $creditInfo['is_limit_enforced'] ? 'N$' . number_format($creditLimit, 2) : 'Unlimited' ?>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm <?= $availableClass ?>">
+                                        <?= $creditInfo['is_limit_enforced'] ? 'N$' . number_format((float) $availableCredit, 2) : '—' ?>
+                                    </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold 
                                         <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'text-gray-800' : ($creditorBalance > 0 ? 'text-red-600' : 'text-teal-600') ?>">
                                         N$<?= number_format($creditorBalance, 2) ?>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-sm text-center" onclick="event.stopPropagation()">
                                         <?php if (isset($salesByCreditor[$creditor['id']]) && ($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount']) > 0): ?>
-                                        <div class="flex gap-2 justify-center">
-                                            <button onclick="event.stopPropagation(); printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
+                                        <div class="flex gap-2 justify-center items-center">
+                                            <button type="button" onclick="event.stopPropagation(); printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
                                                 class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-gray-600 hover:text-gray-800 disabled:opacity-50 disabled:pointer-events-none dark:text-gray-400 dark:hover:text-gray-300"
                                                 title="Print">
                                                 <i data-lucide="printer" class="w-4 h-4"></i>
                                             </button>
-                                            <a href="javascript:void(0);" 
-                                               onclick="event.stopPropagation(); confirmPayAll(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
-                                               class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-green-600 hover:text-green-800 disabled:opacity-50 disabled:pointer-events-none dark:text-green-500 dark:hover:text-green-400"
-                                               title="Pay">
+                                            <button type="button"
+                                                onclick='event.stopPropagation(); payAllWithCash(<?= (int)$creditor['id'] ?>, <?= json_encode($creditor['name']) ?>, <?= json_encode(round((float)($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount']), 2)) ?>);'
+                                                class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-green-600 hover:text-green-800 disabled:opacity-50 disabled:pointer-events-none dark:text-green-500 dark:hover:text-green-400"
+                                                title="Cash Payment">
+                                                <i data-lucide="dollar-sign" class="w-4 h-4"></i>
+                                            </button>
+                                            <button type="button"
+                                                onclick='event.stopPropagation(); showEftPaymentForm(<?= (int)$creditor['id'] ?>, <?= json_encode($creditor['name']) ?>, <?= json_encode(round((float)($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount']), 2)) ?>);'
+                                                class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-purple-600 hover:text-purple-800 disabled:opacity-50 disabled:pointer-events-none dark:text-purple-500 dark:hover:text-purple-400"
+                                                title="EFT Payment">
                                                 <i data-lucide="credit-card" class="w-4 h-4"></i>
-                                            </a>
+                                            </button>
                                         </div>
                                         <?php endif; ?>
                                     </td>
@@ -867,7 +934,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
                                 <?php endforeach; ?>
                                 <?php if (count($creditors) === 0): ?>
                                 <tr>
-                                    <td colspan="7" class="px-6 py-2 whitespace-nowrap text-center text-sm text-gray-500">
+                                    <td colspan="8" class="px-6 py-2 whitespace-nowrap text-center text-sm text-gray-500">
                                         No creditors found
                                     </td>
                                 </tr>
@@ -1143,7 +1210,7 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
             // Show "no data" row
             const newNoDataRow = document.createElement('tr');
             const noDataCell = document.createElement('td');
-            noDataCell.setAttribute('colspan', '7'); // Make sure this matches your table's column count
+            noDataCell.setAttribute('colspan', '8');
             noDataCell.className = 'px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500';
             noDataCell.textContent = 'No matching creditors found';
             newNoDataRow.appendChild(noDataCell);
@@ -1226,38 +1293,29 @@ $notificationCount = count($unpaidCreditors) + count($dueSoonSales);
         });
     }
 
-    function confirmPayAll(creditorId, creditorName, totalBalance) {
+    function payAllWithCash(creditorId, creditorName, totalBalance) {
         Swal.fire({
             html: `<div class="text-center space-y-3">
                     <div class="bg-gradient-to-r from-gray-50 to-white p-6 rounded-xl shadow-sm">
-                        <p class="text-gray-600 font-medium">Confirm Payment</p>
+                        <p class="text-gray-600 font-medium">Pay all with cash</p>
                         <h3 class="text-xl font-semibold text-gray-800 mt-1">${creditorName} <span class="text-sm text-gray-500 font-normal">(Account #${creditorId})</span></h3>
                         <div class="mt-4 bg-teal-50 p-3 rounded-lg inline-block">
-                            <span class="text-2xl font-bold text-teal-700">N$${totalBalance.toFixed(2)}</span>
+                            <span class="text-2xl font-bold text-teal-700">N$${Number(totalBalance).toFixed(2)}</span>
                         </div>
-                        <p class="text-sm text-gray-400 mt-4">Select your preferred payment method</p>
                     </div>
                 </div>`,
-            showDenyButton: true,
             showCancelButton: true,
-            confirmButtonColor: '#2563eb',
-            denyButtonColor: '#16a34a',
+            confirmButtonColor: '#16a34a',
             cancelButtonColor: '#6b7280',
-            confirmButtonText: '<i class="fas fa-wallet mr-2"></i> Cash',
-            denyButtonText: '<i class="fas fa-mobile-alt mr-2"></i> EFT',
-            cancelButtonText: '<i class="fas fa-times mr-2"></i> Cancel',
+            confirmButtonText: 'Confirm cash payment',
+            cancelButtonText: 'Cancel',
             customClass: {
-                confirmButton: 'px-6 py-2.5 rounded-lg hover:bg-blue-700 transition-all',
-                denyButton: 'px-6 py-2.5 rounded-lg hover:bg-teal-700 transition-all',
+                confirmButton: 'px-6 py-2.5 rounded-lg hover:bg-green-700 transition-all',
                 cancelButton: 'px-6 py-2.5 rounded-lg hover:bg-gray-200 transition-all'
             },
         }).then((result) => {
             if (result.isConfirmed) {
-                // Cash payment - redirect with print flag
                 window.location.href = `credit-transactions.php?creditor_id=${creditorId}&pay_all=1&auto_print=1`;
-            } else if (result.isDenied) {
-                // EFT payment - show EFT form
-                showEftPaymentForm(creditorId, creditorName, totalBalance);
             }
         });
     }

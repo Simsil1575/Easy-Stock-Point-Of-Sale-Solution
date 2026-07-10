@@ -20,6 +20,7 @@ if ($activationStatus == 0) {
 
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/inc/credit_sale_payment_status.php';
 $creditorId = (int)($_GET['creditor_id'] ?? 0);
 
 // Date filter: 'all' = all days, else specific date (default today)
@@ -135,18 +136,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
         }
 
-        // Update credit sale record
-        $stmt = $db->prepare("UPDATE credit_sales 
-                            SET paid_amount = paid_amount + ?, 
-                                payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'paid' ELSE 'partial' END
-                            WHERE id = ?");
-        $stmt->execute([$paymentAmount, $paymentAmount, $saleId]);
-        
-        // Record payment with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+        $db->beginTransaction();
+        try {
+            $db->prepare('UPDATE credit_sales SET paid_amount = paid_amount + ? WHERE id = ?')->execute([$paymentAmount, $saleId]);
+            $stmt = $db->prepare('INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)');
+            $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $paymentStatus = resolve_credit_sale_payment_status($db, (int) $saleId);
+            $db->prepare('UPDATE credit_sales SET payment_status = ? WHERE id = ?')->execute([$paymentStatus, $saleId]);
+            $db->commit();
+        } catch (Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
 
-        // Prepare receipt data
         $receiptData = [
             'creditor_id' => $sale['creditor_id'],
             'creditor_name' => $sale['creditor_name'],
@@ -188,20 +190,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $saleDetails->execute([$saleId]);
         $sale = $saleDetails->fetch(PDO::FETCH_ASSOC);
         
-        // Update credit sale record
-        $stmt = $db->prepare("UPDATE credit_sales 
-                            SET paid_amount = paid_amount + ?, 
-                                payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'eft' ELSE 'partial' END
-                            WHERE id = ?");
-        $stmt->execute([$paymentAmount, $paymentAmount, $saleId]);
-        
-        // Record payment with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
-        
-        // Record EFT payment details with timezone-aware timestamp
-        $stmt = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
+        $db->beginTransaction();
+        try {
+            $db->prepare('UPDATE credit_sales SET paid_amount = paid_amount + ? WHERE id = ?')->execute([$paymentAmount, $saleId]);
+            $stmt = $db->prepare('INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)');
+            $stmt->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $stmt = $db->prepare('INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)');
+            $stmt->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
+            $paymentStatus = resolve_credit_sale_payment_status($db, (int) $saleId);
+            $db->prepare('UPDATE credit_sales SET payment_status = ? WHERE id = ?')->execute([$paymentStatus, $saleId]);
+            $db->commit();
+        } catch (Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
 
         // Prepare items array
         $items = [];
@@ -770,6 +772,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                 <th class="text-left p-4 text-sm font-medium text-gray-500">Due Date</th>
                                 <th class="text-left p-4 text-sm font-medium text-gray-500">Items</th>
                                 <th class="text-left p-4 text-sm font-medium text-gray-500">Total</th>
+                                <th class="text-left p-4 text-sm font-medium text-gray-500">Cashier</th>
                                 <th class="text-left p-4 text-sm font-medium text-gray-500">Progress</th>
                                 <th class="text-left p-4 text-sm font-medium text-gray-500">Actions</th>
                             </tr>
@@ -792,6 +795,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                         2
                                     ) ?>
                                 </td>
+                                <td class="p-4 text-sm text-gray-600" data-label="Cashier"><?= !empty($transaction['cashier_id']) ? htmlspecialchars($transaction['cashier_id']) : '—' ?></td>
                                 <td class="p-4" data-label="Progress">
                                     <span class="px-3 py-1 text-xs font-medium rounded-full border transition-colors
                                         <?php
@@ -799,6 +803,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                 echo 'bg-teal-100 text-teal-800 border-teal-200 hover:bg-teal-200';
                                             } elseif ($transaction['payment_status'] === 'eft') {
                                                 echo 'bg-teal-100 text-teal-800 border-teal-200 hover:bg-teal-200';
+                                            } elseif ($transaction['payment_status'] === 'paid_mixed') {
+                                                echo 'bg-indigo-100 text-indigo-800 border-indigo-200 hover:bg-indigo-200';
                                             } elseif ($transaction['payment_status'] === 'partial') {
                                                 echo 'bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200';
                                             } else {
@@ -810,6 +816,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                 echo 'Cash';
                                             } elseif ($transaction['payment_status'] === 'eft') {
                                                 echo 'EFT';
+                                            } elseif ($transaction['payment_status'] === 'paid_mixed') {
+                                                echo 'Cash + EFT';
                                             } elseif ($transaction['payment_status'] === 'partial') {
                                                 echo 'Partial';
                                             } else {
@@ -819,7 +827,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                     </span>
                                 </td>
                                 <td class="p-4" data-label="Actions">
-                                    <?php if ($transaction['payment_status'] !== 'paid' && $transaction['payment_status'] !== 'eft'): ?>
+                                    <?php if (!in_array($transaction['payment_status'], ['paid', 'eft', 'paid_mixed'], true)): ?>
                                         <div class="flex flex-wrap items-center justify-center gap-2">
                                             <button type="button" class="text-sm px-3 py-1.5 bg-teal-100 hover:bg-teal-200 text-teal-600 rounded-md cash-payment-btn flex items-center gap-1.5" 
                                                 data-sale-id="<?= $transaction['id'] ?>"
@@ -857,6 +865,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                 <td class="p-4 text-sm font-medium text-gray-600" data-label="Due Date">N/A</td>
                                 <td class="p-4 text-sm max-w-[300px]" data-label="Items"><?= htmlspecialchars($payment['items']) ?></td>
                                 <td class="p-4 text-sm font-medium" data-label="Total">N$<?= number_format($payment['amount'], 2) ?></td>
+                                <td class="p-4 text-sm text-gray-600" data-label="Cashier"><?= !empty($payment['cashier_id']) ? htmlspecialchars($payment['cashier_id']) : '—' ?></td>
                                 <td class="p-4" data-label="Progress">
                                     <span class="px-3 py-1 text-xs font-medium rounded-full border transition-colors bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200">
                                         Partial Payment
@@ -893,7 +902,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                             <thead class="bg-gray-50">
                                 <tr>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Date</th>
-                                    <th class="text-left p-4 text-sm font-medium text-gray-500">Amount</th>
+                                    <th class="text-left p-4 text-sm font-medium text-gray-500">Total</th>
+                                    <th class="text-left p-4 text-sm font-medium text-gray-500">Cashier</th>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Wallet Provider</th>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Reference</th>
                                 </tr>
@@ -903,6 +913,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                 <tr class="border-t border-gray-100 hover:bg-gray-50">
                                     <td class="p-4 text-sm" data-label="Date"><?= date('d M Y H:i', strtotime($payment['payment_date'])) ?></td>
                                     <td class="p-4 text-sm font-medium text-teal-600" data-label="Amount">N$<?= number_format($payment['amount'], 2) ?></td>
+                                    <td class="p-4 text-sm" data-label="Cashier"><?= !empty($payment['cashier_id']) ? htmlspecialchars($payment['cashier_id']) : '—' ?></td>
                                     <td class="p-4 text-sm" data-label="Wallet Provider"><?= htmlspecialchars($payment['wallet_provider']) ?></td>
                                     <td class="p-4 text-sm" data-label="Reference"><?= htmlspecialchars($payment['transaction_ref']) ?></td>
                                 </tr>

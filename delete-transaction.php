@@ -55,7 +55,7 @@ try {
     $db->beginTransaction();
     
     // Only reset if the sale is currently paid or partially paid
-    if ($creditSale['payment_status'] === 'paid' || $creditSale['payment_status'] === 'eft' || $creditSale['payment_status'] === 'partial') {
+    if ($creditSale['payment_status'] === 'paid' || $creditSale['payment_status'] === 'eft' || $creditSale['payment_status'] === 'paid_mixed' || $creditSale['payment_status'] === 'partial') {
         // Reset the credit sale to unpaid status
         $stmt = $db->prepare("UPDATE credit_sales SET paid_amount = 0, payment_status = 'unpaid' WHERE id = ?");
         $stmt->execute([$saleId]);

@@ -549,13 +549,16 @@
         // Manager-center subpages: Menu stays active when on any of these
         const isManagerSubpage = (
             currentPage === 'credit-tabs' || currentPage.startsWith('credit-tabs') ||
+            currentPage === 'laybye.php' || currentPage.startsWith('laybye') ||
+            currentPage.startsWith('view-laybye') ||
             currentPage === 'credit-book' || currentPage.startsWith('credit-book') ||
             currentPage.startsWith('credit-transactions') ||
             currentPage.startsWith('view-tab') ||
             currentPage === 'cash' || currentPage === 'cash.php' ||
             currentPage === 'cash-up' || currentPage.startsWith('cash-up') ||
             currentPage.startsWith('damaged_goods') ||
-            currentPage.startsWith('create_creditor')
+            currentPage.startsWith('create_creditor') ||
+            currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders')
         );
         
         // Remove active class from all links
@@ -578,9 +581,15 @@
                     (currentPage === 'inventory' || 
                      currentPage === 'add_product' || 
                      currentPage === 'receiving' ||
+                     currentPage === 'receiving.php' ||
+                     currentPage.startsWith('receiving') ||
                      currentPage === 'edit' || 
                      currentPage === 'stock_tracking' || 
+                     currentPage === 'stock_tracking.php' ||
+                     currentPage.startsWith('stock_tracking') ||
                      currentPage === 'stock_taking' || 
+                     currentPage === 'stock_taking.php' ||
+                     currentPage.startsWith('stock_taking') ||
                      currentPage === 'edit.php' || 
                      query.includes('edit.php?id='))) ||
                 (href === 'settings' && 
@@ -789,5 +798,7 @@
         });
     }
 </script>
+
+<?php include __DIR__ . '/../inactivity_bootstrap.php'; ?>
 
 <script src="3.4.16"></script>

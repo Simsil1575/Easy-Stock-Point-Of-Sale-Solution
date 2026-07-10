@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 try {
     $db = new PDO('sqlite:pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    require_once __DIR__ . '/tab_balance_helper.php';
     
     // Create tabs table if it doesn't exist
     $db->exec("
@@ -65,9 +66,11 @@ try {
     }
     
     // Insert new tab
+    ensureTabGratuityColumns($db);
+    $defaultGratuityOn = tab_default_gratuity_enabled_on_create($db);
     $cashierUsername = $_SESSION['username'] ?? 'Unknown';
-    $stmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, status, cashier_id) VALUES (?, 0, 0, 'open', ?)");
-    $stmt->execute([$tabName, $cashierUsername]);
+    $stmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, status, cashier_id, gratuity_enabled) VALUES (?, 0, 0, 'open', ?, ?)");
+    $stmt->execute([$tabName, $cashierUsername, $defaultGratuityOn]);
     
     $tabId = $db->lastInsertId();
     

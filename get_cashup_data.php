@@ -31,6 +31,18 @@ $startTime = $input['start_time'] ?? '00:00';
 $endDate = $input['end_date'] ?? $input['date'] ?? $today;
 $endTime = $input['end_time'] ?? '23:59';
 $selectedCashier = $input['cashier_id'] ?? 'all';
+$includeExpectedAmounts = !empty($input['include_expected_amounts']);
+
+// Cashiers/waitresses may only load their own totals (ignore client cashier_id override)
+$role = strtolower((string)($_SESSION['role'] ?? ''));
+if (in_array($role, ['cashier', 'waitress'], true)) {
+    $cu = (string)($_SESSION['username'] ?? '');
+    if ($cu === '' && isset($_SESSION['user_id'])) {
+        $selectedCashier = (string)$_SESSION['user_id'];
+    } else {
+        $selectedCashier = $cu;
+    }
+}
 
 // Build datetime range (inclusive start, inclusive end) - same as manager/get_cashup_data.php
 if (strlen($startTime) === 5) {
@@ -344,19 +356,24 @@ try {
     $cashBackQuery->execute();
     $cashBackSystem = $cashBackQuery->fetchColumn();
 
-    // 8. Tips (system value) - same as manager
-    $tipsQuery = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0)
-        FROM cash_transactions
-        WHERE type = 'cash-out' 
-        AND (description LIKE '%Tips%' OR description LIKE '%tip%')
-        AND (" . getRangeWhere('created_at') . ")" . getCashierFilter('cashier_id') . "
-    ");
-    $tipsQuery->bindParam(':startDatetime', $startDatetime);
-    $tipsQuery->bindParam(':endDatetime', $endDatetime);
-    bindCashierParam($tipsQuery);
-    $tipsQuery->execute();
-    $tipsSystem = $tipsQuery->fetchColumn();
+    // 8. Tips (system value) — from tips table only (never cash-out / not expenses)
+    $tipsSystem = 0;
+    try {
+        if ($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='tips'")->fetchColumn()) {
+            $tipsQuery = $db->prepare("
+                SELECT COALESCE(SUM(amount), 0)
+                FROM tips
+                WHERE (" . getRangeWhere('created_at') . ")" . getCashierFilter('cashier_id') . "
+            ");
+            $tipsQuery->bindParam(':startDatetime', $startDatetime);
+            $tipsQuery->bindParam(':endDatetime', $endDatetime);
+            bindCashierParam($tipsQuery);
+            $tipsQuery->execute();
+            $tipsSystem = (float) $tipsQuery->fetchColumn();
+        }
+    } catch (PDOException $e) {
+        $tipsSystem = 0;
+    }
 
     // Cash back by type (same as manager - for step 2 summary)
     $cashBackBeerhouse = 0;
@@ -490,8 +507,11 @@ try {
         $hansaEft = 0;
     }
 
-    // Cash sales expected = till minus Hansa cash (same as manager)
-    $cashSalesExpected = $cashInTill - $hansaCash;
+    // Same as manager/get_cashup_data.php: Hansa EFT is part of order totals but shown under Hansa, not raw EFT
+    $cardSalesExpected = floatval($cardSalesExpected) - floatval($hansaEft);
+
+    // Cash sales (expected) = full till balance (same as cash in till)
+    $cashSalesExpected = $cashInTill;
 
     // Damages (same as manager)
     $damagesAmount = 0;
@@ -577,7 +597,7 @@ try {
     $totalItemsSold = $totalItemsSoldQuery->fetchColumn() ?? 0;
 
     // Return all calculated values (same keys as manager/get_cashup_data.php so amounts always balance)
-    echo json_encode([
+    $payload = [
         'success' => true,
         'date' => $endDate,
         'start_datetime' => $startDatetime,
@@ -614,8 +634,56 @@ try {
         'refunds' => floatval($refunds),
         'refunds_count' => intval($refundsCount),
         // TOTAL section
-        'total_items_sold' => floatval($totalItemsSold)
-    ]);
+        'total_items_sold' => floatval($totalItemsSold),
+        'cash_in' => floatval($totalCashIn),
+        'cash_out' => floatval($totalCashOut)
+    ];
+
+    // Optional: record surplus/shortage (same INSERT as fetch_report_data.php) using this API's expected till
+    if (!empty($input['record_cashup_variance']) && isset($input['actual_cash_in_till'])) {
+        $actualAmount = floatval($input['actual_cash_in_till']);
+        $expectedCashAtCashup = floatval($cashInTill);
+        $difference = $actualAmount - $expectedCashAtCashup;
+        $payload['expected_cash_at_cashup'] = $expectedCashAtCashup;
+        $payload['cash_difference'] = $difference;
+        if (abs($difference) > 0.00001) {
+            try {
+                $cashUpDate = $endDate . ' 23:59:59';
+                $stmt = $db->prepare("
+                    INSERT INTO cash_transactions (
+                        type,
+                        amount,
+                        description,
+                        created_at
+                    ) VALUES (
+                        :type,
+                        :amount,
+                        :description,
+                        :cash_up_date
+                    )
+                ");
+                $type = $difference > 0 ? 'cash-in' : 'cash-out';
+                $amount = abs($difference);
+                $description = $difference > 0 ?
+                    'Cash surplus recorded during cash-up for ' . $endDate :
+                    'Cash shortage recorded during cash-up for ' . $endDate;
+                $stmt->bindParam(':type', $type);
+                $stmt->bindParam(':amount', $amount);
+                $stmt->bindParam(':description', $description);
+                $stmt->bindParam(':cash_up_date', $cashUpDate);
+                $stmt->execute();
+                $payload['variance_recorded'] = true;
+            } catch (PDOException $e) {
+                $payload['variance_record_error'] = $e->getMessage();
+            }
+        }
+    }
+
+    if (!$includeExpectedAmounts) {
+        unset($payload['cash_sales_expected'], $payload['cash_in_till'], $payload['card_sales_expected']);
+        $payload['expected_amounts_hidden'] = true;
+    }
+    echo json_encode($payload);
 
 } catch (PDOException $e) {
     echo json_encode(['success' => false, 'error' => 'Database error: ' . $e->getMessage()]);

@@ -579,69 +579,8 @@
         window.visualViewport.addEventListener('resize', setSidebarHeight);
         window.visualViewport.addEventListener('scroll', setSidebarHeight);
     }
-    
-    // Auto-logout after 30 seconds of inactivity
-    (function() {
-        let inactivityTimer = null;
-        const INACTIVITY_TIMEOUT = 30000; // 30 seconds in milliseconds
-        const logoutUrl = 'logout'; // Logout URL from data-href
-        
-        // Function to reset the inactivity timer
-        function resetInactivityTimer() {
-            // Clear existing timer
-            if (inactivityTimer) {
-                clearTimeout(inactivityTimer);
-            }
-            
-            // Set new timer
-            inactivityTimer = setTimeout(function() {
-                // Redirect to logout after inactivity period
-                window.location.href = logoutUrl;
-            }, INACTIVITY_TIMEOUT);
-        }
-        
-        // Function to handle user activity
-        function handleActivity() {
-            resetInactivityTimer();
-        }
-        
-        // List of events that indicate user activity
-        const activityEvents = [
-            'mousedown',
-            'mousemove',
-            'keypress',
-            'scroll',
-            'touchstart',
-            'click',
-            'keydown'
-        ];
-        
-        // Attach event listeners for user activity
-        activityEvents.forEach(function(eventName) {
-            document.addEventListener(eventName, handleActivity, true);
-        });
-        
-        // Also track window focus/blur to pause timer when tab is inactive
-        let isPageVisible = true;
-        
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) {
-                // Page is hidden, pause timer
-                isPageVisible = false;
-                if (inactivityTimer) {
-                    clearTimeout(inactivityTimer);
-                    inactivityTimer = null;
-                }
-            } else {
-                // Page is visible again, resume timer
-                isPageVisible = true;
-                resetInactivityTimer();
-            }
-        });
-        
-        // Initialize timer on page load
-        resetInactivityTimer();
-    })();
 </script>
+
+<?php include __DIR__ . '/../inactivity_bootstrap.php'; ?>
 
 <script src="../admin/3.4.16"></script>

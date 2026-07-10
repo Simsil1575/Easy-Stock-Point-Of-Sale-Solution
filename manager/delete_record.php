@@ -12,6 +12,8 @@ $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 require_once __DIR__ . '/../void_transaction_helper.php';
+require_once __DIR__ . '/../manager_pin_helper.php';
+require_once __DIR__ . '/../laybye_order_helper.php';
 
 header('Content-Type: application/json');
 
@@ -20,6 +22,18 @@ try {
     $id = $_POST['id'] ?? null;
     $date = $_POST['date'] ?? null;
     $name = $_POST['name'] ?? null;
+
+    $voidTypesNeedingPin = ['sales', 'credit'];
+    if (in_array($type, $voidTypesNeedingPin, true)) {
+        $pin = $_POST['manager_pin'] ?? '';
+        if (!verifyManagerVoidPin($pin)) {
+            throw new Exception(
+                managerVoidPinIsConfigured()
+                    ? 'Invalid manager PIN.'
+                    : 'Manager void PIN is not set. Set it under Settings.'
+            );
+        }
+    }
 
     switch ($type) {
         case 'sales':
@@ -34,16 +48,20 @@ try {
             $stmt->execute([$id]);
             $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Restore the quantities in the inventory
+            recordVoidForDeletedOrder($db, (int) $id);
+            laybyeRevertPaymentOrder($db, (int) $id);
+
+            // Restore the quantities in the inventory (skip synthetic till lines)
             $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name");
             foreach ($items as $item) {
+                if (laybyeIsSyntheticOrderItemName((string) $item['product_name'])) {
+                    continue;
+                }
                 $stmtUpdateInventory->execute([
                     ':quantity' => $item['quantity'],
                     ':product_name' => $item['product_name']
                 ]);
             }
-
-            recordVoidForDeletedOrder($db, (int) $id);
 
             // Delete all related records (order doesn't matter with foreign keys disabled)
             try {
@@ -89,6 +107,13 @@ try {
                 ]);
             }
             
+            // Revert lay-bye payment orders for this date
+            $ordIdsStmt = $db->prepare("SELECT id FROM orders WHERE DATE(created_at) = ?");
+            $ordIdsStmt->execute([$date]);
+            while ($oidRow = $ordIdsStmt->fetch(PDO::FETCH_ASSOC)) {
+                laybyeRevertPaymentOrder($db, (int) $oidRow['id']);
+            }
+
             // Get all orders for this date to restore product quantities
             $stmt = $db->prepare("SELECT product_name, quantity FROM order_items oi 
                                  JOIN orders o ON oi.order_id = o.id 
@@ -98,6 +123,9 @@ try {
             
             // Restore the quantities in the inventory for orders
             foreach ($orderItems as $item) {
+                if (laybyeIsSyntheticOrderItemName((string) $item['product_name'])) {
+                    continue;
+                }
                 $stmtUpdateInventory->execute([
                     ':quantity' => $item['quantity'],
                     ':product_name' => $item['product_name']
@@ -165,17 +193,26 @@ try {
                 ]);
             }
             
+            // Revert lay-bye ledgers for orders that used this product line (e.g. Lay-bye Payment)
+            $ordStmt = $db->prepare("SELECT DISTINCT order_id FROM order_items WHERE product_name = ?");
+            $ordStmt->execute([$name]);
+            while ($o = $ordStmt->fetch(PDO::FETCH_ASSOC)) {
+                laybyeRevertPaymentOrder($db, (int) $o['order_id']);
+            }
+
             // Get all orders that contain this product to restore quantities
             $stmt = $db->prepare("SELECT oi.order_id, oi.quantity FROM order_items oi WHERE oi.product_name = ?");
             $stmt->execute([$name]);
             $orderItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Restore quantities for orders
-            foreach ($orderItems as $item) {
-                $stmtUpdateInventory->execute([
-                    ':quantity' => $item['quantity'],
-                    ':product_name' => $name
-                ]);
+            if (!laybyeIsSyntheticOrderItemName((string) $name)) {
+                foreach ($orderItems as $item) {
+                    $stmtUpdateInventory->execute([
+                        ':quantity' => $item['quantity'],
+                        ':product_name' => $name
+                    ]);
+                }
             }
             
             // Delete all related records (order doesn't matter with foreign keys disabled)

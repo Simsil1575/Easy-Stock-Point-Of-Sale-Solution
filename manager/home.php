@@ -747,6 +747,12 @@ $outOfStock = [];
                             
                             <!-- Action Buttons next to title -->
                             <div class="flex items-center gap-3 ml-2">
+                                <a href="../home" class="inline-flex items-center gap-2 px-3 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 transition-colors duration-200" title="Open Cashier POS">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">POS</span>
+                                </a>
                                 <button type="button" onclick="window.location.href='chat'" class="p-2 bg-gradient-to-br from-teal-200 to-teal-50 rounded-full hover:shadow-md transition-all duration-200">
                                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
@@ -891,12 +897,18 @@ $outOfStock = [];
                                 }
                                 $totalCashSales = $cashSalesQuery->fetchColumn();
                                 
-                                // 3. Today's cash received from credit sales payments
+                                // 3. Today's cash received from credit sale payments (cash installments only; excludes rows mirrored in eft_payments)
                                 $creditPaymentsQuery = $db->prepare("
                                     SELECT COALESCE(SUM(p.amount), 0) 
                                     FROM payments p
                                     JOIN credit_sales cs ON p.sale_id = cs.id
-                                    WHERE cs.payment_status = 'paid' AND (
+                                    WHERE NOT EXISTS (
+                                        SELECT 1 FROM eft_payments ep
+                                        WHERE ep.order_id = p.sale_id
+                                        AND ABS(CAST(ep.amount AS REAL) - CAST(p.amount AS REAL)) < 0.021
+                                        AND date(ep.payment_date) = date(p.payment_date)
+                                        AND strftime('%H:%M', ep.payment_date) = strftime('%H:%M', p.payment_date)
+                                    ) AND (
                                         (DATE(p.payment_date) = :today AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
                                         (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
                                     )
@@ -925,14 +937,14 @@ $outOfStock = [];
                                 $eftDirectQuery->execute();
                                 $eftDirectTotal = $eftDirectQuery->fetchColumn();
 
-                                // 3c. Today's EFT credit payments (payments table where status is EFT)
+                                // 3c. Today's EFT amounts recorded against credit sales (from eft_payments)
                                 $eftCreditQuery = $db->prepare("
-                                    SELECT COALESCE(SUM(p.amount), 0)
-                                    FROM payments p
-                                    JOIN credit_sales cs ON p.sale_id = cs.id
-                                    WHERE cs.payment_status = 'eft' AND (
-                                        (DATE(p.payment_date) = :today AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-                                        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
+                                    SELECT COALESCE(SUM(e.amount), 0)
+                                    FROM eft_payments e
+                                    JOIN credit_sales cs ON e.order_id = cs.id
+                                    WHERE (
+                                        (DATE(e.payment_date) = :today AND strftime('%H:%M', e.payment_date) >= :closingTime) OR
+                                        (DATE(e.payment_date) = :nextBusinessDay AND strftime('%H:%M', e.payment_date) < :closingTime AND :isAfterMidnight = 1)
                                     )
                                 ");
                                 $eftCreditQuery->bindParam(':today', $today);
@@ -3116,6 +3128,47 @@ if (!$businessInfo) {
     let cashUpCurrentStep = 1;
     let cashUpTotalSteps = 6;
     let cashUpSystemData = null;
+    const CASHUP_BUSINESS_CLOSING_HM = <?php echo json_encode($cashUpClosingHmJs); ?>;
+    
+    function cashUpPad2(n) {
+        return String(n).padStart(2, '0');
+    }
+    
+    /** Matches manager/get_cashup_data.php when 00:00–23:59 full calendar range is used. */
+    function cashUpBusinessRangeSummary(startYmd, endYmd, startTimeStr, endTimeStr) {
+        const fullStart = /^00:00(:00)?$/i.test((startTimeStr || '').trim());
+        const fullEnd = /^23:59(:59)?$/i.test((endTimeStr || '').trim());
+        if (!fullStart || !fullEnd || !startYmd || !endYmd) {
+            return null;
+        }
+        const closing = CASHUP_BUSINESS_CLOSING_HM || '22:00';
+        const startResolved = startYmd + ' ' + closing + ':00';
+        const parts = endYmd.split('-').map(function (x) { return parseInt(x, 10); });
+        if (parts.length !== 3 || parts.some(function (n) { return isNaN(n); })) {
+            return null;
+        }
+        const y = parts[0], mo = parts[1], d = parts[2];
+        const cParts = closing.split(':').map(function (x) { return parseInt(x, 10) || 0; });
+        const ch = cParts[0], cmin = cParts[1];
+        const endPrev = new Date(y, mo - 1, d, ch, cmin, 0);
+        endPrev.setMinutes(endPrev.getMinutes() - 1);
+        const dayAfter = new Date(y, mo - 1, d + 1);
+        const endResolved = dayAfter.getFullYear() + '-' + cashUpPad2(dayAfter.getMonth() + 1) + '-' + cashUpPad2(dayAfter.getDate()) + ' '
+            + cashUpPad2(endPrev.getHours()) + ':' + cashUpPad2(endPrev.getMinutes()) + ':59';
+        return 'Data for: ' + startResolved + ' — ' + endResolved + ' (business days · closing ' + closing + ')';
+    }
+    
+    function cashUpOnManualDateInputChange() {
+        const sh = document.getElementById('cashup_start_hour');
+        const eh = document.getElementById('cashup_end_hour');
+        if (sh) sh.value = '0';
+        if (eh) eh.value = '23';
+        document.querySelectorAll('.cashup-quick-period').forEach(function (el) {
+            el.classList.remove('bg-teal-600', 'text-white', 'border-teal-600', 'shadow-sm');
+            el.classList.add('bg-white', 'text-teal-800', 'hover:bg-teal-50');
+        });
+        clearCashUpDayHighlights();
+    }
     
     // 24-hour time from hour-only dropdowns (minutes fixed: start 00, end 59)
     function getCashUpStartTime() {
@@ -3127,24 +3180,179 @@ if (!$businessInfo) {
         return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':59' : '23:59';
     }
     
+    function formatCashUpLocalDate(d) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+    }
+
+    /** Same date logic as reports-center quick select, plus last week (Sun–Sat). */
+    function setCashUpQuickPeriod(period, btn) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        let startD = new Date(today);
+        let endD = new Date(today);
+
+        switch (period) {
+            case 'today':
+                break;
+            case 'yesterday':
+                startD.setDate(startD.getDate() - 1);
+                endD = new Date(startD);
+                break;
+            case 'week': {
+                const weekStart = new Date(today);
+                weekStart.setDate(today.getDate() - today.getDay());
+                startD = weekStart;
+                endD = new Date(today);
+                break;
+            }
+            case 'last_week': {
+                const thisWeekSun = new Date(today);
+                thisWeekSun.setDate(today.getDate() - today.getDay());
+                const lastWeekSun = new Date(thisWeekSun);
+                lastWeekSun.setDate(thisWeekSun.getDate() - 7);
+                const lastWeekSat = new Date(lastWeekSun);
+                lastWeekSat.setDate(lastWeekSun.getDate() + 6);
+                startD = lastWeekSun;
+                endD = lastWeekSat;
+                break;
+            }
+            case 'month':
+                startD = new Date(today.getFullYear(), today.getMonth(), 1);
+                endD = new Date(today);
+                break;
+            case 'year':
+                startD = new Date(today.getFullYear(), 0, 1);
+                endD = new Date(today);
+                break;
+            default:
+                return;
+        }
+
+        document.getElementById('cashup_start_date').value = formatCashUpLocalDate(startD);
+        document.getElementById('cashup_end_date').value = formatCashUpLocalDate(endD);
+        document.getElementById('cashup_start_hour').value = '0';
+        document.getElementById('cashup_end_hour').value = '23';
+
+        document.querySelectorAll('.cashup-quick-period').forEach(function (el) {
+            el.classList.remove('bg-teal-600', 'text-white', 'border-teal-600', 'shadow-sm');
+            el.classList.add('bg-white', 'text-teal-800', 'hover:bg-teal-50');
+        });
+        if (btn) {
+            btn.classList.remove('bg-white', 'text-teal-800', 'hover:bg-teal-50');
+            btn.classList.add('bg-teal-600', 'text-white', 'border-teal-600', 'shadow-sm');
+        }
+        clearCashUpDayHighlights();
+    }
+
+    function clearCashUpDayHighlights() {
+        document.querySelectorAll('.cashup-day-btn').forEach(function (el) {
+            el.classList.remove('bg-teal-600', 'text-white', 'border-teal-600', 'shadow-sm');
+            el.classList.add('bg-white', 'text-teal-800', 'hover:bg-teal-50');
+        });
+    }
+
+    function setCashUpSingleDay(ymd, btn) {
+        document.getElementById('cashup_start_date').value = ymd;
+        document.getElementById('cashup_end_date').value = ymd;
+        document.getElementById('cashup_start_hour').value = '0';
+        document.getElementById('cashup_end_hour').value = '23';
+        document.querySelectorAll('.cashup-quick-period').forEach(function (el) {
+            el.classList.remove('bg-teal-600', 'text-white', 'border-teal-600', 'shadow-sm');
+            el.classList.add('bg-white', 'text-teal-800', 'hover:bg-teal-50');
+        });
+        clearCashUpDayHighlights();
+        if (btn) {
+            btn.classList.remove('bg-white', 'text-teal-800', 'hover:bg-teal-50');
+            btn.classList.add('bg-teal-600', 'text-white', 'border-teal-600', 'shadow-sm');
+        }
+    }
+
+    function highlightCashUpQuickPeriod(period) {
+        document.querySelectorAll('.cashup-quick-period').forEach(function (el) {
+            const on = el.getAttribute('data-cashup-period') === period;
+            el.classList.toggle('bg-teal-600', on);
+            el.classList.toggle('text-white', on);
+            el.classList.toggle('border-teal-600', on);
+            el.classList.toggle('shadow-sm', on);
+            el.classList.toggle('bg-white', !on);
+            el.classList.toggle('text-teal-800', !on);
+            el.classList.toggle('hover:bg-teal-50', !on);
+        });
+    }
+
+    async function loadCashupActivityCalendar() {
+        const monthEl = document.getElementById('cashup_activity_month');
+        const container = document.getElementById('cashup_activity_days');
+        if (!monthEl || !container) return;
+        if (!monthEl.value) {
+            const t = new Date();
+            monthEl.value = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0');
+        }
+        const parts = monthEl.value.split('-');
+        const y = parts[0];
+        const m = parts[1];
+        container.innerHTML = '<span class="text-xs text-gray-400">Loading…</span>';
+        try {
+            const r = await fetch('get_cashup_calendar_dates.php?year=' + encodeURIComponent(y) + '&month=' + encodeURIComponent(parseInt(m, 10)));
+            const data = await r.json();
+            if (!data.success || !Array.isArray(data.dates)) {
+                container.innerHTML = '<span class="text-xs text-gray-500">Could not load days</span>';
+                return;
+            }
+            container.innerHTML = '';
+            if (data.dates.length === 0) {
+                container.innerHTML = '<span class="text-xs text-gray-500">No activity in this month</span>';
+                return;
+            }
+            data.dates.forEach(function (ymd) {
+                const dayNum = parseInt(ymd.split('-')[2], 10);
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'cashup-day-btn w-9 h-9 text-sm font-medium rounded-lg border border-teal-200 bg-white text-teal-800 hover:bg-teal-50';
+                btn.textContent = String(dayNum);
+                btn.dataset.date = ymd;
+                btn.onclick = function () { setCashUpSingleDay(ymd, btn); };
+                container.appendChild(btn);
+            });
+        } catch (e) {
+            container.innerHTML = '<span class="text-xs text-red-600">Failed to load calendar</span>';
+        }
+    }
+
     // Open the cash up modal
     function openCashUpModal() {
         cashUpCurrentStep = 1;
         cashUpSystemData = null;
         
-        // Reset form values
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('cashup_start_date').value = today;
+        // Reset form values (default: today, full day — same as reports center)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayStr = formatCashUpLocalDate(today);
+        document.getElementById('cashup_start_date').value = todayStr;
         document.getElementById('cashup_start_hour').value = '0';
-        document.getElementById('cashup_end_date').value = today;
+        document.getElementById('cashup_end_date').value = todayStr;
         document.getElementById('cashup_end_hour').value = '23';
+        highlightCashUpQuickPeriod('today');
+        const actMonth = document.getElementById('cashup_activity_month');
+        if (actMonth) {
+            actMonth.value = todayStr.slice(0, 7);
+        }
+        loadCashupActivityCalendar().then(function () {
+            const todayBtn = document.querySelector('.cashup-day-btn[data-date="' + todayStr + '"]');
+            if (todayBtn) {
+                setCashUpSingleDay(todayStr, todayBtn);
+                highlightCashUpQuickPeriod('today');
+            } else {
+                clearCashUpDayHighlights();
+            }
+        });
         document.getElementById('cashup_cashier').value = 'all';
         document.getElementById('cashup_cash_on_hand').value = '';
         document.getElementById('cashup_eft_on_hand').value = '';
-        document.getElementById('cashup_cash_back').value = '';
         document.getElementById('cashup_tips').value = '';
-        document.getElementById('cashup_hubbly').value = '';
-        document.getElementById('cashup_beerhouse').value = '';
         document.getElementById('cashup_unpaid_credit').value = '';
         document.getElementById('cashup_credit_returns').value = '';
         document.getElementById('cashup_expenses').value = '';
@@ -3168,13 +3376,8 @@ if (!$businessInfo) {
         if (!cashUpSystemData) return;
         const fmt = (n) => (n ?? 0).toFixed(2);
         const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-        el('step2_cashback_beerhouse', fmt(cashUpSystemData.cash_back_beerhouse));
-        el('step2_cashback_hubbly', fmt(cashUpSystemData.cash_back_hubbly));
-        el('step2_cashback_customer', fmt(cashUpSystemData.cash_back_customer));
         el('step2_credit_unpaid', fmt(cashUpSystemData.unpaid_credit_sales));
         el('step2_credit_returns', fmt(cashUpSystemData.credit_returns));
-        el('step2_hansa_cash', 'N$ ' + fmt(cashUpSystemData.hansa_cash));
-        el('step2_hansa_eft', 'N$ ' + fmt(cashUpSystemData.hansa_eft));
         el('step2_tips', 'N$ ' + fmt(cashUpSystemData.tips_system));
         el('step2_expenses', 'N$ ' + fmt(cashUpSystemData.expenses));
         el('step2_damages', 'N$ ' + fmt(cashUpSystemData.damages));
@@ -3216,18 +3419,17 @@ if (!$businessInfo) {
         document.getElementById('cashup_prev_btn').classList.toggle('invisible', cashUpCurrentStep === 1);
         document.getElementById('cashup_next_btn').classList.toggle('hidden', cashUpCurrentStep === cashUpTotalSteps);
         document.getElementById('cashup_submit_btn').classList.toggle('hidden', cashUpCurrentStep !== cashUpTotalSteps);
-        document.getElementById('cashup_view_btn').classList.toggle('hidden', cashUpCurrentStep !== cashUpTotalSteps);
     }
     
-    // View full cash up report in new page
-    function viewFullCashUpReport() {
-        const startDate = document.getElementById('cashup_start_date').value;
-        const startTime = getCashUpStartTime();
-        const endDate = document.getElementById('cashup_end_date').value;
-        const endTime = getCashUpEndTime();
-        const cashierId = document.getElementById('cashup_cashier').value;
-        const url = `cashupmaster.php?date=${encodeURIComponent(endDate)}&cashier_id=${encodeURIComponent(cashierId)}`;
-        window.open(url, '_blank');
+    /** Opens read-only report with the same figures as the printed receipt (cashup_print_report.php). */
+    function openCashUpReceiptReport(snapshot) {
+        try {
+            const json = JSON.stringify(snapshot);
+            const s = btoa(unescape(encodeURIComponent(json)));
+            window.open('cashup_print_report.php?s=' + encodeURIComponent(s), '_blank');
+        } catch (e) {
+            console.error('openCashUpReceiptReport', e);
+        }
     }
     
     // Go to next step
@@ -3274,7 +3476,8 @@ if (!$businessInfo) {
                         start_time: startTime,
                         end_date: endDate,
                         end_time: endTime,
-                        cashier_id: cashierId
+                        cashier_id: cashierId,
+                        include_expected_amounts: true
                     })
                 });
                 cashUpSystemData = await response.json();
@@ -3287,27 +3490,26 @@ if (!$businessInfo) {
                 }
                 
                 // Pre-fill system values (hidden inputs for step 2 / submit)
-                document.getElementById('cashup_cash_back').value = cashUpSystemData.cash_back_system?.toFixed(2) || '0.00';
                 document.getElementById('cashup_tips').value = cashUpSystemData.tips_system?.toFixed(2) || '0.00';
                 document.getElementById('cashup_unpaid_credit').value = cashUpSystemData.unpaid_credit_sales?.toFixed(2) ?? '';
                 document.getElementById('cashup_credit_returns').value = cashUpSystemData.credit_returns?.toFixed(2) ?? '';
                 document.getElementById('cashup_expenses').value = cashUpSystemData.expenses?.toFixed(2) ?? '';
-                document.getElementById('cashup_hubbly').value = (cashUpSystemData.cash_back_hubbly ?? 0).toFixed(2);
-                document.getElementById('cashup_beerhouse').value = (cashUpSystemData.cash_back_beerhouse ?? 0).toFixed(2);
                 updateCashUpStep2Summary();
                 
-                // Update Step 4 expected cash display and pre-fill cash on hand with cash in till
-                document.getElementById('step4_expected').textContent = 'N$ ' + (cashUpSystemData.cash_sales_expected || 0).toFixed(2);
-                // Pre-fill cash on hand with the calculated cash in till value to ensure balance
-                document.getElementById('cashup_cash_on_hand').value = (cashUpSystemData.cash_sales_expected ?? cashUpSystemData.cash_in_till ?? 0).toFixed(2);
-                // Trigger the input event to update the over/short display
-                document.getElementById('cashup_cash_on_hand').dispatchEvent(new Event('input'));
+                // Manager: show system expected cash / EFT in the modal
+                const expCash = parseFloat(cashUpSystemData.cash_sales_expected) || 0;
+                const expEft = parseFloat(cashUpSystemData.card_sales_expected) || 0;
+                document.getElementById('step4_expected').textContent = 'N$ ' + expCash.toFixed(2);
+                document.getElementById('cashup_cash_on_hand').value = '';
+                document.getElementById('step4_over_short').textContent = '—';
+                document.getElementById('step4_over_short').className = 'text-2xl font-bold text-gray-500';
+                document.getElementById('step5_eft_expected').textContent = 'N$ ' + expEft.toFixed(2);
+                document.getElementById('step5_eft_over_short').textContent = '—';
+                document.getElementById('step5_eft_over_short').className = 'text-2xl font-bold text-gray-500';
                 
-                // Update Step 5 expected EFT display
-                document.getElementById('step5_eft_expected').textContent = 'N$ ' + (cashUpSystemData.card_sales_expected || 0).toFixed(2);
-                
-                // Update date range display across all steps
-                const dateRangeText = `Data for: ${startDate} ${startTime} — ${endDate} ${endTime}`;
+                // Update date range display across all steps (resolved window when 00:00–23:59)
+                const dateRangeText = cashUpBusinessRangeSummary(startDate, endDate, startTime, endTime)
+                    || ('Data for: ' + startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime);
                 document.getElementById('cashup_date_range_text').textContent = dateRangeText;
                 document.getElementById('cashup_date_range_text_step3').textContent = dateRangeText;
                 document.getElementById('cashup_date_range_text_step4').textContent = dateRangeText;
@@ -3362,56 +3564,45 @@ if (!$businessInfo) {
         
         const cashOnHand = parseFloat(document.getElementById('cashup_cash_on_hand').value) || 0;
         const eftOnHand = parseFloat(document.getElementById('cashup_eft_on_hand').value) || 0;
-        const cashBack = parseFloat(document.getElementById('cashup_cash_back').value) || 0;
         const tips = parseFloat(document.getElementById('cashup_tips').value) || 0;
-        const hubbly = parseFloat(document.getElementById('cashup_hubbly').value) || 0;
-        const beerhouse = parseFloat(document.getElementById('cashup_beerhouse').value) || 0;
         const unpaidCredit = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
         const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
         const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
         
-        const cashSalesExpected = cashUpSystemData.cash_sales_expected || 0;
-        const eftSalesExpected = cashUpSystemData.card_sales_expected || 0;
-        const overShort = cashOnHand - cashSalesExpected;
-        const eftOverShort = eftOnHand - eftSalesExpected;
+        const expCashReview = parseFloat(cashUpSystemData.cash_sales_expected) || 0;
+        const expEftReview = parseFloat(cashUpSystemData.card_sales_expected) || 0;
+        const cashVar = cashOnHand - expCashReview;
+        const eftVar = eftOnHand - expEftReview;
         
         // Update summary display
         const startDate = document.getElementById('cashup_start_date').value;
         const startTime = getCashUpStartTime();
         const endDate = document.getElementById('cashup_end_date').value;
         const endTime = getCashUpEndTime();
-        document.getElementById('review_date').textContent = startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime;
+        document.getElementById('review_date').textContent = cashUpBusinessRangeSummary(startDate, endDate, startTime, endTime)
+            || (startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime);
         document.getElementById('review_cashier').textContent = document.getElementById('cashup_cashier').selectedOptions[0].text;
         
-        document.getElementById('review_cash_expected').textContent = 'N$ ' + cashSalesExpected.toFixed(2);
+        document.getElementById('review_cash_expected').textContent = 'N$ ' + expCashReview.toFixed(2);
         document.getElementById('review_cash_on_hand').textContent = 'N$ ' + cashOnHand.toFixed(2);
-        document.getElementById('review_over_short').textContent = 'N$ ' + overShort.toFixed(2);
-        document.getElementById('review_over_short').className = overShort >= 0 ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
+        document.getElementById('review_over_short').textContent = 'N$ ' + cashVar.toFixed(2);
+        document.getElementById('review_over_short').className = 'font-semibold ' + (cashVar > 0 ? 'text-green-600' : (cashVar < 0 ? 'text-red-600' : 'text-gray-700'));
         
-        document.getElementById('review_eft_expected').textContent = 'N$ ' + eftSalesExpected.toFixed(2);
+        document.getElementById('review_eft_expected').textContent = 'N$ ' + expEftReview.toFixed(2);
         document.getElementById('review_eft_on_hand').textContent = 'N$ ' + eftOnHand.toFixed(2);
-        document.getElementById('review_eft_over_short').textContent = 'N$ ' + eftOverShort.toFixed(2);
-        document.getElementById('review_eft_over_short').className = eftOverShort >= 0 ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
+        document.getElementById('review_eft_over_short').textContent = 'N$ ' + eftVar.toFixed(2);
+        document.getElementById('review_eft_over_short').className = 'font-semibold ' + (eftVar > 0 ? 'text-green-600' : (eftVar < 0 ? 'text-red-600' : 'text-gray-700'));
         
         document.getElementById('review_unpaid_credit').textContent = 'N$ ' + unpaidCredit.toFixed(2);
         document.getElementById('review_credit_returns').textContent = 'N$ ' + creditReturns.toFixed(2);
         document.getElementById('review_open_tabs').textContent = 'N$ ' + (cashUpSystemData.open_tabs_balance || 0).toFixed(2);
         
         document.getElementById('review_expenses').textContent = 'N$ ' + expenses.toFixed(2);
-        document.getElementById('review_cash_back').textContent = 'N$ ' + cashBack.toFixed(2);
         document.getElementById('review_tips').textContent = 'N$ ' + tips.toFixed(2);
-        
-        const hansaCash = cashUpSystemData.hansa_cash ?? 0;
-        const hansaEft = cashUpSystemData.hansa_eft ?? 0;
-        const reviewHansaCashEl = document.getElementById('review_hansa_cash');
-        const reviewHansaEftEl = document.getElementById('review_hansa_eft');
-        if (reviewHansaCashEl) reviewHansaCashEl.textContent = 'N$ ' + Number(hansaCash).toFixed(2);
-        if (reviewHansaEftEl) reviewHansaEftEl.textContent = 'N$ ' + Number(hansaEft).toFixed(2);
-        document.getElementById('review_hubbly').textContent = 'N$ ' + hubbly.toFixed(2);
-        document.getElementById('review_beerhouse').textContent = 'N$ ' + beerhouse.toFixed(2);
         
         document.getElementById('review_voids').textContent = 'N$ ' + (cashUpSystemData.voids || 0).toFixed(2);
         document.getElementById('review_refunds').textContent = 'N$ ' + (cashUpSystemData.refunds || 0).toFixed(2);
+        document.getElementById('review_damages').textContent = 'N$ ' + (Number(cashUpSystemData.damages) || 0).toFixed(2);
         document.getElementById('review_total_sold').textContent = 'N$ ' + (cashUpSystemData.total_items_sold || 0).toFixed(2);
     }
     
@@ -3430,16 +3621,42 @@ if (!$businessInfo) {
         const cashierName = document.getElementById('cashup_cashier').selectedOptions[0].text;
         const cashOnHand = parseFloat(document.getElementById('cashup_cash_on_hand').value) || 0;
         const eftOnHand = parseFloat(document.getElementById('cashup_eft_on_hand').value) || 0;
-        const cashBack = parseFloat(document.getElementById('cashup_cash_back').value) || 0;
         const tips = parseFloat(document.getElementById('cashup_tips').value) || 0;
-        const hubbly = parseFloat(document.getElementById('cashup_hubbly').value) || 0;
-        const beerhouse = parseFloat(document.getElementById('cashup_beerhouse').value) || 0;
         const unpaidCreditSales = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
         const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
         const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
         
-        const overShort = cashOnHand - (cashUpSystemData.cash_sales_expected || 0);
-        const eftOverShort = eftOnHand - (cashUpSystemData.card_sales_expected || 0);
+        let cashSalesExpected = parseFloat(cashUpSystemData.cash_sales_expected);
+        let cardSalesExpected = parseFloat(cashUpSystemData.card_sales_expected);
+        if (Number.isNaN(cashSalesExpected) || Number.isNaN(cardSalesExpected)) {
+            try {
+                const expResp = await fetch('get_cashup_data.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        start_date: startDate,
+                        start_time: startTime,
+                        end_date: endDate,
+                        end_time: endTime,
+                        cashier_id: cashierId,
+                        include_expected_amounts: true
+                    })
+                });
+                const expData = await expResp.json();
+                if (!expData.success) {
+                    showCashUpNotification('Could not load expected amounts: ' + (expData.error || 'Unknown error'), 'error');
+                    return;
+                }
+                cashSalesExpected = parseFloat(expData.cash_sales_expected) || 0;
+                cardSalesExpected = parseFloat(expData.card_sales_expected) || 0;
+            } catch (e) {
+                showCashUpNotification('Could not load expected amounts: ' + e.message, 'error');
+                return;
+            }
+        }
+        
+        const overShort = cashOnHand - cashSalesExpected;
+        const eftOverShort = eftOnHand - cardSalesExpected;
         
         // Prepare receipt data for printing
         const receiptData = {
@@ -3455,11 +3672,11 @@ if (!$businessInfo) {
             filter_cashier_name: cashierName,
             is_individual_cashout: cashierId !== 'all',
             // CASH section
-            cash_sales_expected: cashUpSystemData.cash_sales_expected || 0,
+            cash_sales_expected: cashSalesExpected,
             cash_on_hand: cashOnHand,
             over_short: overShort,
             // EFT section
-            card_sales_expected: cashUpSystemData.card_sales_expected || 0,
+            card_sales_expected: cardSalesExpected,
             eft_on_hand: eftOnHand,
             eft_over_short: eftOverShort,
             // CARD & CREDIT section (unpaid credit & credit returns from user input)
@@ -3469,16 +3686,11 @@ if (!$businessInfo) {
             credit_returns: creditReturns,
             // DEDUCTIONS section (expenses from modal input)
             expenses: expenses,
-            cash_back: cashBack,
             tips: tips,
-            // SALES SOURCES (INFO) section
-            hansa_cash: cashUpSystemData.hansa_cash ?? 0,
-            hansa_eft: cashUpSystemData.hansa_eft ?? 0,
-            hubbly: hubbly,
-            beerhouse: beerhouse,
             // ADJUSTMENTS section
             voids: cashUpSystemData.voids || 0,
             refunds: cashUpSystemData.refunds || 0,
+            damages: Number(cashUpSystemData.damages) || 0,
             // TOTAL VALUE OF ITEMS SOLD section
             total_items_sold: cashUpSystemData.total_items_sold || 0
         };
@@ -3501,6 +3713,41 @@ if (!$businessInfo) {
             console.log('[CashUpModal] Print result:', result);
             
             if (result && result.success) {
+                const rangeLabelResolved = cashUpBusinessRangeSummary(startDate, endDate, startTime, endTime)
+                    || (startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime);
+                const reportSnapshot = {
+                    start_date: startDate,
+                    start_time: startTime,
+                    end_date: endDate,
+                    end_time: endTime,
+                    range_label: rangeLabelResolved,
+                    filter_cashier_name: cashierName,
+                    cashier_username: '<?php echo htmlspecialchars($_SESSION['username'] ?? 'Manager'); ?>',
+                    is_individual_cashout: cashierId !== 'all',
+                    cash_sales_expected: cashSalesExpected,
+                    cash_on_hand: cashOnHand,
+                    over_short: overShort,
+                    card_sales_expected: cardSalesExpected,
+                    eft_on_hand: eftOnHand,
+                    eft_over_short: eftOverShort,
+                    unpaid_credit_sales: unpaidCreditSales,
+                    open_tabs_balance: cashUpSystemData.open_tabs_balance || 0,
+                    unpaid_tabs: cashUpSystemData.unpaid_tabs || 0,
+                    credit_returns: creditReturns,
+                    expenses: expenses,
+                    tips: tips,
+                    voids: cashUpSystemData.voids || 0,
+                    refunds: cashUpSystemData.refunds || 0,
+                    damages: Number(cashUpSystemData.damages) || 0,
+                    total_items_sold: cashUpSystemData.total_items_sold || 0,
+                    total_cash_in: Number(cashUpSystemData.total_cash_in) || 0,
+                    total_cash_out: Number(cashUpSystemData.total_cash_out) || 0,
+                    total_credit_payments: Number(cashUpSystemData.total_credit_payments) || 0,
+                    total_cash_received: Number(cashUpSystemData.total_cash_received) || 0,
+                    total_cash_sales: Number(cashUpSystemData.total_cash_sales) || 0,
+                    cash_back_system: Number(cashUpSystemData.cash_back_system) || 0,
+                    tips_system: Number(cashUpSystemData.tips_system) || 0
+                };
                 // Save to database after successful print
                 const saveData = {
                     start_date: startDate,
@@ -3510,10 +3757,10 @@ if (!$businessInfo) {
                     date: endDate,
                     cashier_id: cashierId,
                     cashier_name: cashierName,
-                    cash_sales_expected: cashUpSystemData.cash_sales_expected || 0,
+                    cash_sales_expected: cashSalesExpected,
                     cash_on_hand: cashOnHand,
                     over_short: overShort,
-                    card_sales_expected: cashUpSystemData.card_sales_expected || 0,
+                    card_sales_expected: cardSalesExpected,
                     eft_on_hand: eftOnHand,
                     eft_over_short: eftOverShort,
                     unpaid_credit_sales: unpaidCreditSales,
@@ -3521,10 +3768,10 @@ if (!$businessInfo) {
                     unpaid_tabs: cashUpSystemData.unpaid_tabs || 0,
                     credit_returns: creditReturns,
                     expenses: expenses,
-                    cash_back: cashBack,
+                    cash_back: 0,
                     tips: tips,
-                    hubbly: hubbly,
-                    beerhouse: beerhouse,
+                    hubbly: 0,
+                    beerhouse: 0,
                     voids: cashUpSystemData.voids || 0,
                     refunds: cashUpSystemData.refunds || 0,
                     total_items_sold: cashUpSystemData.total_items_sold || 0
@@ -3551,6 +3798,7 @@ if (!$businessInfo) {
                 
                 setTimeout(() => {
                     closeCashUpModal();
+                    openCashUpReceiptReport(reportSnapshot);
                 }, 1500);
             } else {
                 showCashUpNotification('Print failed: ' + (result?.message || result?.error || 'Unknown error'), 'error');
@@ -3582,38 +3830,73 @@ if (!$businessInfo) {
         }, 3000);
     }
     
-    // Calculate over/short in real-time
+    function formatCashUpVarianceEl(display, variance, zeroClass) {
+        if (!display) return;
+        zeroClass = zeroClass || 'text-teal-700';
+        display.textContent = 'N$ ' + variance.toFixed(2);
+        display.className = 'text-2xl font-bold ' + (variance > 0 ? 'text-green-600' : (variance < 0 ? 'text-red-600' : zeroClass));
+    }
+    
+    // Calculate over/short in real-time (manager modal includes expected amounts)
     document.addEventListener('DOMContentLoaded', function() {
         const cashOnHandInput = document.getElementById('cashup_cash_on_hand');
         if (cashOnHandInput) {
             cashOnHandInput.addEventListener('input', function() {
-                if (cashUpSystemData) {
-                    const cashOnHand = parseFloat(this.value) || 0;
-                    const expected = cashUpSystemData.cash_sales_expected || 0;
-                    const overShort = cashOnHand - expected;
-                    const display = document.getElementById('step4_over_short');
-                    if (display) {
-                        display.textContent = 'N$ ' + overShort.toFixed(2);
-                        display.className = overShort >= 0 ? 'text-2xl font-bold text-green-600' : 'text-2xl font-bold text-red-600';
-                    }
+                const display = document.getElementById('step4_over_short');
+                if (!cashUpSystemData || !display) return;
+                const exp = parseFloat(cashUpSystemData.cash_sales_expected);
+                if (Number.isNaN(exp)) {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
                 }
+                const raw = cashOnHandInput.value.trim();
+                if (raw === '') {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
+                }
+                const onHand = parseFloat(raw) || 0;
+                formatCashUpVarianceEl(display, onHand - exp, 'text-teal-700');
             });
         }
         
         const eftOnHandInput = document.getElementById('cashup_eft_on_hand');
         if (eftOnHandInput) {
             eftOnHandInput.addEventListener('input', function() {
-                if (cashUpSystemData) {
-                    const eftOnHand = parseFloat(this.value) || 0;
-                    const expected = cashUpSystemData.card_sales_expected || 0;
-                    const overShort = eftOnHand - expected;
-                    const display = document.getElementById('step5_eft_over_short');
-                    if (display) {
-                        display.textContent = 'N$ ' + overShort.toFixed(2);
-                        display.className = overShort >= 0 ? 'text-2xl font-bold text-blue-600' : 'text-2xl font-bold text-red-600';
-                    }
+                const display = document.getElementById('step5_eft_over_short');
+                if (!cashUpSystemData || !display) return;
+                const exp = parseFloat(cashUpSystemData.card_sales_expected);
+                if (Number.isNaN(exp)) {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
                 }
+                const raw = eftOnHandInput.value.trim();
+                if (raw === '') {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
+                }
+                const onHand = parseFloat(raw) || 0;
+                formatCashUpVarianceEl(display, onHand - exp, 'text-blue-700');
             });
+        }
+
+        const cashupMonth = document.getElementById('cashup_activity_month');
+        if (cashupMonth) {
+            cashupMonth.addEventListener('change', function () {
+                loadCashupActivityCalendar();
+            });
+        }
+        
+        const cashupStartDateEl = document.getElementById('cashup_start_date');
+        const cashupEndDateEl = document.getElementById('cashup_end_date');
+        if (cashupStartDateEl) {
+            cashupStartDateEl.addEventListener('change', cashUpOnManualDateInputChange);
+        }
+        if (cashupEndDateEl) {
+            cashupEndDateEl.addEventListener('change', cashUpOnManualDateInputChange);
         }
     });
 </script>
@@ -3676,11 +3959,24 @@ if (!$businessInfo) {
                 <!-- Step 1: Select Date Range & Cashier -->
                 <div id="cashup_step_1">
                     <h3 class="text-lg font-semibold text-teal-700 mb-4">Select Date Range & Staff Member</h3>
-                    <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-4">
-                        <p class="text-sm text-blue-800">
-                            <i class="fas fa-info-circle mr-2"></i>
-                            <strong>Important:</strong> All amounts in the following steps will be calculated based on the date range you select below. Make sure to choose the correct dates before proceeding.
-                        </p>
+                   
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Quick select</label>
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" class="cashup-quick-period px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-200 bg-teal-600 text-white border-teal-600 shadow-sm" data-cashup-period="today" onclick="setCashUpQuickPeriod('today', this)">Today</button>
+                            <button type="button" class="cashup-quick-period px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-200 bg-white text-teal-800 hover:bg-teal-50" data-cashup-period="yesterday" onclick="setCashUpQuickPeriod('yesterday', this)">Yesterday</button>
+                            <button type="button" class="cashup-quick-period px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-200 bg-white text-teal-800 hover:bg-teal-50" data-cashup-period="week" onclick="setCashUpQuickPeriod('week', this)">This week</button>
+                            <button type="button" class="cashup-quick-period px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-200 bg-white text-teal-800 hover:bg-teal-50" data-cashup-period="last_week" onclick="setCashUpQuickPeriod('last_week', this)">Last week</button>
+                            <button type="button" class="cashup-quick-period px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-200 bg-white text-teal-800 hover:bg-teal-50" data-cashup-period="month" onclick="setCashUpQuickPeriod('month', this)">This month</button>
+                            <button type="button" class="cashup-quick-period px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-200 bg-white text-teal-800 hover:bg-teal-50" data-cashup-period="year" onclick="setCashUpQuickPeriod('year', this)">This year</button>
+                        </div>
+                    </div>
+                    <div class="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-xl">
+                        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+                            <label class="text-sm font-medium text-gray-800">Select Date</label>
+                            <input type="month" id="cashup_activity_month" value="<?php echo htmlspecialchars(date('Y-m')); ?>" class="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white text-gray-800 focus:ring-2 focus:ring-teal-500 focus:border-teal-500" title="Choose month">
+                        </div>
+                        <div id="cashup_activity_days" class="flex flex-wrap gap-2 min-h-[2.25rem] items-center"></div>
                     </div>
                     <div class="space-y-4">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -3699,6 +3995,7 @@ if (!$businessInfo) {
                                 </div>
                             </div>
                         </div>
+                        <p class="text-xs text-gray-500 -mt-2 mb-1">Selecting dates uses full days (00:00–23:59); totals follow your business closing time (<strong><?php echo htmlspecialchars($cashUpClosingHmJs, ENT_QUOTES, 'UTF-8'); ?></strong>) the same way as cash reports.</p>
                         <div>
                             <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Cashier / Waitress (Optional)</label>
                             <select id="cashup_cashier" class="w-full px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100">
@@ -3723,26 +4020,11 @@ if (!$businessInfo) {
                         </p>
                     </div>
                     <h3 class="text-lg font-semibold text-teal-700 mb-4">Summary</h3>
-                    <!-- Hidden inputs for submit (pre-filled from step 1 data) -->
-                    <input type="hidden" id="cashup_cash_back" value="0">
+                    <!-- Hidden inputs for submit (pre-filled from loaded data) -->
                     <input type="hidden" id="cashup_tips" value="0">
-                    <input type="hidden" id="cashup_hubbly" value="0">
-                    <input type="hidden" id="cashup_beerhouse" value="0">
                     <input type="hidden" id="cashup_unpaid_credit" value="0">
                     <input type="hidden" id="cashup_credit_returns" value="0">
                     <div class="space-y-6 font-mono text-sm">
-                        <div class="border border-gray-200 rounded-lg overflow-hidden">
-                            <div class="bg-gray-100 px-4 py-2 border-b border-gray-200">
-                                
-                                <span class="font-semibold text-gray-800">Cash Back</span><br>
-                                
-                            </div>
-                            <div class="px-4 py-3 space-y-1.5 bg-white">
-                                <div class="flex justify-between"><span class="text-gray-700">- Beerhaus (N$)</span><span id="step2_cashback_beerhouse" class="font-medium text-right">0.00</span></div>
-                                <div class="flex justify-between"><span class="text-gray-700">- Hubbly (N$)</span><span id="step2_cashback_hubbly" class="font-medium text-right">0.00</span></div>
-                                <div class="flex justify-between"><span class="text-gray-700">- Customer (Cashback) (N$)</span><span id="step2_cashback_customer" class="font-medium text-right">0.00</span></div>
-                            </div>
-                        </div>
                         <div class="border border-gray-200 rounded-lg overflow-hidden">
                             <div class="bg-gray-100 px-4 py-2 border-b border-gray-200">
                                 
@@ -3752,18 +4034,6 @@ if (!$businessInfo) {
                             <div class="px-4 py-3 space-y-1.5 bg-white">
                                 <div class="flex justify-between"><span class="text-gray-700">- Credit (Unpaid) (N$)</span><span id="step2_credit_unpaid" class="font-medium text-right">0.00</span></div>
                                 <div class="flex justify-between"><span class="text-gray-700">- Credit Return (Payments) (N$)</span><span id="step2_credit_returns" class="font-medium text-right">0.00</span></div>
-                            </div>
-                        </div>
-                        <div class="border border-gray-200 rounded-lg overflow-hidden">
-                            <div class="px-4 py-3 bg-white space-y-2">
-                                <div class="flex justify-between items-center">
-                                    <span class="text-gray-700">Hansa (Cash)</span>
-                                    <span id="step2_hansa_cash" class="font-medium text-right">N$ 0.00</span>
-                                </div>
-                                <div class="flex justify-between items-center">
-                                    <span class="text-gray-700">Hansa (EFT)</span>
-                                    <span id="step2_hansa_eft" class="font-medium text-right">N$ 0.00</span>
-                                </div>
                             </div>
                         </div>
                         <div class="border border-gray-200 rounded-lg overflow-hidden">
@@ -3921,19 +4191,7 @@ if (!$businessInfo) {
                             <h4 class="font-semibold text-gray-700 text-sm mb-2">DEDUCTIONS</h4>
                             <div class="space-y-1 text-sm">
                                 <div class="flex justify-between"><span class="text-gray-600">Expenses:</span><span id="review_expenses" class="font-medium">N$ 0.00</span></div>
-                                <div class="flex justify-between"><span class="text-gray-600">Cash Back:</span><span id="review_cash_back" class="font-medium">N$ 0.00</span></div>
                                 <div class="flex justify-between"><span class="text-gray-600">Tips:</span><span id="review_tips" class="font-medium">N$ 0.00</span></div>
-                            </div>
-                        </div>
-                        
-                        <!-- SALES SOURCES Section -->
-                        <div class="border-l-4 border-purple-500 pl-3">
-                            <h4 class="font-semibold text-gray-700 text-sm mb-2">SALES SOURCES</h4>
-                            <div class="space-y-1 text-sm">
-                                <div class="flex justify-between"><span class="text-gray-600">Hansa (Cash):</span><span id="review_hansa_cash" class="font-medium">N$ 0.00</span></div>
-                                <div class="flex justify-between"><span class="text-gray-600">Hansa (EFT):</span><span id="review_hansa_eft" class="font-medium">N$ 0.00</span></div>
-                                <div class="flex justify-between"><span class="text-gray-600">Hubbly:</span><span id="review_hubbly" class="font-medium">N$ 0.00</span></div>
-                                <div class="flex justify-between"><span class="text-gray-600">Beerhouse:</span><span id="review_beerhouse" class="font-medium">N$ 0.00</span></div>
                             </div>
                         </div>
                         
@@ -3943,6 +4201,7 @@ if (!$businessInfo) {
                             <div class="space-y-1 text-sm">
                                 <div class="flex justify-between"><span class="text-gray-600">Voids:</span><span id="review_voids" class="font-medium">N$ 0.00</span></div>
                                 <div class="flex justify-between"><span class="text-gray-600">Refunds:</span><span id="review_refunds" class="font-medium">N$ 0.00</span></div>
+                                <div class="flex justify-between"><span class="text-gray-600">Damages:</span><span id="review_damages" class="font-medium">N$ 0.00</span></div>
                             </div>
                         </div>
                         
@@ -3971,9 +4230,6 @@ if (!$businessInfo) {
                     </button>
                     <button id="cashup_submit_btn" onclick="submitCashUp()" class="hidden px-6 py-2.5 bg-teal-600 text-white rounded-xl hover:bg-teal-700 transition-colors font-medium flex items-center gap-2">
                         <i class="fas fa-print"></i> Print Receipt
-                    </button>
-                    <button id="cashup_view_btn" onclick="viewFullCashUpReport()" class="hidden px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium flex items-center gap-2" title="View Full Report">
-                        <i class="fas fa-external-link-alt"></i>
                     </button>
                 </div>
             </div>

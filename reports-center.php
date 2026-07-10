@@ -327,14 +327,17 @@ try {
             
             <main class="p-4 lg:p-6">
                 <!-- Page Header -->
-                <div class="mb-6">
-                    <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Reports Center</h1>
-                    <p class="text-gray-600">Generate reports for your shift and daily operations</p>
+                <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="min-w-0 flex-1">
+                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Reports Center</h1>
+                        <p class="text-gray-600">Generate reports for your shift and daily operations</p>
+                    </div>
+                    <?php $reportsSearchInclude = 'field'; include __DIR__ . '/includes/reports_center_search.php'; ?>
                 </div>
                 
                 <!-- Cashier Reports Only -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div id="reportsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Sales Reports -->
                         <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('sales', 'Sales Report', 'Complete sales overview with totals and breakdowns')">
@@ -403,6 +406,28 @@ try {
                             </div>
                             <h3 class="font-semibold text-gray-800 mb-1">Payment Summary Report</h3>
                             <p class="text-sm text-gray-500">Overview of all payment methods</p>
+                        </div>
+                        
+                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('gratuity', 'Gratuity Report', 'Gratuity totals and orders by cashier')">
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-hand-holding-heart text-teal-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">POS</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Gratuity Report</h3>
+                            <p class="text-sm text-gray-500">Totals and breakdown by cashier</p>
+                        </div>
+                        
+                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('tips', 'Tips Report', 'Recorded tips and checkout gratuity by cashier')">
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-amber-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-coins text-amber-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">POS</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Tips Report</h3>
+                            <p class="text-sm text-gray-500">Manual tips, checkout and tab gratuity</p>
                         </div>
                         
                         <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('cashup', 'Cash-Up Report', 'Daily cash reconciliation')">
@@ -485,6 +510,7 @@ try {
                             <p class="text-sm text-gray-500">All refund transactions</p>
                         </div>
                         
+                        <?php $reportsSearchInclude = 'empty'; include __DIR__ . '/includes/reports_center_search.php'; ?>
                     
                     </div>
                 </div>
@@ -607,7 +633,7 @@ try {
             document.getElementById('creditorFilter').classList.add('hidden');
             document.getElementById('categoryFilter').classList.add('hidden');
             
-            if (['cashier_sales', 'shift', 'cashup'].includes(type)) {
+            if (['cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type)) {
                 document.getElementById('cashierFilter').classList.remove('hidden');
             }
             
@@ -615,7 +641,9 @@ try {
                 document.getElementById('creditorFilter').classList.remove('hidden');
             }
             
-            if (['item_sales', 'plu', 'current_stock', 'low_stock'].includes(type)) {
+            // Product category filter (optional) for sales, stock, and product-linked reports
+            var categoryReportTypes = ['sales', 'daily_sales', 'monthly_sales', 'item_sales', 'cash_sales', 'card_sales', 'payment_summary', 'credit_sales', 'outstanding_credit', 'tabs', 'refunds', 'voids', 'plu', 'current_stock', 'low_stock', 'stock_movement', 'stock_variance', 'cashier_sales', 'profit_loss'];
+            if (categoryReportTypes.indexOf(type) !== -1) {
                 document.getElementById('categoryFilter').classList.remove('hidden');
             }
             
@@ -822,5 +850,6 @@ try {
             });
         }
     </script>
+    <?php $reportsSearchInclude = 'script'; include __DIR__ . '/includes/reports_center_search.php'; ?>
 </body>
 </html>

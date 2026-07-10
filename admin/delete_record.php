@@ -12,6 +12,7 @@ $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 require_once __DIR__ . '/../void_transaction_helper.php';
+require_once __DIR__ . '/../manager_pin_helper.php';
 
 header('Content-Type: application/json');
 
@@ -20,6 +21,18 @@ try {
     $id = $_POST['id'] ?? null;
     $date = $_POST['date'] ?? null;
     $name = $_POST['name'] ?? null;
+
+    $voidTypesNeedingPin = ['sales', 'credit'];
+    if (in_array($type, $voidTypesNeedingPin, true)) {
+        $pin = $_POST['manager_pin'] ?? '';
+        if (!verifyManagerVoidPin($pin)) {
+            throw new Exception(
+                managerVoidPinIsConfigured()
+                    ? 'Invalid manager PIN.'
+                    : 'Manager void PIN is not set. Set it under Settings.'
+            );
+        }
+    }
 
     switch ($type) {
         case 'sales':
@@ -237,7 +250,7 @@ try {
             }
             
             // Only reset if the sale is currently paid or partially paid
-            if ($creditSale['payment_status'] === 'paid' || $creditSale['payment_status'] === 'eft' || $creditSale['payment_status'] === 'partial') {
+            if ($creditSale['payment_status'] === 'paid' || $creditSale['payment_status'] === 'eft' || $creditSale['payment_status'] === 'paid_mixed' || $creditSale['payment_status'] === 'partial') {
                 // Reset the credit sale to unpaid status
                 $stmt = $db->prepare("UPDATE credit_sales SET paid_amount = 0, payment_status = 'unpaid' WHERE id = ?");
                 $stmt->execute([$id]);

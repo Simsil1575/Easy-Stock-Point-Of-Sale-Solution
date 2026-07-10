@@ -22,6 +22,10 @@ if ($activationStatus == 0) {
 // Database connection
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/ensure_tab_payments_mixed_migration.php';
+ensureTabPaymentsAllowsMixedPaymentMethod($db);
+require_once __DIR__ . '/tab_balance_helper.php';
+ensureTabVoidMarkColumns($db);
 
 // Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
@@ -81,9 +85,17 @@ function getUsernamesByIds($userIds) {
 
 // Handle POST requests for adding/updating/deleting/closing tabs
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    handle_tab_void_mark_post_request($db);
+
     if (isset($_POST['delete_item_id'])) {
         // Delete tab item
         $itemId = intval($_POST['delete_item_id']);
+        if (!can_delete_tab_items_from_session()) {
+            $tabId = intval($_POST['tab_id'] ?? 0);
+            $_SESSION['error'] = 'You do not have permission to remove items from a tab. Ask a manager.';
+            header('Location: ' . ($tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs'));
+            exit();
+        }
         $itemStmt = $db->prepare("SELECT tab_id, quantity, price FROM tab_items WHERE id = ?");
         $itemStmt->execute([$itemId]);
         $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
@@ -229,6 +241,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['success'] = 'Tab deleted successfully';
         header('Location: credit-tabs');
         exit();
+    } elseif (isset($_POST['delete_selected_ids']) && is_array($_POST['delete_selected_ids'])) {
+        $selectedIds = array_values(array_unique(array_map('intval', $_POST['delete_selected_ids'])));
+        $selectedIds = array_values(array_filter($selectedIds, function ($id) {
+            return $id > 0;
+        }));
+        if (empty($selectedIds)) {
+            $_SESSION['error'] = 'No valid tabs selected for deletion.';
+            header('Location: credit-tabs');
+            exit();
+        }
+        $deleted = 0;
+        $skipped = 0;
+        foreach ($selectedIds as $id) {
+            $stmt = $db->prepare("SELECT current_balance FROM tabs WHERE id = ?");
+            $stmt->execute([$id]);
+            $balance = $stmt->fetchColumn();
+            if ($balance === false) {
+                continue;
+            }
+            if ((float) $balance > 0) {
+                $skipped++;
+                continue;
+            }
+            $stmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
+            $stmt->execute([$id]);
+            $deleted++;
+        }
+        if ($deleted > 0 && $skipped > 0) {
+            $_SESSION['success'] = $deleted === 1
+                ? "1 tab deleted. {$skipped} skipped (outstanding balance)."
+                : "{$deleted} tabs deleted. {$skipped} skipped (outstanding balance).";
+        } elseif ($deleted > 0) {
+            $_SESSION['success'] = $deleted === 1 ? '1 tab deleted successfully.' : "{$deleted} tabs deleted successfully.";
+        } else {
+            $_SESSION['error'] = 'No tabs deleted — selected tabs have an outstanding balance.';
+        }
+        header('Location: credit-tabs');
+        exit();
+    } elseif (isset($_POST['close_selected_ids']) && is_array($_POST['close_selected_ids'])) {
+        // Bulk close selected tabs (open tabs only)
+        $selectedIds = array_values(array_unique(array_map('intval', $_POST['close_selected_ids'])));
+        $selectedIds = array_values(array_filter($selectedIds, function ($id) {
+            return $id > 0;
+        }));
+        if (empty($selectedIds)) {
+            $_SESSION['error'] = 'No valid tabs selected for closing.';
+            header('Location: credit-tabs');
+            exit();
+        }
+        $closedByUsername = $_SESSION['username'] ?? 'Unknown';
+        $placeholders = implode(',', array_fill(0, count($selectedIds), '?'));
+        $sql = "UPDATE tabs SET status = 'closed', closed_at = CURRENT_TIMESTAMP, closed_by = ? WHERE status = 'open' AND id IN ($placeholders)";
+        $stmt = $db->prepare($sql);
+        $params = array_merge([$closedByUsername], $selectedIds);
+        $stmt->execute($params);
+        $closedCount = $stmt->rowCount();
+        if ($closedCount > 0) {
+            $_SESSION['success'] = $closedCount . ' tab' . ($closedCount === 1 ? '' : 's') . ' closed successfully';
+        } else {
+            $_SESSION['error'] = 'No open tabs were closed. Selected tabs may already be closed.';
+        }
+        header('Location: credit-tabs');
+        exit();
     } elseif (isset($_POST['close_id'])) {
         // Close tab - store username for consistent tracking
         $closedByUsername = $_SESSION['username'] ?? 'Unknown';
@@ -254,8 +329,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (empty($_POST['id'])) {
             // Add new tab - store username for consistent tracking
-            $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername]);
+            ensureTabGratuityColumns($db);
+            $defaultGratuityOn = tab_default_gratuity_enabled_on_create($db);
+            $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id, gratuity_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername, $defaultGratuityOn]);
             $_SESSION['success'] = 'Tab created successfully';
         } else {
             // Update tab (only allow updating name and notes, not balance)
@@ -268,32 +345,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch all tabs with creditor information - optimized query
-// Filter by current user's username OR user_id for backward compatibility
+// Fetch tabs visible to the logged-in user.
+// Cashiers see their own tabs plus every tab opened by a waitress account.
 $currentUsername = $_SESSION['username'] ?? '';
-$currentUserId = $_SESSION['user_id'] ?? '';
-$tabsStmt = $db->prepare("
-    SELECT 
-        t.id,
-        t.creditor_id,
-        t.tab_name,
-        t.opening_balance,
-        t.current_balance,
-        t.status,
-        t.opened_at,
-        t.closed_at,
-        t.closed_by,
-        t.notes,
-        t.cashier_id,
-        c.name as creditor_name,
-        c.phone as creditor_phone
-    FROM tabs t
-    LEFT JOIN creditors c ON t.creditor_id = c.id
-    WHERE t.cashier_id = ? OR t.cashier_id = ?
-    ORDER BY t.opened_at DESC
-");
-$tabsStmt->execute([$currentUsername, $currentUserId]);
-$tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
+$currentUserId = (string) ($_SESSION['user_id'] ?? '');
+$currentRole = strtolower($_SESSION['role'] ?? '');
+
+$tabOwnerIds = array_values(array_unique(array_filter(
+    [$currentUsername, $currentUserId],
+    static function ($value) {
+        return $value !== '' && $value !== null;
+    }
+)));
+
+if ($currentRole === 'cashier') {
+    try {
+        $userDb = new PDO('sqlite:user.db');
+        $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $waitressStmt = $userDb->query("SELECT id, username FROM users WHERE role = 'waitress'");
+        while ($waitress = $waitressStmt->fetch(PDO::FETCH_ASSOC)) {
+            $tabOwnerIds[] = (string) $waitress['username'];
+            $tabOwnerIds[] = (string) $waitress['id'];
+        }
+        $tabOwnerIds = array_values(array_unique(array_filter(
+            $tabOwnerIds,
+            static function ($value) {
+                return $value !== '';
+            }
+        )));
+    } catch (PDOException $e) {
+        // Fall back to own tabs only if user.db is unavailable.
+    }
+}
+
+$tabs = [];
+if (!empty($tabOwnerIds)) {
+    $placeholders = implode(', ', array_fill(0, count($tabOwnerIds), '?'));
+    $tabsStmt = $db->prepare("
+        SELECT 
+            t.id,
+            t.creditor_id,
+            t.tab_name,
+            t.opening_balance,
+            t.current_balance,
+            t.status,
+            t.opened_at,
+            t.closed_at,
+            t.closed_by,
+            t.notes,
+            t.cashier_id,
+            t.marked_for_void,
+            t.void_marked_by,
+            t.void_marked_at,
+            c.name as creditor_name,
+            c.phone as creditor_phone
+        FROM tabs t
+        LEFT JOIN creditors c ON t.creditor_id = c.id
+        WHERE t.cashier_id IN ($placeholders)
+        ORDER BY t.opened_at DESC
+    ");
+    $tabsStmt->execute($tabOwnerIds);
+    $tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
 // Add usernames to tabs using getUsernameById (handles both numeric IDs and usernames)
 $usernameCache = [];
@@ -324,6 +437,7 @@ $totalOpenBalance = array_sum(array_column($openTabs, 'current_balance'));
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="sweetalert2@11.js"></script>
+    <?= tab_pos_confirm_script_tag() ?>
     <script src="lucide.js"></script>
     <!-- Load sendToPrinter function from receipt.php (for future use) -->
     <script src="receipt.php?js=true"></script>
@@ -1017,6 +1131,7 @@ th[onclick]:hover {
                                                 <option value="">All Status</option>
                                                 <option value="open">Open</option>
                                                 <option value="closed">Closed</option>
+                                                <option value="void_pending">Void Pending</option>
                                             </select>
                                             <select id="balanceFilter" class="flex-1 md:flex-none py-2.5 px-3 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500">
                                                 <option value="">All Balances</option>
@@ -1024,6 +1139,16 @@ th[onclick]:hover {
                                                 <option value="paid">Paid (=0)</option>
                                                 <option value="overpaid">Overpaid (<0)</option>
                                             </select>
+                                            <button type="button" onclick="closeSelectedTabs()"
+                                                class="px-3 py-2.5 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 transition-colors">
+                                                <i data-lucide="lock" class="w-4 h-4 inline-block mr-1"></i>
+                                                Close Selected Tabs
+                                            </button>
+                                            <button type="button" onclick="deleteSelectedTabs()"
+                                                class="px-3 py-2.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors">
+                                                <i data-lucide="trash-2" class="w-4 h-4 inline-block mr-1"></i>
+                                                Delete Selected
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -1075,10 +1200,11 @@ th[onclick]:hover {
                                                 <?php foreach($tabs as $tab): 
                                                     $isUnpaid = $tab['current_balance'] > 0;
                                                 ?>
-                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer" 
+                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= tab_is_marked_for_void($tab) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
                                                         data-tab-id="<?= $tab['id'] ?>"
                                                         data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                         data-tab-status="<?= strtolower($tab['status']) ?>"
+                                                        data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
                                                         data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                         data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                         data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"
@@ -1093,9 +1219,7 @@ th[onclick]:hover {
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200"><?= htmlspecialchars($tab['tab_name']) ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= htmlspecialchars($tab['creditor_name'] ?? 'N/A') ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                                            <span class="px-2 py-1 text-xs font-semibold rounded-full <?= $tab['status'] === 'open' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' ?>">
-                                                                <?= ucfirst($tab['status']) ?>
-                                                            </span>
+                                                            <?= tab_status_badges_html($tab, true) ?>
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold <?= $tab['current_balance'] > 0 ? 'text-red-600' : ($tab['current_balance'] < 0 ? 'text-teal-600' : 'text-gray-800') ?>">
                                                             N$<?= number_format($tab['current_balance'], 2) ?>
@@ -1104,6 +1228,7 @@ th[onclick]:hover {
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= date('Y-m-d H:i', strtotime($tab['opened_at'])) ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium" onclick="event.stopPropagation()">
                                                             <div class="flex items-center justify-end gap-2">
+                                                                <?= tab_void_mark_list_action_html($tab) ?>
                                                                 <a href="view-tab.php?id=<?= $tab['id'] ?>" 
                                                                    class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:pointer-events-none dark:text-blue-500 dark:hover:text-blue-400 dark:focus:outline-none dark:focus:ring-1 dark:focus:ring-gray-600"
                                                                    title="View">
@@ -1125,7 +1250,7 @@ th[onclick]:hover {
                                                                 
                                                                 <?php if ($tab['status'] === 'closed'): ?>
                                                                     <form method="POST" style="display: inline;" 
-                                                                          onsubmit="return confirm('Are you sure you want to reopen this tab?');">
+                                                                          <?= tab_reopen_form_onsubmit_attr() ?>>
                                                                         <input type="hidden" name="reopen_id" value="<?= $tab['id'] ?>">
                                                                         <button type="submit" 
                                                                                 class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-cyan-600 hover:text-cyan-800 disabled:opacity-50 disabled:pointer-events-none"
@@ -1163,10 +1288,11 @@ th[onclick]:hover {
                                             $isUnpaid = $tab['current_balance'] > 0;
                                             $balanceColor = $tab['current_balance'] > 0 ? 'text-red-600' : ($tab['current_balance'] < 0 ? 'text-teal-600' : 'text-gray-800');
                                         ?>
-                                            <div class="mobile-tab-card" 
+                                            <div class="mobile-tab-card<?= tab_is_marked_for_void($tab) ? ' border-red-300 bg-red-50' : '' ?>" 
                                                  data-tab-id="<?= $tab['id'] ?>"
                                                  data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                  data-tab-status="<?= strtolower($tab['status']) ?>"
+                                                 data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
                                                  data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                  data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                  data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"
@@ -1180,9 +1306,7 @@ th[onclick]:hover {
                                                     <div class="mobile-tab-card-field">
                                                         <div class="mobile-tab-card-label">Status</div>
                                                         <div class="mobile-tab-card-value">
-                                                            <span class="mobile-status-badge <?= $tab['status'] === 'open' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' ?>">
-                                                                <?= ucfirst($tab['status']) ?>
-                                                            </span>
+                                                            <?= tab_status_badges_html($tab, true) ?>
                                                         </div>
                                                     </div>
                                                     <div class="mobile-tab-card-field">
@@ -1205,6 +1329,7 @@ th[onclick]:hover {
                                                     </div>
                                                 </div>
                                                 <div class="mobile-tab-card-actions" onclick="event.stopPropagation()">
+                                                    <?= tab_void_mark_list_action_html($tab) ?>
                                                     <a href="view-tab.php?id=<?= $tab['id'] ?>" 
                                                        class="bg-blue-50 text-blue-600 hover:bg-blue-100">
                                                         <i data-lucide="eye" class="w-4 h-4 mx-auto"></i>
@@ -1224,7 +1349,7 @@ th[onclick]:hover {
                                                     <?php endif; ?>
                                                     <?php if ($tab['status'] === 'closed'): ?>
                                                         <form method="POST" style="display: inline; flex: 1;" 
-                                                              onsubmit="return confirm('Are you sure you want to reopen this tab?');">
+                                                              <?= tab_reopen_form_onsubmit_attr() ?>>
                                                             <input type="hidden" name="reopen_id" value="<?= $tab['id'] ?>">
                                                             <button type="submit" 
                                                                     class="w-full bg-cyan-50 text-cyan-600 hover:bg-cyan-100">
@@ -1366,6 +1491,7 @@ th[onclick]:hover {
                 const tabCreditor = item.getAttribute('data-tab-creditor') || '';
                 const tabId = item.getAttribute('data-tab-id') || '';
                 const tabBalance = parseFloat(item.getAttribute('data-tab-balance') || 0);
+                const tabVoidMark = item.getAttribute('data-tab-void-mark') || '0';
 
                 // Search filter
                 const matchesSearch = searchTerm === '' || 
@@ -1377,7 +1503,12 @@ th[onclick]:hover {
                     tabId.includes(searchTerm);
 
                 // Status filter
-                const matchesStatus = statusValue === '' || tabStatus === statusValue;
+                let matchesStatus = true;
+                if (statusValue === 'void_pending') {
+                    matchesStatus = tabVoidMark === '1';
+                } else if (statusValue !== '') {
+                    matchesStatus = tabStatus === statusValue;
+                }
 
                 // Balance filter
                 let matchesBalance = true;
@@ -1595,6 +1726,125 @@ th[onclick]:hover {
             const rowCheckboxes = document.querySelectorAll('.row-checkbox');
             rowCheckboxes.forEach(cb => {
                 cb.checked = checkbox.checked;
+            });
+        }
+
+        function closeSelectedTabs() {
+            const selectedOpenIds = [];
+            const selectedClosedCount = { value: 0 };
+            document.querySelectorAll('.row-checkbox:checked').forEach((checkbox) => {
+                const row = checkbox.closest('.tab-row');
+                const status = row ? (row.dataset.tabStatus || '').toLowerCase() : '';
+                if (status === 'open') {
+                    selectedOpenIds.push(checkbox.value);
+                } else {
+                    selectedClosedCount.value++;
+                }
+            });
+
+            if (selectedOpenIds.length === 0) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'No open tabs selected',
+                    text: 'Select at least one open tab to close.',
+                    confirmButtonColor: '#f59e0b'
+                });
+                return;
+            }
+
+            const closedNote = selectedClosedCount.value > 0
+                ? `<p class="text-xs text-gray-500 mt-2">${selectedClosedCount.value} selected tab(s) already closed will be ignored.</p>`
+                : '';
+
+            Swal.fire({
+                title: 'Close selected tabs?',
+                html: `<p class="text-sm text-gray-700">You are about to close <strong>${selectedOpenIds.length}</strong> open tab(s).</p>${closedNote}`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonColor: '#d97706',
+                cancelButtonColor: '#6b7280',
+                confirmButtonText: 'Yes, close tabs',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+                const form = document.createElement('form');
+                form.method = 'POST';
+                selectedOpenIds.forEach((id) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'close_selected_ids[]';
+                    input.value = id;
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                form.submit();
+            });
+        }
+
+        function deleteSelectedTabs() {
+            const selectedPaidIds = [];
+            let selectedUnpaidCount = 0;
+
+            document.querySelectorAll('.row-checkbox:checked').forEach((checkbox) => {
+                const row = checkbox.closest('.tab-row');
+                const balance = parseFloat(row?.getAttribute('data-tab-balance') || 0);
+                if (balance > 0) {
+                    selectedUnpaidCount++;
+                } else {
+                    selectedPaidIds.push(checkbox.value);
+                }
+            });
+
+            if (selectedPaidIds.length === 0 && selectedUnpaidCount === 0) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'No tabs selected',
+                    text: 'Select at least one tab to delete.',
+                    confirmButtonColor: '#dc2626'
+                });
+                return;
+            }
+
+            if (selectedPaidIds.length === 0) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Cannot delete selected tabs',
+                    text: 'Selected tabs have outstanding balances. Only zero-balance tabs can be deleted.',
+                    confirmButtonColor: '#dc2626'
+                });
+                return;
+            }
+
+            const unpaidNote = selectedUnpaidCount > 0
+                ? `<p class="text-xs text-gray-500 mt-2">${selectedUnpaidCount} tab(s) with outstanding balance will be skipped.</p>`
+                : '';
+
+            Swal.fire({
+                title: 'Delete selected tabs?',
+                html: `<p class="text-sm text-gray-700">You are about to permanently delete <strong>${selectedPaidIds.length}</strong> tab(s).</p><p class="text-sm text-red-600 mt-2">This action cannot be undone!</p>${unpaidNote}`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#dc2626',
+                cancelButtonColor: '#6b7280',
+                confirmButtonText: 'Yes, delete them',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+                const form = document.createElement('form');
+                form.method = 'POST';
+                selectedPaidIds.forEach((id) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'delete_selected_ids[]';
+                    input.value = id;
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                form.submit();
             });
         }
 

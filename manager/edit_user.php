@@ -1,6 +1,6 @@
 <?php
 
-
+require_once __DIR__ . '/../ensure_user_role_constraint.php';
 
 session_start();
 
@@ -21,6 +21,12 @@ if (!isset($_GET['id'])) {
 }
 
 $db = new PDO('sqlite:../user.db');
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+try {
+    ensureUsersTableRoleIncludesWaitress($db);
+} catch (Throwable $e) {
+    error_log('edit_user ensure role constraint: ' . $e->getMessage());
+}
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -28,6 +34,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = $_POST['username'];
     $password = $_POST['password'];
     $role = $_POST['role'];
+    $allowedRoles = ['cashier', 'manager', 'admin', 'waitress'];
+    if (!in_array($role, $allowedRoles, true)) {
+        header('Location: users.php?error=' . urlencode('Invalid role selected.'));
+        exit;
+    }
     $email = $_POST['email'] ?? null;
 
     // Prepare update query

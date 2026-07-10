@@ -184,14 +184,14 @@ $eftSalesQuery->bindParam(':nextDay', $nextDay);
 $eftSalesQuery->execute();
 $eftSalesTotal = $eftSalesQuery->fetchColumn() ?: 0;
 
-// Get EFT payments for credit sales based on payment date
+// Get EFT amounts received for credit sales on payment dates (includes mixed-settled credit sales)
 $eftCreditSalesQuery = $db->prepare("
-    SELECT SUM(p.amount) 
-    FROM payments p
-    JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE cs.payment_status = 'eft' AND (
-        (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-        (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+    SELECT COALESCE(SUM(e.amount), 0)
+    FROM eft_payments e
+    JOIN credit_sales cs ON e.order_id = cs.id
+    WHERE (
+        (DATE(e.payment_date) = :selectedDate AND strftime('%H:%M', e.payment_date) >= '$closingTime') OR
+        (DATE(e.payment_date) = :nextDay AND strftime('%H:%M', e.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
     )
 ");
 $eftCreditSalesQuery->bindParam(':selectedDate', $selectedDate);
@@ -256,7 +256,7 @@ $paidCreditQuery = $db->prepare("
     WHERE (
         (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
         (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    ) AND cs.payment_status IN ('paid', 'partial', 'eft')
+    ) AND cs.payment_status IN ('paid', 'partial', 'eft', 'paid_mixed')
 ");
 $paidCreditQuery->bindParam(':selectedDate', $selectedDate);
 $paidCreditQuery->bindParam(':nextDay', $nextDay);
@@ -306,6 +306,7 @@ $topProductsQuery = $db->prepare("
             created_at,
             CASE 
                 WHEN cs.payment_status = 'eft' THEN 'eft'
+                WHEN cs.payment_status = 'paid_mixed' THEN 'credit'
                 WHEN cs.payment_status = 'paid' THEN 'cash'
                 ELSE 'credit'
             END as payment_method
@@ -324,6 +325,34 @@ $topProductsQuery->bindParam(':selectedDate', $selectedDate);
 $topProductsQuery->bindParam(':nextDay', $nextDay);
 $topProductsQuery->execute();
 $topProducts = $topProductsQuery->fetchAll(PDO::FETCH_ASSOC);
+
+// Damaged stock for selected business day (same window as sales)
+$damagedStockRowsQuery = $db->prepare("
+    SELECT dg.id,
+           dg.product_id,
+           p.name AS product_name,
+           dg.quantity,
+           dg.reason,
+           dg.date AS damaged_at,
+           (CAST(dg.quantity AS REAL) * COALESCE(p.price, 0)) AS line_value
+    FROM damaged_goods dg
+    INNER JOIN products p ON p.id = dg.product_id
+    WHERE (
+        (DATE(dg.date) = :selectedDateDamaged AND strftime('%H:%M', dg.date) >= '$closingTime') OR
+        (DATE(dg.date) = :nextDayDamaged AND strftime('%H:%M', dg.date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
+    )
+    ORDER BY dg.date DESC
+");
+$damagedStockRowsQuery->bindParam(':selectedDateDamaged', $selectedDate);
+$damagedStockRowsQuery->bindParam(':nextDayDamaged', $nextDay);
+$damagedStockRowsQuery->execute();
+$damagedStockRows = $damagedStockRowsQuery->fetchAll(PDO::FETCH_ASSOC);
+$damagedStockTotalQty = 0.0;
+$damagedStockTotalValue = 0.0;
+foreach ($damagedStockRows as $dr) {
+    $damagedStockTotalQty += (float) $dr['quantity'];
+    $damagedStockTotalValue += (float) $dr['line_value'];
+}
 
 // Fetch sales data with business day logic
 $ordersQuery = $db->prepare("
@@ -379,6 +408,7 @@ $creditQuery = $db->prepare("
         CASE 
             WHEN cs.payment_status = 'paid' THEN 'paid' 
             WHEN cs.payment_status = 'eft' THEN 'eft'
+            WHEN cs.payment_status = 'paid_mixed' THEN 'mixed'
             WHEN cs.payment_status = 'partial' THEN 'partial'
             ELSE 'credit' 
         END as sale_type,
@@ -400,7 +430,7 @@ $creditQuery = $db->prepare("
     )
     OR (
         -- Show paid/eft credit sales only on their payment date
-        cs.payment_status IN ('paid', 'eft', 'partial') AND cs.id IN (
+        cs.payment_status IN ('paid', 'eft', 'partial', 'paid_mixed') AND cs.id IN (
             SELECT sale_id FROM payments 
             WHERE (
                 (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
@@ -501,7 +531,12 @@ $dailyBreakdownQuery = $db->prepare("
             END AS business_date,
             p.amount as amount,
             CASE
-                WHEN cs.payment_status = 'eft' THEN 'credit_eft'
+                WHEN EXISTS (
+                    SELECT 1 FROM eft_payments ep
+                    WHERE ep.order_id = p.sale_id AND ABS(CAST(ep.amount AS REAL) - CAST(p.amount AS REAL)) < 0.021
+                    AND date(ep.payment_date) = date(p.payment_date)
+                    AND strftime('%H:%M', ep.payment_date) = strftime('%H:%M', p.payment_date)
+                ) THEN 'credit_eft'
                 ELSE 'credit_payment'
             END as source,
             'income' as transaction_type
@@ -1079,7 +1114,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <div class="absolute inset-y-0 left-0 flex items-center pl-2 sm:pl-3 pointer-events-none">
                                     <!-- calendar icon -->
                                     <svg class="w-3 h-3 sm:w-4 sm:h-4 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                        <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 0 0 -2H6z" clip-rule="evenodd"/>
+                                        <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd"/>
                                     </svg>
                                 </div>
                                 <select id="date" name="date" onchange="updateReport();" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs sm:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-7 sm:pl-8 pr-7 sm:pr-8 py-1.5 sm:py-2 shadow-sm transition-colors cursor-pointer whitespace-nowrap">
@@ -1270,6 +1305,11 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 14a6 6 0 110-12 6 6 0 010 12z"></path><path d="M10 5a1 1 0 011 1v3.586l2.707 2.707a1 1 0 01-1.414 1.414l-3-3A1 1 0 019 10V6a1 1 0 011-1z"></path></svg>
                                         <span>Partial Payment (N$<?= number_format($row['paid_amount'], 2) ?>)</span>
                                     </span>
+                                    <?php elseif ($row['payment_status'] === 'paid_mixed' || ($row['sale_type'] ?? '') === 'mixed'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-violet-100 text-violet-800 border border-violet-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"></path></svg>
+                                        <span>Cash + EFT Credit</span>
+                                    </span>
                                     <?php elseif ($row['payment_status'] === 'eft'): ?>
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
@@ -1321,7 +1361,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <?php
                                 // Use payment_date for paid/eft credits, otherwise use created_at
                                 $displayDate = isset($row['payment_date']) && $row['payment_date'] && 
-                                               ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft') ? 
+                                               ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft' || $row['payment_status'] === 'paid_mixed') ? 
                                                $row['payment_date'] : $row['created_at'];
                                 echo date('d M Y H:i', strtotime($displayDate));
                                 ?>
@@ -1338,7 +1378,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 // - Paid credit sales (reset credit payment)
                                 // - Credit sales that are unpaid or partial (delete credit record)
                                 if (
-                                    ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft'))
+                                    ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft' || $row['payment_status'] === 'paid_mixed'))
                                 ) : ?>
                                     <button onclick="deleteRecord('credit', '<?= $row['id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Reset Paid/EFT Credit Sale">
                                         <i class="fas fa-trash"></i>
@@ -1599,6 +1639,55 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
+</div>
+
+<div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 bg-rose-100 border-b border-rose-200">
+        <h2 class="text-xl font-bold text-rose-900">
+            <i class="fas fa-exclamation-triangle mr-2" aria-hidden="true"></i>Damaged stock
+        </h2>
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+            <span class="text-rose-800">
+                <span class="font-semibold"><?= count($damagedStockRows) ?></span> record<?= count($damagedStockRows) === 1 ? '' : 's' ?>
+                · <span class="font-semibold"><?= rtrim(rtrim(number_format($damagedStockTotalQty, 4, '.', ''), '0'), '.') ?></span> units
+                · <span class="font-semibold">N$<?= number_format($damagedStockTotalValue, 2) ?></span> at retail
+            </span>
+            <a href="damaged_goods.php" class="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-medium text-white bg-rose-600 hover:bg-rose-700 shadow-sm transition-colors">
+                <i class="fas fa-plus mr-1.5" aria-hidden="true"></i> Record damage
+            </a>
+        </div>
+    </div>
+    <div class="table-container overflow-x-auto">
+        <table class="min-w-full table-auto">
+            <thead>
+                <tr class="bg-gray-100 border-b-2 border-gray-200 text-sm">
+                    <th class="py-2 px-3 text-left text-gray-700">Product</th>
+                    <th class="py-2 px-3 text-right text-gray-700">Qty</th>
+                    <th class="py-2 px-3 text-left text-gray-700">Reason</th>
+                    <th class="py-2 px-3 text-left text-gray-700">Recorded</th>
+                    <th class="py-2 px-3 text-right text-gray-700">Retail value</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                <?php if (count($damagedStockRows) > 0): ?>
+                    <?php foreach ($damagedStockRows as $drow): ?>
+                        <tr class="hover:bg-gray-50">
+                            <td class="py-2 px-3 text-sm font-medium text-gray-900"><?= htmlspecialchars($drow['product_name']) ?></td>
+                            <td class="py-2 px-3 text-sm text-right text-gray-800"><?= htmlspecialchars((string) $drow['quantity']) ?></td>
+                            <td class="py-2 px-3 text-sm text-gray-600"><?= htmlspecialchars((string) ($drow['reason'] ?? '')) ?: '—' ?></td>
+                            <td class="py-2 px-3 text-sm text-gray-600"><?= htmlspecialchars(date('d M Y H:i', strtotime($drow['damaged_at']))) ?></td>
+                            <td class="py-2 px-3 text-sm text-right font-medium text-rose-800">N$<?= number_format((float) $drow['line_value'], 2) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr>
+                        <td colspan="5" class="py-8 px-4 text-center text-gray-500">No damaged stock for this business day.</td>
+                    </tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+    <p class="px-4 py-2 text-xs text-gray-500 bg-gray-50 border-t border-gray-200">Uses the same business-day window as transactions (closing time from business settings).</p>
 </div>
 
 <script>
@@ -1882,7 +1971,9 @@ window.addEventListener('DOMContentLoaded', function() {
         // Assuming the search bar filters multiple tables or just the main 'All Transactions' table
         filterTable('search', 'salesTableBody');
         filterTable('search', 'topProductsTableBody'); // If search should also filter products
-        filterTable('search', 'dailyBreakdownTableBody'); // If search should also filter daily breakdown
+        if (document.getElementById('dailyBreakdownTableBody')) {
+            filterTable('search', 'dailyBreakdownTableBody');
+        }
     }
 
     // --- Global Pagination Managers ---
@@ -2114,19 +2205,59 @@ window.addEventListener('DOMContentLoaded', function() {
     }
 
 
+    // --- Manager PIN modal (void / delete sales or credit) ---
+    function openManagerPinModal(onPin) {
+        const overlay = document.createElement('div');
+        overlay.id = 'manager-void-pin-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;z-index:99999;background:rgba(0,0,0,0.5);padding:1rem;box-sizing:border-box;overflow:auto;';
+        overlay.innerHTML = `
+            <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full" style="margin:auto;max-height:min(90vh,100%);overflow:auto">
+                <h3 class="text-lg font-semibold text-gray-900 mb-1">Manager PIN</h3>
+                <p class="text-sm text-gray-600 mb-4">Enter the manager PIN to void this transaction.</p>
+                <input type="password" id="manager-void-pin-input" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-gray-500 focus:border-gray-500 mb-4" autocomplete="off" inputmode="numeric" placeholder="PIN">
+                <div class="flex justify-end gap-2">
+                    <button type="button" id="manager-void-pin-cancel" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
+                    <button type="button" id="manager-void-pin-ok" class="px-4 py-2 rounded-md text-white bg-gray-800 hover:bg-gray-900">Void</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('#manager-void-pin-input');
+        const close = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+        overlay.querySelector('#manager-void-pin-cancel').onclick = close;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('#manager-void-pin-ok').onclick = () => {
+            const pin = input.value || '';
+            close();
+            onPin(pin);
+        };
+        setTimeout(() => input.focus(), 0);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                overlay.querySelector('#manager-void-pin-ok').click();
+            }
+        });
+    }
+
     // --- Delete Functions ---
     function deleteRecord(type, id) {
-        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+        const needsPin = (type === 'sales' || type === 'credit');
+        const runDelete = (managerPin) => {
+            let body = `type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`;
+            if (needsPin) {
+                body += `&manager_pin=${encodeURIComponent(managerPin)}`;
+            }
             fetch('delete_record.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `type=${type}&id=${id}`
+                body: body
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
                     showNotification('Success', 'Record deleted successfully.', 'success');
-                    // Reload the page after deletion
                     location.reload();
                 } else {
                     showNotification('Error', 'Error deleting record: ' + (data.message || 'Unknown error'), 'error');
@@ -2136,6 +2267,13 @@ window.addEventListener('DOMContentLoaded', function() {
                 console.error('Error:', error);
                 showNotification('Error', 'An error occurred while deleting the record.', 'error');
             });
+        };
+        if (needsPin) {
+            openManagerPinModal((pin) => runDelete(pin));
+            return;
+        }
+        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+            runDelete();
         });
     }
 

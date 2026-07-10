@@ -22,6 +22,11 @@ if ($activationStatus == 0) {
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/../tab_balance_helper.php';
+ensureTabVoidMarkColumns($db);
+// #region agent log
+@file_put_contents(__DIR__ . '/../debug-81774c.log', json_encode(['sessionId'=>'81774c','runId'=>'post-fix','hypothesisId'=>'H1','location'=>'admin/credit-tabs.php:27','message'=>'tab_balance_helper loaded without redeclare conflict','data'=>['recalculateTabBalance_exists'=>function_exists('recalculateTabBalance')],'timestamp'=>(int)round(microtime(true)*1000)])."\n", FILE_APPEND);
+// #endregion
 
 // Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
@@ -79,49 +84,10 @@ function getUsernamesByIds($userIds) {
     return $usernameMap;
 }
 
-// Helper function to recalculate tab balance from unpaid items
-function recalculateTabBalance($db, $tabId) {
-    try {
-        // Calculate balance as: sum of all item totals - sum of all payments on those items
-        $balanceStmt = $db->prepare("
-            SELECT 
-                COALESCE(SUM(ti.quantity * ti.price), 0) as total_items,
-                COALESCE((
-                    SELECT SUM(tip.amount) 
-                    FROM tab_item_payments tip
-                    INNER JOIN tab_items ti2 ON tip.tab_item_id = ti2.id
-                    WHERE ti2.tab_id = ?
-                ), 0) as total_paid
-            FROM tab_items ti
-            WHERE ti.tab_id = ?
-        ");
-        $balanceStmt->execute([$tabId, $tabId]);
-        $balance = $balanceStmt->fetch(PDO::FETCH_ASSOC);
-        
-        $newBalance = floatval($balance['total_items']) - floatval($balance['total_paid']);
-        
-        // Get opening balance
-        $openingStmt = $db->prepare("SELECT opening_balance FROM tabs WHERE id = ?");
-        $openingStmt->execute([$tabId]);
-        $opening = $openingStmt->fetch(PDO::FETCH_ASSOC);
-        $openingBalance = floatval($opening['opening_balance'] ?? 0);
-        
-        // Final balance = opening balance + unpaid items
-        $finalBalance = $openingBalance + $newBalance;
-        
-        // Update the tab balance
-        $updateStmt = $db->prepare("UPDATE tabs SET current_balance = ? WHERE id = ?");
-        $updateStmt->execute([$finalBalance, $tabId]);
-        
-        return $finalBalance;
-    } catch (Exception $e) {
-        error_log("Error recalculating tab balance: " . $e->getMessage());
-        throw $e;
-    }
-}
-
 // Handle POST requests for adding/updating/deleting/closing tabs
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    handle_tab_void_mark_post_request($db);
+
     if (isset($_POST['delete_item_id'])) {
         // Delete tab item
         $itemId = intval($_POST['delete_item_id']);
@@ -235,6 +201,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['success'] = 'Tab deleted successfully';
         header('Location: credit-tabs');
         exit();
+    } elseif (isset($_POST['delete_selected_ids']) && is_array($_POST['delete_selected_ids'])) {
+        $selectedIds = array_values(array_unique(array_map('intval', $_POST['delete_selected_ids'])));
+        $selectedIds = array_values(array_filter($selectedIds, function ($id) {
+            return $id > 0;
+        }));
+        if (empty($selectedIds)) {
+            $_SESSION['error'] = 'No valid tabs selected for deletion.';
+            header('Location: credit-tabs');
+            exit();
+        }
+        $deleted = 0;
+        $skipped = 0;
+        foreach ($selectedIds as $id) {
+            $stmt = $db->prepare("SELECT current_balance FROM tabs WHERE id = ?");
+            $stmt->execute([$id]);
+            $balance = $stmt->fetchColumn();
+            if ($balance === false) {
+                continue;
+            }
+            if ((float) $balance > 0) {
+                $skipped++;
+                continue;
+            }
+            $stmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
+            $stmt->execute([$id]);
+            $deleted++;
+        }
+        if ($deleted > 0 && $skipped > 0) {
+            $_SESSION['success'] = $deleted === 1
+                ? "1 tab deleted. {$skipped} skipped (outstanding balance)."
+                : "{$deleted} tabs deleted. {$skipped} skipped (outstanding balance).";
+        } elseif ($deleted > 0) {
+            $_SESSION['success'] = $deleted === 1 ? '1 tab deleted successfully.' : "{$deleted} tabs deleted successfully.";
+        } else {
+            $_SESSION['error'] = 'No tabs deleted — selected tabs have an outstanding balance.';
+        }
+        header('Location: credit-tabs');
+        exit();
     } elseif (isset($_POST['close_id'])) {
         // Close tab - store username for consistent tracking
         $closedByUsername = $_SESSION['username'] ?? 'Unknown';
@@ -260,8 +264,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (empty($_POST['id'])) {
             // Add new tab - store username for consistent tracking
-            $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername]);
+            ensureTabGratuityColumns($db);
+            $defaultGratuityOn = tab_default_gratuity_enabled_on_create($db);
+            $stmt = $db->prepare("INSERT INTO tabs (creditor_id, tab_name, opening_balance, current_balance, notes, cashier_id, gratuity_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$creditor_id, $tab_name, $opening_balance, $opening_balance, $notes, $cashierUsername, $defaultGratuityOn]);
             $newTabId = $db->lastInsertId();
             // Recalculate balance to ensure accuracy (will be same as opening_balance for new tab, but ensures consistency)
             recalculateTabBalance($db, $newTabId);
@@ -297,6 +303,9 @@ $tabsStmt = $db->prepare("
         t.notes,
         t.cashier_id,
         t.pending_manager_approval,
+        t.marked_for_void,
+        t.void_marked_by,
+        t.void_marked_at,
         c.name as creditor_name,
         c.phone as creditor_phone
     FROM tabs t
@@ -335,6 +344,7 @@ $totalOpenBalance = array_sum(array_column($openTabs, 'current_balance'));
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../sweetalert2@11.js"></script>
+    <?= tab_pos_confirm_script_tag('../') ?>
     <script src="../lucide.js"></script>
 
     <style>
@@ -815,14 +825,20 @@ th[onclick]:hover {
                 <!-- Header Row: Title -->
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <a href="admin-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm font-medium flex-shrink-0" title="Back to Admin Center">
+                            <svg class="w-5 h-5 sm:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            <span class="hidden sm:inline">Back</span>
+                        </a>
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
                             <span></span>
                             <span></span>
                             <span></span>
                         </div>
-                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold">Manage Tabs</h1>
+                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold truncate">Manage Tabs</h1>
                     </div>
                 </div>
                 
@@ -867,6 +883,7 @@ th[onclick]:hover {
                                                 <option value="" <?= ($currentView === '' || $currentView === 'balance') ? 'selected' : '' ?>>All Status</option>
                                                 <option value="open" <?= $currentView === 'active' ? 'selected' : '' ?>>Open</option>
                                                 <option value="closed" <?= $currentView === 'closed' ? 'selected' : '' ?>>Closed</option>
+                                                <option value="void_pending">Void Pending</option>
                                             </select>
                                             <select id="balanceFilter" class="py-2 px-3 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500">
                                                 <option value="" <?= ($currentView === '' || $currentView === 'active' || $currentView === 'closed') ? 'selected' : '' ?>>All Balances</option>
@@ -874,6 +891,11 @@ th[onclick]:hover {
                                                 <option value="paid">Paid (=0)</option>
                                                 <option value="overpaid">Overpaid (<0)</option>
                                             </select>
+                                            <button type="button" onclick="deleteSelectedTabs()"
+                                                class="px-3 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors">
+                                                <i data-lucide="trash-2" class="w-4 h-4 inline-block mr-1"></i>
+                                                Delete Selected
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -925,10 +947,11 @@ th[onclick]:hover {
                                                 <?php foreach($tabs as $tab): 
                                                     $isUnpaid = $tab['current_balance'] > 0;
                                                 ?>
-                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer" 
+                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= (can_view_tab_void_mark_in_list_from_session() && tab_is_marked_for_void($tab)) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
                                                         data-tab-id="<?= $tab['id'] ?>"
                                                         data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                         data-tab-status="<?= strtolower($tab['status']) ?>"
+                                                        data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
                                                         data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                         data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                         data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"
@@ -943,9 +966,7 @@ th[onclick]:hover {
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200"><?= htmlspecialchars($tab['tab_name']) ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= htmlspecialchars($tab['creditor_name'] ?? 'N/A') ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                                            <span class="px-2 py-1 text-xs font-semibold rounded-full <?= $tab['status'] === 'open' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' ?>">
-                                                                <?= ucfirst($tab['status']) ?>
-                                                            </span>
+                                                            <?= tab_status_badges_html($tab, can_view_tab_void_mark_in_list_from_session()) ?>
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold <?= $tab['current_balance'] > 0 ? 'text-red-600' : ($tab['current_balance'] < 0 ? 'text-teal-600' : 'text-gray-800') ?>">
                                                             N$<?= number_format($tab['current_balance'], 2) ?>
@@ -954,6 +975,7 @@ th[onclick]:hover {
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= date('Y-m-d H:i', strtotime($tab['opened_at'])) ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium" onclick="event.stopPropagation()">
                                                             <div class="flex items-center justify-end gap-2">
+                                                                <?= tab_void_mark_list_action_html($tab) ?>
                                                                 <a href="view-tab.php?id=<?= $tab['id'] ?>" 
                                                                    class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:pointer-events-none dark:text-blue-500 dark:hover:text-blue-400 dark:focus:outline-none dark:focus:ring-1 dark:focus:ring-gray-600"
                                                                    title="View">
@@ -975,7 +997,7 @@ th[onclick]:hover {
                                                                 
                                                                 <?php if ($tab['status'] === 'closed'): ?>
                                                                     <form method="POST" style="display: inline;" 
-                                                                          onsubmit="return confirm('Are you sure you want to reopen this tab?');">
+                                                                          <?= tab_reopen_form_onsubmit_attr() ?>>
                                                                         <input type="hidden" name="reopen_id" value="<?= $tab['id'] ?>">
                                                                         <button type="submit" 
                                                                                 class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-cyan-600 hover:text-cyan-800 disabled:opacity-50 disabled:pointer-events-none"
@@ -1111,6 +1133,7 @@ th[onclick]:hover {
                 const tabCreditor = row.getAttribute('data-tab-creditor') || '';
                 const tabId = row.getAttribute('data-tab-id') || '';
                 const tabBalance = parseFloat(row.getAttribute('data-tab-balance') || 0);
+                const tabVoidMark = row.getAttribute('data-tab-void-mark') || '0';
 
                 // Search filter
                 const matchesSearch = searchTerm === '' || 
@@ -1122,7 +1145,12 @@ th[onclick]:hover {
                     tabId.includes(searchTerm);
 
                 // Status filter
-                const matchesStatus = statusValue === '' || tabStatus === statusValue;
+                let matchesStatus = true;
+                if (statusValue === 'void_pending') {
+                    matchesStatus = tabVoidMark === '1';
+                } else if (statusValue !== '') {
+                    matchesStatus = tabStatus === statusValue;
+                }
 
                 // Balance filter
                 let matchesBalance = true;
@@ -1305,6 +1333,71 @@ th[onclick]:hover {
             const rowCheckboxes = document.querySelectorAll('.row-checkbox');
             rowCheckboxes.forEach(cb => {
                 cb.checked = checkbox.checked;
+            });
+        }
+
+        function deleteSelectedTabs() {
+            const selectedPaidIds = [];
+            let selectedUnpaidCount = 0;
+
+            document.querySelectorAll('.row-checkbox:checked').forEach((checkbox) => {
+                const row = checkbox.closest('.tab-row');
+                const balance = parseFloat(row?.getAttribute('data-tab-balance') || 0);
+                if (balance > 0) {
+                    selectedUnpaidCount++;
+                } else {
+                    selectedPaidIds.push(checkbox.value);
+                }
+            });
+
+            if (selectedPaidIds.length === 0 && selectedUnpaidCount === 0) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'No tabs selected',
+                    text: 'Select at least one tab to delete.',
+                    confirmButtonColor: '#dc2626'
+                });
+                return;
+            }
+
+            if (selectedPaidIds.length === 0) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Cannot delete selected tabs',
+                    text: 'Selected tabs have outstanding balances. Only zero-balance tabs can be deleted.',
+                    confirmButtonColor: '#dc2626'
+                });
+                return;
+            }
+
+            const unpaidNote = selectedUnpaidCount > 0
+                ? `<p class="text-xs text-gray-500 mt-2">${selectedUnpaidCount} tab(s) with outstanding balance will be skipped.</p>`
+                : '';
+
+            Swal.fire({
+                title: 'Delete selected tabs?',
+                html: `<p class="text-sm text-gray-700">You are about to permanently delete <strong>${selectedPaidIds.length}</strong> tab(s).</p><p class="text-sm text-red-600 mt-2">This action cannot be undone!</p>${unpaidNote}`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#dc2626',
+                cancelButtonColor: '#6b7280',
+                confirmButtonText: 'Yes, delete them',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+                const form = document.createElement('form');
+                form.method = 'POST';
+                selectedPaidIds.forEach((id) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'delete_selected_ids[]';
+                    input.value = id;
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                form.submit();
             });
         }
 

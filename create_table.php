@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 try {
     $db = new PDO('sqlite:pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    require_once __DIR__ . '/tab_balance_helper.php';
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -40,11 +41,13 @@ try {
     }
     
     // Insert new table/tab
+    ensureTabGratuityColumns($db);
+    $defaultGratuityOn = tab_default_gratuity_enabled_on_create($db);
     $stmt = $db->prepare("
-        INSERT INTO tabs (tab_name, current_balance, status, opened_at, cashier_id) 
-        VALUES (?, 0, 'open', datetime('now'), ?)
+        INSERT INTO tabs (tab_name, current_balance, status, opened_at, cashier_id, gratuity_enabled) 
+        VALUES (?, 0, 'open', datetime('now'), ?, ?)
     ");
-    $stmt->execute([$name, $_SESSION['user_id']]);
+    $stmt->execute([$name, $_SESSION['user_id'], $defaultGratuityOn]);
     
     $tableId = $db->lastInsertId();
     

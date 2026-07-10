@@ -8,6 +8,14 @@ try {
     $db = new PDO('sqlite:../pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
+    $parseOptionalBuyingPrice = static function (array $post): ?float {
+        $raw = isset($post['buying_price']) ? trim((string)$post['buying_price']) : '';
+        if ($raw === '') {
+            return null;
+        }
+        return (float)$raw;
+    };
+
     // Function to handle image upload and return the filename
     function uploadImage($file) {
         $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
@@ -36,7 +44,7 @@ try {
                     $name = htmlspecialchars($_POST['name']);
                     $quantity = intval($_POST['quantity']);
                     $price = floatval($_POST['price']);
-                    $buying_price = floatval($_POST['buying_price']);
+                    $buying_price = $parseOptionalBuyingPrice($_POST);
                     
                     // Check if a product with the same name already exists
                     $checkSql = "SELECT COUNT(*) FROM products WHERE name = :name";
@@ -84,7 +92,7 @@ try {
                     $name = htmlspecialchars($_POST['name']);
                     $quantity = intval($_POST['quantity']);
                     $price = floatval($_POST['price']);
-                    $buying_price = floatval($_POST['buying_price']);
+                    $buying_price = $parseOptionalBuyingPrice($_POST);
                     $current_image_url = htmlspecialchars($_POST['current_image_url']);
                     
                     // Check if a product with the same name already exists, excluding the current product

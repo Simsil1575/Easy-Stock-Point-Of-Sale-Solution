@@ -31,6 +31,7 @@ if (isset($_GET['js']) && $_GET['js'] === 'true') {
  * 2. Cash-up Reports (is_cashup_report: true)
  * 3. Balance Receipts (is_balance_receipt: true)
  * 4. Tab Balance Receipts (is_tab_balance_receipt: true)
+ * 4b. Tab Copy / Guest Check (is_tab_copy_receipt: true)
  * 5. Payment Receipts (is_payment_receipt: true)
  * 6. Tab Sales / Kitchen Tickets (tab_id or table_id)
  * 7. Credit Sales (sale_id)
@@ -58,7 +59,9 @@ function sendToPrinter(receiptData) {
     var isDrawerOnly = receiptData.open_drawer_only === true;
     
     // Ensure print_only flag is set for regular receipts (not special types)
-    if (!receiptData.print_only && !isCashupReport && !isBalanceReceipt && !isTabBalanceReceipt && !isPaymentReceipt && !isRefundReceipt && !isDrawerOnly) {
+    var isLaybyeBalanceReceipt = receiptData.is_laybye_balance_receipt === true;
+    var isTabCopyReceipt = receiptData.is_tab_copy_receipt === true;
+    if (!receiptData.print_only && !isCashupReport && !isBalanceReceipt && !isTabBalanceReceipt && !isTabCopyReceipt && !isLaybyeBalanceReceipt && !isPaymentReceipt && !isRefundReceipt && !isDrawerOnly) {
         receiptData.print_only = true;
     }
     
@@ -70,13 +73,34 @@ function sendToPrinter(receiptData) {
         location: receiptData.location || (businessInfoSource ? businessInfoSource.location : null),
         phone: receiptData.phone || (businessInfoSource ? businessInfoSource.phone : null),
         footer_text: receiptData.footer_text || (businessInfoSource ? businessInfoSource.footer_text : null),
+        logo_path: receiptData.logo_path || (businessInfoSource ? businessInfoSource.logo_path : null),
         vat_inclusive: receiptData.vat_inclusive || (businessInfoSource ? businessInfoSource.vat_inclusive : null),
         vat_rate: receiptData.vat_rate || (businessInfoSource ? businessInfoSource.vat_rate : null)
     });
     
+    // Kitchen network printer: server opens TCP to configured IP (Admin → Settings). Bypass QZ Tray and Android local print.
+    if (dataWithBusiness.print_to_kitchen_printer === true) {
+        var receiptTypeKitchen = 'Kitchen (network printer)';
+        var receiptUrlKitchen = (window.location && window.location.origin ? window.location.origin : '') + '/receipt.php';
+        return fetch(receiptUrlKitchen, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dataWithBusiness)
+        }).then(function(r) {
+            return r.json().then(function(result) {
+                result.receipt_type = receiptTypeKitchen;
+                return result;
+            });
+        }).catch(function(error) {
+            console.error('[sendToPrinter] Kitchen network print error:', error);
+            return { success: false, message: 'Kitchen print failed: ' + error.message, receipt_type: receiptTypeKitchen };
+        });
+    }
+    
     // Log receipt type for debugging
     var receiptType = 'Unknown';
     if (isCashupReport) receiptType = 'Cash-up Report';
+    else if (receiptData.is_tab_copy_receipt === true) receiptType = 'Tab Copy Receipt';
     else if (isTabBalanceReceipt) receiptType = 'Tab Balance Receipt';
     else if (isBalanceReceipt) receiptType = 'Balance Receipt';
     else if (isPaymentReceipt) receiptType = 'Payment Receipt';
@@ -88,6 +112,14 @@ function sendToPrinter(receiptData) {
     
     console.log('[sendToPrinter] Receipt type: ' + receiptType);
     console.log('[sendToPrinter] Called with data:', JSON.stringify(dataWithBusiness).substring(0, 200));
+    
+    // #region agent log
+    if (isPaymentReceipt) {
+        fetch('http://127.0.0.1:7918/ingest/543ece8e-e9a4-4ceb-9f09-b26f1ebce51b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'833f8f'},body:JSON.stringify({sessionId:'833f8f',location:'receipt.php:sendToPrinter',message:'Payment receipt client payload',data:{order_id:receiptData.order_id,tab_id:receiptData.tab_id,gratuity_amount:receiptData.gratuity_amount,gratuity:receiptData.gratuity,gratuity_percent_applied:receiptData.gratuity_percent_applied,gratuity_included_in_total:receiptData.gratuity_included_in_total,tips:receiptData.tips,total:receiptData.total},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(function(){});
+    } else if (isTabCopyReceipt) {
+        fetch('http://127.0.0.1:7918/ingest/543ece8e-e9a4-4ceb-9f09-b26f1ebce51b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'833f8f'},body:JSON.stringify({sessionId:'833f8f',location:'receipt.php:sendToPrinter',message:'Copy receipt client payload',data:{tab_id:receiptData.tab_id,gratuity:receiptData.gratuity,gratuity_percent_applied:receiptData.gratuity_percent_applied,gratuity_included_in_total:receiptData.gratuity_included_in_total,total_balance:receiptData.total_balance},timestamp:Date.now(),hypothesisId:'B',runId:'post-fix'})}).catch(function(){});
+    }
+    // #endregion
     
     // QZ Tray printing (desktop/web)
     var ua = (navigator.userAgent || '').toLowerCase();
@@ -114,6 +146,13 @@ function sendToPrinter(receiptData) {
                 iframe.height = '0';
 
                 var encoded = encodeURIComponent(JSON.stringify(dataWithBusiness));
+                var qzStorageKey = 'qz_print_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+                try {
+                    sessionStorage.setItem(qzStorageKey, JSON.stringify(dataWithBusiness));
+                } catch (storageErr) {
+                    console.warn('[sendToPrinter] sessionStorage unavailable for QZ payload, using URL data param', storageErr);
+                    qzStorageKey = null;
+                }
                 var timeoutId = null;
 
                 function cleanup(handlerFn, result) {
@@ -141,7 +180,10 @@ function sendToPrinter(receiptData) {
 
                 window.addEventListener('message', onMessage);
                 // Always use absolute path so pages in subfolders (e.g. /manager/*) don't try /manager/qzreceipt.php
-                iframe.src = (window.location && window.location.origin ? window.location.origin : '') + '/qzreceipt.php?data=' + encoded;
+                var qzBase = (window.location && window.location.origin ? window.location.origin : '') + '/qzreceipt.php';
+                iframe.src = qzStorageKey
+                    ? (qzBase + '?key=' + encodeURIComponent(qzStorageKey))
+                    : (qzBase + '?data=' + encoded);
                 document.body.appendChild(iframe);
             });
         });
@@ -235,6 +277,336 @@ use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
 use Mike42\Escpos\PrintConnectors\PrintConnector;
+use Mike42\Escpos\EscposImage;
+
+// #region agent log
+function debug833f8f_log($location, $message, $data, $hypothesisId) {
+    $logPath = __DIR__ . '/debug-833f8f.log';
+    @file_put_contents($logPath, json_encode([
+        'sessionId' => '833f8f',
+        'timestamp' => (int) round(microtime(true) * 1000),
+        'location' => $location,
+        'message' => $message,
+        'data' => $data,
+        'hypothesisId' => $hypothesisId,
+        'runId' => 'post-fix',
+    ]) . "\n", FILE_APPEND);
+}
+// #endregion
+
+function receipt_format_gratuity_label(array $orderData): string
+{
+    $gPctRaw = $orderData['gratuity_percent_applied'] ?? null;
+    $gLab = 'Gratuity';
+    if ($gPctRaw !== null && $gPctRaw !== '') {
+        $gPctStr = rtrim(rtrim(number_format((float) $gPctRaw, 2, '.', ''), '0'), '.');
+        if ($gPctStr !== '' && $gPctStr !== '.') {
+            $gLab .= " ({$gPctStr}%)";
+        }
+    }
+    return $gLab;
+}
+
+function receipt_resolve_tab_gratuity_for_print(array $orderData, float $gratuityFromItemLines = 0.0): float
+{
+    $tips = round(floatval($orderData['tips'] ?? 0), 2);
+    $amt = round(floatval($orderData['gratuity'] ?? 0), 2);
+    if ($amt <= 0) {
+        $combined = round(floatval($orderData['gratuity_amount'] ?? 0), 2);
+        if ($combined > 0 && $tips > 0.005 && $combined + 0.001 >= $tips && !empty($orderData['gratuity_percent_applied'])) {
+            $amt = round(max(0.0, $combined - $tips), 2);
+        } elseif ($combined > 0) {
+            $amt = $combined;
+        }
+    }
+    if ($amt <= 0 && $gratuityFromItemLines > 0) {
+        $amt = round($gratuityFromItemLines, 2);
+    }
+    return $amt;
+}
+
+/**
+ * Ensure tab copy / payment receipts include gratuity when enabled on the tab.
+ * Fills missing client fields (e.g. QZ URL truncation) from pos.db and order rows.
+ */
+function receipt_enrich_tab_gratuity_for_print(array &$orderData): void
+{
+    $tabId = (int) ($orderData['tab_id'] ?? 0);
+    $isCopy = !empty($orderData['is_tab_copy_receipt']);
+    $isPayment = !empty($orderData['is_payment_receipt']);
+    if (!$isCopy && !$isPayment) {
+        return;
+    }
+
+    require_once __DIR__ . '/tab_balance_helper.php';
+    require_once __DIR__ . '/receipt_payment_helper.php';
+    try {
+        $posDb = new PDO('sqlite:' . __DIR__ . '/pos.db');
+        $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    } catch (PDOException $e) {
+        return;
+    }
+
+    ensureTabGratuityColumns($posDb);
+    $settings = tab_gratuity_settings($posDb);
+    $defaultPct = $settings['feature_enabled'] ? $settings['percent'] : null;
+
+    $tabRow = null;
+    if ($tabId > 0) {
+        $tabStmt = $posDb->prepare('SELECT gratuity_enabled, COALESCE(gratuity_paid, 0) AS gratuity_paid FROM tabs WHERE id = ?');
+        $tabStmt->execute([$tabId]);
+        $tabRow = $tabStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    if ($isPayment && !empty($orderData['order_id'])) {
+        $orderStmt = $posDb->prepare(
+            'SELECT gratuity_amount, gratuity_percent_applied, gratuity_included_in_total FROM orders WHERE id = ? LIMIT 1'
+        );
+        $orderStmt->execute([(int) $orderData['order_id']]);
+        $orderRow = $orderStmt->fetch(PDO::FETCH_ASSOC);
+        if ($orderRow) {
+            if (!isset($orderData['gratuity_amount']) || floatval($orderData['gratuity_amount']) <= 0.005) {
+                $orderData['gratuity_amount'] = floatval($orderRow['gratuity_amount'] ?? 0);
+            }
+            if (($orderData['gratuity_percent_applied'] ?? null) === null && $orderRow['gratuity_percent_applied'] !== null) {
+                $orderData['gratuity_percent_applied'] = $orderRow['gratuity_percent_applied'];
+            }
+            if (!isset($orderData['gratuity_included_in_total'])) {
+                $orderData['gratuity_included_in_total'] = (int) ($orderRow['gratuity_included_in_total'] ?? 1);
+            }
+        }
+    }
+
+    $tips = round(floatval($orderData['tips'] ?? 0), 2);
+    $resolved = receipt_resolve_tab_gratuity_for_print($orderData, 0.0);
+    if ($resolved > 0.005) {
+        if (round(floatval($orderData['gratuity'] ?? 0), 2) <= 0.005) {
+            $orderData['gratuity'] = $resolved;
+        }
+        if (($orderData['gratuity_percent_applied'] ?? null) === null && $defaultPct !== null) {
+            $orderData['gratuity_percent_applied'] = $defaultPct;
+        }
+        $orderData['gratuity_included_in_total'] = 1;
+        return;
+    }
+
+    if ($tabId <= 0 || $tabRow === null || !tab_is_gratuity_enabled_for_tab($tabRow) || $defaultPct === null) {
+        return;
+    }
+
+    $computed = tab_compute_gratuity_amount($posDb, $tabId, $tabRow);
+
+    if ($isCopy) {
+        $remaining = tab_gratuity_remaining($posDb, $tabId, $tabRow);
+        $amt = $computed > 0.005 ? round($remaining > 0.001 ? $remaining : $computed, 2) : 0.0;
+        if ($amt <= 0.005 && $defaultPct !== null && !empty($orderData['items']) && is_array($orderData['items'])) {
+            $lineSum = 0.0;
+            foreach ($orderData['items'] as $item) {
+                if (trim((string) ($item['name'] ?? '')) === 'Gratuity') {
+                    continue;
+                }
+                $lineSum += floatval($item['price'] ?? 0);
+            }
+            if ($lineSum > 0.005) {
+                $amt = round($lineSum * ($defaultPct / 100), 2);
+            }
+        }
+        if ($amt > 0.005) {
+            $orderData['gratuity'] = $amt;
+            $orderData['gratuity_percent_applied'] = $orderData['gratuity_percent_applied'] ?? $defaultPct;
+            $orderData['gratuity_included_in_total'] = 1;
+        }
+        return;
+    }
+
+    if ($computed <= 0.005) {
+        return;
+    }
+
+    // Payment bill: only backfill when this payment recorded tab gratuity on the order.
+    $combined = round(floatval($orderData['gratuity_amount'] ?? 0), 2);
+    $fromOrder = round(max(0.0, $combined - $tips), 2);
+    if ($fromOrder > 0.005) {
+        $orderData['gratuity'] = $fromOrder;
+        $orderData['gratuity_percent_applied'] = $orderData['gratuity_percent_applied'] ?? $defaultPct;
+        $orderData['gratuity_included_in_total'] = 1;
+    }
+}
+
+function resolveBusinessLogoFilePath(array $businessInfo): ?string
+{
+    $relative = trim((string)($businessInfo['logo_path'] ?? ''));
+    if ($relative === '') {
+        return null;
+    }
+    $full = __DIR__ . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $relative);
+    return is_file($full) ? $full : null;
+}
+
+function receiptCharsToPaperMm(int $receiptWidth): int
+{
+    return ($receiptWidth >= 42) ? 80 : 58;
+}
+
+function loadLogoImageResource(string $logoFile)
+{
+    $ext = strtolower(pathinfo($logoFile, PATHINFO_EXTENSION));
+    if ($ext === 'jpg' || $ext === 'jpeg') {
+        return @imagecreatefromjpeg($logoFile);
+    }
+    if ($ext === 'gif') {
+        return @imagecreatefromgif($logoFile);
+    }
+    if ($ext === 'webp' && function_exists('imagecreatefromwebp')) {
+        return @imagecreatefromwebp($logoFile);
+    }
+    return @imagecreatefrompng($logoFile);
+}
+
+function prepareBusinessLogoForPrinter(string $logoFile, int $maxWidthPx): string
+{
+    if (!function_exists('getimagesize') || !function_exists('imagecreatetruecolor')) {
+        return $logoFile;
+    }
+    $size = @getimagesize($logoFile);
+    if (!$size || $size[0] <= 0 || $size[1] <= 0) {
+        return $logoFile;
+    }
+
+    $src = loadLogoImageResource($logoFile);
+    if (!$src) {
+        return $logoFile;
+    }
+
+    $srcW = $size[0];
+    $srcH = $size[1];
+    $dstW = min($srcW, $maxWidthPx);
+    $dstH = max(1, (int)round($srcH * ($dstW / $srcW)));
+
+    $dst = imagecreatetruecolor($dstW, $dstH);
+    if ($dst === false) {
+        imagedestroy($src);
+        return $logoFile;
+    }
+    // Flatten onto white — thermal printers render PNG alpha as noise or solid black.
+    $white = imagecolorallocate($dst, 255, 255, 255);
+    imagefilledrectangle($dst, 0, 0, $dstW, $dstH, $white);
+    imagealphablending($dst, true);
+    imagecopyresampled($dst, $src, 0, 0, 0, 0, $dstW, $dstH, $srcW, $srcH);
+    imagedestroy($src);
+
+    $tmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'pos_business_logo_' . md5($logoFile . '|' . $maxWidthPx) . '.png';
+    if (!@imagepng($dst, $tmp)) {
+        imagedestroy($dst);
+        return $logoFile;
+    }
+    imagedestroy($dst);
+    return $tmp;
+}
+
+function printBusinessLogo(Printer $printer, array $businessInfo, int $paperWidthMm = 58, bool $embedInStream = true): void
+{
+    if (!$embedInStream) {
+        return;
+    }
+    $logoFile = resolveBusinessLogoFilePath($businessInfo);
+    if ($logoFile === null) {
+        return;
+    }
+
+    $maxWidthPx = ($paperWidthMm === 80) ? 576 : 384;
+    $printFile = prepareBusinessLogoForPrinter($logoFile, $maxWidthPx);
+    try {
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $img = EscposImage::load($printFile, false);
+        $printer->graphics($img);
+        $printer->feed(1);
+    } catch (Exception $e) {
+        error_log('Business logo print error: ' . $e->getMessage());
+    }
+}
+
+function getBusinessLogoPngBase64(array $businessInfo, int $paperWidthMm = 58): ?string
+{
+    $logoFile = resolveBusinessLogoFilePath($businessInfo);
+    if ($logoFile === null) {
+        return null;
+    }
+    $maxWidthPx = ($paperWidthMm === 80) ? 576 : 384;
+    $printFile = prepareBusinessLogoForPrinter($logoFile, $maxWidthPx);
+    $bytes = @file_get_contents($printFile);
+    if ($bytes === false || $bytes === '') {
+        return null;
+    }
+    return base64_encode($bytes);
+}
+
+function getBusinessLogoEscposBase64(array $businessInfo, int $paperWidthMm = 58): ?string
+{
+    $logoFile = resolveBusinessLogoFilePath($businessInfo);
+    if ($logoFile === null) {
+        return null;
+    }
+    $maxWidthPx = ($paperWidthMm === 80) ? 576 : 384;
+    $printFile = prepareBusinessLogoForPrinter($logoFile, $maxWidthPx);
+    try {
+        $connector = new RawCaptureConnector();
+        $printer = new Printer($connector);
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $img = EscposImage::load($printFile, false);
+        // bitImage (GS v 0) is supported on more 80mm ESC/POS printers than graphics().
+        $printer->bitImage($img);
+        $printer->feed(1);
+        $printer->close();
+        $bytes = $connector->getData();
+        return $bytes !== '' ? base64_encode($bytes) : null;
+    } catch (Exception $e) {
+        error_log('Business logo ESC/POS capture error: ' . $e->getMessage());
+        return null;
+    }
+}
+
+function emitRawModeJson(array $orderData, string $rawBytes, array $businessInfo, int $paperWidthMm = 58, bool $includeLogo = true): void
+{
+    if (ob_get_level()) {
+        ob_end_clean();
+    }
+    header('Content-Type: application/json');
+    $payload = [
+        'success' => true,
+        'raw_base64' => base64_encode($rawBytes),
+        'order_data' => $orderData,
+    ];
+    if ($includeLogo) {
+        $logoEscposB64 = getBusinessLogoEscposBase64($businessInfo, $paperWidthMm);
+        if ($logoEscposB64 !== null) {
+            $payload['logo_escpos_base64'] = $logoEscposB64;
+        }
+        $logoPngB64 = getBusinessLogoPngBase64($businessInfo, $paperWidthMm);
+        if ($logoPngB64 !== null) {
+            $payload['logo_png_base64'] = $logoPngB64;
+        }
+    }
+    $payload['receipt_paper_width_mm'] = ($paperWidthMm === 80) ? 80 : 58;
+    echo json_encode($payload);
+    exit;
+}
+
+function enrichOrderDataWithBusinessInfo(array &$orderData, array $businessInfo): void
+{
+    $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+    $orderData['location'] = $businessInfo['location'] ?? '';
+    $orderData['phone'] = $businessInfo['phone'] ?? '';
+    $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
+    $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
+    $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+    $logoPath = trim((string)($businessInfo['logo_path'] ?? ''));
+    if ($logoPath !== '') {
+        $orderData['logo_path'] = $logoPath;
+    } else {
+        unset($orderData['logo_path']);
+    }
+}
 
 /**
  * Keeps raw ESC/POS bytes available after Printer::close() in raw mode.
@@ -278,6 +650,26 @@ if (!$orderData) {
     echo json_encode(['success' => false, 'message' => 'No order data received']);
     exit;
 }
+
+receipt_enrich_tab_gratuity_for_print($orderData);
+
+// #region agent log
+if (!empty($orderData['is_payment_receipt']) || !empty($orderData['is_tab_copy_receipt'])) {
+    debug833f8f_log('receipt.php:orderDataReceived', 'Tab receipt data received', [
+        'receipt_type' => !empty($orderData['is_payment_receipt']) ? 'payment' : 'copy',
+        'order_id' => $orderData['order_id'] ?? null,
+        'tab_id' => $orderData['tab_id'] ?? null,
+        'gratuity_amount' => $orderData['gratuity_amount'] ?? null,
+        'gratuity' => $orderData['gratuity'] ?? null,
+        'gratuity_percent_applied' => $orderData['gratuity_percent_applied'] ?? null,
+        'gratuity_included_in_total' => $orderData['gratuity_included_in_total'] ?? null,
+        'tips' => $orderData['tips'] ?? null,
+        'total' => $orderData['total'] ?? null,
+        'item_count' => is_array($orderData['items'] ?? null) ? count($orderData['items']) : 0,
+        'raw_mode' => !empty($_GET['raw']),
+    ], 'B');
+}
+// #endregion
 
 // When `?raw=1` is requested, capture the exact ESC/POS bytes (instead of printing)
 // and return them as base64 for QZ Tray.
@@ -353,23 +745,11 @@ if (isset($orderData['open_drawer_only']) && $orderData['open_drawer_only']) {
             ];
         }
         
-        // Enrich orderData with business info
-        $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
-        $orderData['location'] = $businessInfo['location'] ?? '';
-        $orderData['phone'] = $businessInfo['phone'] ?? '';
-        $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
-        $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
-        $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+        enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
 
         if ($rawMode) {
             $rawBytes = $rawConnector ? $rawConnector->getData() : '';
-            header('Content-Type: application/json');
-            echo json_encode([
-                'success' => true,
-                'raw_base64' => base64_encode($rawBytes),
-                'order_data' => $orderData
-            ]);
-            exit;
+            emitRawModeJson($orderData, $rawBytes, $businessInfo, 58);
         } else {
             header('Content-Type: application/json');
             echo json_encode([
@@ -643,21 +1023,6 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $expensesQuery->execute();
         $expenses = $expensesQuery->fetchColumn();
 
-        $cashBackQuery = $db->prepare("
-            SELECT COALESCE(SUM(amount), 0)
-            FROM cash_transactions
-            WHERE type = 'cash-out' 
-            AND (description LIKE '%Cash Back%' OR description LIKE '%cash back%')
-            AND (" . $getBusinessDayWhere('created_at') . ")" . $getCashierFilter('cashier_id') . "
-        ");
-        $cashBackQuery->bindParam(':selectedDate', $selectedDate);
-        $cashBackQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-        $cashBackQuery->bindParam(':closingTime', $closingTime);
-        $cashBackQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-        $bindCashierParam($cashBackQuery);
-        $cashBackQuery->execute();
-        $cashBackSystem = $cashBackQuery->fetchColumn();
-
         $voidsQuery = $db->prepare("
             SELECT COALESCE(SUM(total), 0)
             FROM void_transactions
@@ -701,12 +1066,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $cashOnHand = floatval($orderData['cash_on_hand'] ?? 0);
         $eftOnHand = floatval($orderData['eft_on_hand'] ?? 0);
         $eftOverShort = floatval($orderData['eft_over_short'] ?? 0);
-        $cashBack = isset($orderData['cash_back']) ? floatval($orderData['cash_back']) : $cashBackSystem;
         $tips = floatval($orderData['tips'] ?? 0);
-        $hansaCash = floatval($orderData['hansa_cash'] ?? 0);
-        $hansaEft = floatval($orderData['hansa_eft'] ?? 0);
-        $hubbly = floatval($orderData['hubbly'] ?? 0);
-        $beerhouse = floatval($orderData['beerhouse'] ?? 0);
         if (isset($orderData['cash_sales_expected'])) {
             $cashSalesExpected = floatval($orderData['cash_sales_expected']);
         }
@@ -734,6 +1094,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         if (isset($orderData['total_items_sold'])) {
             $totalItemsSold = floatval($orderData['total_items_sold']);
         }
+        $damages = floatval($orderData['damages'] ?? 0);
         $overShort = $cashOnHand - $cashSalesExpected;
 
         // Receipt width configuration: 42 for 80mm, 32 for 58mm
@@ -779,6 +1140,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         
         // Print header
         $printer->setJustification(Printer::JUSTIFY_CENTER);
+        printBusinessLogo($printer, $businessInfo, receiptCharsToPaperMm($receiptWidth), !$rawMode);
         $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
         $printer->text($businessInfo['name'] . "\n");
         $printer->selectPrintMode();
@@ -789,8 +1151,16 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
             $printer->text("CASH UP REPORT\n");
         }
         $printer->setEmphasis(false);
+        $headerCustomText = trim((string)($businessInfo['header_custom_text'] ?? ''));
+        if ($headerCustomText !== '') {
+            $printer->text($headerCustomText . "\n");
+        }
+        
         $printer->text($businessInfo['location'] . "\n");
-        $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+
+        if (!empty(trim((string)($businessInfo['phone'] ?? '')))) {
+            $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        }
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->text("Date: " . ($orderData['date'] ?? date('Y-m-d')) . "\n");
@@ -809,7 +1179,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $printer->text("CASH\n");
         $printer->setEmphasis(false);
         $printer->setJustification(Printer::JUSTIFY_LEFT);
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($separatorLine('thin'));
         $printer->text($formatLine("Cash Sales (Expected)", $cashSalesExpected));
         $printer->text($formatLine("Cash on Hand", $cashOnHand));
         $printer->text($formatLine("Over / Short", $overShort));
@@ -821,14 +1191,14 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $printer->text("CARD & CREDIT\n");
         $printer->setEmphasis(false);
         $printer->setJustification(Printer::JUSTIFY_LEFT);
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($separatorLine('thin'));
         $printer->text($formatLine("Card Sales (Expected)", $cardSalesExpected));
         $printer->text($formatLine("EFT on Hand", $eftOnHand));
         $printer->text($formatLine("EFT Over / Short", $eftOverShort));
         $printer->text($formatLine("Unpaid Credit Sales", $unpaidCreditSales));
         $printer->text($formatLine("Open Tabs Balance", $openTabsBalance));
         $printer->text($formatLine("Credit Returns", $creditReturns));
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($separatorLine('thin'));
         
         // DEDUCTIONS SECTION
         $printer->setJustification(Printer::JUSTIFY_CENTER);
@@ -838,21 +1208,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->text($formatLine("Expenses", $expenses));
-        $printer->text($formatLine("Cash Back", $cashBack));
         $printer->text($formatLine("Tips", $tips));
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
-        
-        // SALES SOURCES (INFO) SECTION
-        $printer->setJustification(Printer::JUSTIFY_CENTER);
-        $printer->setEmphasis(true);
-        $printer->text("SALES SOURCES\n");
-        $printer->setEmphasis(false);
-        $printer->setJustification(Printer::JUSTIFY_LEFT);
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
-        $printer->text($formatLine("Hansa (Cash)", $hansaCash));
-        $printer->text($formatLine("Hansa (EFT)", $hansaEft));
-        $printer->text($formatLine("Hubbly", $hubbly));
-        $printer->text($formatLine("Beerhouse", $beerhouse));
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         
         // ADJUSTMENTS SECTION
@@ -864,6 +1220,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->text($formatLine("Voids", $voids));
         $printer->text($formatLine("Refunds", $refunds));
+        $printer->text($formatLine("Damages", $damages));
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         
         // TOTAL VALUE OF ITEMS SOLD SECTION
@@ -890,26 +1247,14 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         $printer->initialize();
         $printer->close();
         
-        // Enrich orderData with business info before returning
-        $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
-        $orderData['location'] = $businessInfo['location'] ?? '';
-        $orderData['phone'] = $businessInfo['phone'] ?? '';
-        $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
-        $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
-        $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+        enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
         
         // Ensure no output before JSON
         if (ob_get_level()) ob_end_clean();
         
         if ($rawMode) {
             $rawBytes = $rawConnector ? $rawConnector->getData() : '';
-            header('Content-Type: application/json');
-            echo json_encode([
-                'success' => true,
-                'raw_base64' => base64_encode($rawBytes),
-                'order_data' => $orderData
-            ]);
-            exit;
+            emitRawModeJson($orderData, $rawBytes, $businessInfo, receiptCharsToPaperMm($receiptWidth));
         }
 
         header('Content-Type: application/json');
@@ -1016,14 +1361,23 @@ if (isset($orderData['is_inventory_receipt']) && $orderData['is_inventory_receip
         
         // Print header
         $printer->setJustification(Printer::JUSTIFY_CENTER);
+        printBusinessLogo($printer, $businessInfo, receiptCharsToPaperMm($receiptWidth), !$rawMode);
         $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
         $printer->text($businessInfo['name'] . "\n");
         $printer->selectPrintMode();
         $printer->setEmphasis(true);
         $printer->text("INVENTORY REPORT\n");
+
+        $headerCustomText = trim((string)($businessInfo['header_custom_text'] ?? ''));
+        if ($headerCustomText !== '') {
+            $printer->text($headerCustomText . "\n");
+        }
+
         $printer->setEmphasis(false);
         $printer->text($businessInfo['location'] . "\n");
-        $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        if (!empty(trim((string)($businessInfo['phone'] ?? '')))) {
+            $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        }
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->setJustification(Printer::JUSTIFY_LEFT);
         $printer->text("Date: " . date('Y-m-d') . "\n");
@@ -1078,26 +1432,14 @@ if (isset($orderData['is_inventory_receipt']) && $orderData['is_inventory_receip
         $printer->initialize();
         $printer->close();
         
-        // Enrich orderData with business info before returning
-        $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
-        $orderData['location'] = $businessInfo['location'] ?? '';
-        $orderData['phone'] = $businessInfo['phone'] ?? '';
-        $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
-        $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
-        $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+        enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
         
         // Ensure no output before JSON
         if (ob_get_level()) ob_end_clean();
         
         if ($rawMode) {
             $rawBytes = $rawConnector ? $rawConnector->getData() : '';
-            header('Content-Type: application/json');
-            echo json_encode([
-                'success' => true,
-                'raw_base64' => base64_encode($rawBytes),
-                'order_data' => $orderData
-            ]);
-            exit;
+            emitRawModeJson($orderData, $rawBytes, $businessInfo, receiptCharsToPaperMm($receiptWidth));
         }
 
         header('Content-Type: application/json');
@@ -1162,116 +1504,7 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         $receiptWidth = 42; // Default: 80mm (change to 32 for 58mm)
         $receiptTruncate = $receiptWidth - 3; // For truncating long text (39 for 80mm, 29 for 58mm)
         
-        // Connect to POS database and calculate expected cash using same logic as cash.php
-        $dbPos = new PDO('sqlite:pos.db');
-        
-        // Get business closing time from business_info
-        $closingTime = $businessInfo['closing_time'] ?? '22:00'; // Default to 10:00 PM if not set
-        
-        // Calculate business day boundaries based on closing time
-        $closingHour = (int)substr($closingTime, 0, 2);
-        $closingMinute = (int)substr($closingTime, 3, 2);
-        
-        // If closing time is after midnight (e.g., 2:00 AM), we need to consider transactions
-        // that happened after midnight but before closing time as part of the previous day
-        $isAfterMidnight = $closingHour < 12;
-        
-        // Get the selected date from order data
-        $selectedDate = $orderData['date'];
-        $nextBusinessDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
-        
-        // 1. Calculate cash in transactions for the selected date
-        $cashInQuery = $dbPos->prepare("
-            SELECT COALESCE(SUM(amount), 0) 
-            FROM cash_transactions 
-            WHERE type='cash-in' AND (
-                (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-            )
-        ");
-        $cashInQuery->bindParam(':selectedDate', $selectedDate);
-        $cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-        $cashInQuery->bindParam(':closingTime', $closingTime);
-        $cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-        $cashInQuery->execute();
-        $totalCashIn = $cashInQuery->fetchColumn();
-        
-        // 2. Calculate cash sales (excluding EFT payments)
-        $eftTableExists = false;
-        try {
-            $checkEftTable = $dbPos->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'");
-            $eftTableExists = ($checkEftTable->fetchColumn() !== false);
-        } catch (PDOException $e) {
-            $eftTableExists = false;
-        }
-        
-        if ($eftTableExists) {
-            $cashSalesQuery = $dbPos->prepare("
-                SELECT COALESCE(SUM(o.total), 0)
-                FROM orders o
-                LEFT JOIN eft_payments e ON o.id = e.order_id
-                WHERE e.order_id IS NULL AND (
-                    (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                    (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-                )
-            ");
-            $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
-            $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-            $cashSalesQuery->bindParam(':closingTime', $closingTime);
-            $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-            $cashSalesQuery->execute();
-        } else {
-            $cashSalesQuery = $dbPos->prepare("
-                SELECT COALESCE(SUM(total), 0) 
-                FROM orders 
-                WHERE (
-                    (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                    (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                )
-            ");
-            $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
-            $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-            $cashSalesQuery->bindParam(':closingTime', $closingTime);
-            $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-            $cashSalesQuery->execute();
-        }
-        $totalCashSales = $cashSalesQuery->fetchColumn();
-        
-        // 3. Calculate credit payments received in cash
-        $creditPaymentsQuery = $dbPos->prepare("
-            SELECT COALESCE(SUM(p.amount), 0) 
-            FROM payments p
-            JOIN credit_sales cs ON p.sale_id = cs.id
-            WHERE cs.payment_status = 'paid' AND (
-                (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-                (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-            )
-        ");
-        $creditPaymentsQuery->bindParam(':selectedDate', $selectedDate);
-        $creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-        $creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-        $creditPaymentsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-        $creditPaymentsQuery->execute();
-        $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
-        
-        // 4. Calculate cash out (withdrawals)
-        $cashOutQuery = $dbPos->prepare("
-            SELECT COALESCE(SUM(amount), 0) 
-            FROM cash_transactions 
-            WHERE type='cash-out' AND (
-                (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-            )
-        ");
-        $cashOutQuery->bindParam(':selectedDate', $selectedDate);
-        $cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-        $cashOutQuery->bindParam(':closingTime', $closingTime);
-        $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-        $cashOutQuery->execute();
-        $totalCashOut = $cashOutQuery->fetchColumn();
-        
-        // Calculate the correct expected cash amount
-        $calculatedExpectedCash = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+        // Amounts come from orderData (get_cashup_data.php / cashier Z-report); no server-side recalculation here.
         // Printer selection logic (same as before)
         $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
         $printerName = '';
@@ -1303,50 +1536,177 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
             }
         }
         $printer = new Printer($connector);
-        // Print simplified Z-report receipt (dynamic width format)
+
+        $cashSalesExpected = floatval($orderData['cash_sales_expected'] ?? $orderData['cash_sales'] ?? 0);
+        $cashInTill = floatval($orderData['cash_in_till'] ?? $orderData['expected_cash'] ?? 0);
+        $cashOnHand = floatval($orderData['cash_on_hand'] ?? $cashInTill);
+        $cardSalesExpected = floatval($orderData['card_sales_expected'] ?? $orderData['eft_sales'] ?? $orderData['total_eft_sales'] ?? 0);
+        $eftOnHand = floatval($orderData['eft_on_hand'] ?? $cardSalesExpected);
+        $eftOverShort = floatval($orderData['eft_over_short'] ?? 0);
+        $unpaidCreditSales = floatval($orderData['unpaid_credit_sales'] ?? $orderData['credit_unpaid'] ?? 0);
+        $openTabsBalance = floatval($orderData['open_tabs_balance'] ?? $orderData['open_tabs'] ?? 0);
+        $creditReturns = floatval($orderData['credit_returns'] ?? 0);
+        $unpaidTabs = floatval($orderData['unpaid_tabs'] ?? 0);
+        $expenses = floatval($orderData['expenses'] ?? $orderData['total_expense'] ?? 0);
+        $tips = floatval($orderData['tips'] ?? $orderData['tips_system'] ?? 0);
+        $voids = floatval($orderData['voids'] ?? 0);
+        $voidsCount = intval($orderData['voids_count'] ?? 0);
+        $refunds = floatval($orderData['refunds'] ?? 0);
+        $refundsCount = intval($orderData['refunds_count'] ?? 0);
+        $totalItemsSold = floatval($orderData['total_items_sold'] ?? 0);
+        $damages = floatval($orderData['damages'] ?? 0);
+        $cashIn = floatval($orderData['cash_in'] ?? 0);
+        $cashOut = floatval($orderData['cash_out'] ?? 0);
+        $totalCashSalesOrders = floatval($orderData['total_cash_sales'] ?? $orderData['cash_sales'] ?? 0);
+        $grandTotal = floatval($orderData['grand_total'] ?? $orderData['total_income'] ?? ($totalCashSalesOrders + $cardSalesExpected));
+
+        $overShort = $cashOnHand - $cashSalesExpected;
+        $isIndividual = !empty($orderData['is_individual_cashout']);
+        $staffName = (string)($orderData['filter_cashier_name'] ?? $orderData['staff_name'] ?? $orderData['cashier_name'] ?? '');
+
+        $formatLine = function ($label, $amount) use ($receiptWidth) {
+            $amountStr = 'N$ ' . number_format(floatval($amount), 2);
+            $spaces = $receiptWidth - strlen($label) - strlen($amountStr);
+            if ($spaces < 1) {
+                $spaces = 1;
+            }
+            return $label . str_repeat(' ', $spaces) . $amountStr . "\n";
+        };
+
+        $wrapText = function ($prefix, $text) use ($receiptWidth) {
+            $text = (string)$text;
+            $lines = [];
+            $first = $prefix . $text;
+            $chunk = $receiptWidth;
+            for ($i = 0; $i < strlen($first); $i += $chunk) {
+                $lines[] = substr($first, $i, $chunk);
+            }
+            return $lines;
+        };
+
         $printer->setJustification(Printer::JUSTIFY_CENTER);
+        printBusinessLogo($printer, $businessInfo, receiptCharsToPaperMm($receiptWidth), !$rawMode);
         $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
         $printer->text($businessInfo['name'] . "\n");
         $printer->selectPrintMode();
         $printer->setEmphasis(true);
-        $printer->text("Z-REPORT\n");
+        if ($isIndividual) {
+            $printer->text("CASHOUT / Z-REPORT\n");
+        } else {
+            $printer->text("Z-REPORT\n");
+        }
         $printer->setEmphasis(false);
+        $printer->text($businessInfo['location'] . "\n");
+        $headerCustomText = trim((string)($businessInfo['header_custom_text'] ?? ''));
+        if ($headerCustomText !== '') {
+            $printer->text($headerCustomText . "\n");
+        }
+        if (!empty(trim((string)($businessInfo['phone'] ?? '')))) {
+            $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+        }
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
         $printer->setJustification(Printer::JUSTIFY_LEFT);
-        $printer->text("Date: " . $orderData['date'] . "\n");
+        $printer->text("Date: " . ($orderData['date'] ?? date('Y-m-d')) . "\n");
+        if (!empty($orderData['date_range'])) {
+            foreach ($wrapText('Period: ', $orderData['date_range']) as $ln) {
+                $printer->text($ln . "\n");
+            }
+        }
         $printer->text("Time: " . date('H:i') . "\n");
-        $printer->text("Cashier: " . ($orderData['cashier_username'] ?? 'N/A') . "\n");
+        if ($staffName !== '') {
+            $printer->setEmphasis(true);
+            $printer->text("Staff: " . $staffName . "\n");
+            $printer->setEmphasis(false);
+        }
+        $printer->text("Printed by: " . ($orderData['cashier_username'] ?? 'N/A') . "\n");
+        if (!empty($orderData['generated_at'])) {
+            $printer->text("Generated: " . $orderData['generated_at'] . "\n");
+        }
+
         $printer->text(str_repeat('-', $receiptWidth) . "\n");
-        $printer->feed();
-        
-        // Essential totals only
-        $cashTotal = ($orderData['cash_sales'] ?? $orderData['total_cash_sales'] ?? 0);
-        $eftTotal = ($orderData['eft_sales'] ?? $orderData['total_eft_sales'] ?? 0);
-        $grandTotal = ($orderData['grand_total'] ?? $orderData['total_income'] ?? 0);
-        
-        $printer->text(sprintf("%-20s N$%8.2f\n", "CASH SALES:", $cashTotal));
-        $printer->text(sprintf("%-20s N$%8.2f\n", "EFT SALES:", $eftTotal));
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->setEmphasis(true);
-        $printer->text(sprintf("%-20s N$%8.2f\n", "TOTAL SALES:", $grandTotal));
+        $printer->text("CASH\n");
         $printer->setEmphasis(false);
-        $printer->text(str_repeat('=', $receiptWidth) . "\n");
-        
-        // Shortage/Surplus if provided
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($formatLine('Cash In', $cashIn));
+        $printer->text($formatLine('Cash Out', $cashOut));
+        $printer->text($formatLine('Cash Sales (Orders)', $totalCashSalesOrders));
+        $printer->text($formatLine('Cash Sales (Expected)', $cashSalesExpected));
+        $printer->text($formatLine('Cash in Till', $cashInTill));
+        $printer->text($formatLine('Cash on Hand', $cashOnHand));
+        $printer->text($formatLine('Over / Short', $overShort));
+
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->setEmphasis(true);
+        $printer->text("CARD & CREDIT\n");
+        $printer->setEmphasis(false);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($formatLine('Card Sales (Expected)', $cardSalesExpected));
+        $printer->text($formatLine('EFT on Hand', $eftOnHand));
+        $printer->text($formatLine('EFT Over / Short', $eftOverShort));
+        $printer->text($formatLine('Unpaid Credit Sales', $unpaidCreditSales));
+        $printer->text($formatLine('Open Tabs Balance', $openTabsBalance));
+        if ($unpaidTabs > 0) {
+            $printer->text($formatLine('Unpaid Tabs (total)', $unpaidTabs));
+        }
+        $printer->text($formatLine('Credit Returns', $creditReturns));
+
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->setEmphasis(true);
+        $printer->text("DEDUCTIONS\n");
+        $printer->setEmphasis(false);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($formatLine('Expenses', $expenses));
+        $printer->text($formatLine('Tips', $tips));
+
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->setEmphasis(true);
+        $printer->text("ADJUSTMENTS\n");
+        $printer->setEmphasis(false);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $voidsLabel = $voidsCount > 0 ? 'Voids (' . $voidsCount . ')' : 'Voids';
+        $printer->text($formatLine($voidsLabel, $voids));
+        $refundsLabel = $refundsCount > 0 ? 'Refunds (' . $refundsCount . ')' : 'Refunds';
+        $printer->text($formatLine($refundsLabel, $refunds));
+        $printer->text($formatLine('Damages', $damages));
+
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->setEmphasis(true);
+        $printer->text("TOTALS\n");
+        $printer->setEmphasis(false);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($formatLine('Total Items Sold Value', $totalItemsSold));
+        $printer->setEmphasis(true);
+        $printer->text($formatLine('TOTAL SALES', $grandTotal));
+        $printer->setEmphasis(false);
+
         if (isset($orderData['cash_difference'])) {
             $difference = floatval($orderData['cash_difference']);
             if ($difference != 0) {
-                // Removed feed() - surplus/shortage line comes directly
+                $printer->text(str_repeat('-', $receiptWidth) . "\n");
                 $printer->setEmphasis(true);
-                $printer->text(sprintf("%-20s N$%8.2f\n", 
-                    $difference > 0 ? "SURPLUS:" : "SHORTAGE:", 
-                    abs($difference)));
+                $printer->text($formatLine($difference > 0 ? 'SURPLUS' : 'SHORTAGE', abs($difference)));
                 $printer->setEmphasis(false);
             }
         }
-        
+
+        $printer->text(str_repeat('=', $receiptWidth) . "\n");
         $printer->setJustification(Printer::JUSTIFY_CENTER);
-        $printer->text("End of Report\n");
+        if ($isIndividual) {
+            $printer->text("*Cashout for " . ($staffName !== '' ? $staffName : 'staff') . "*\n");
+        } else {
+            $printer->text("*End of Z-Report*\n");
+        }
         // Feed enough to ensure footer is fully printed before cut
         $printer->feed(3);
         $printer->cut();
@@ -1354,23 +1714,11 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
         // Initialize printer to stop further printing
         $printer->initialize();
         $printer->close();
-        // Enrich orderData with business info before returning
-        $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
-        $orderData['location'] = $businessInfo['location'] ?? '';
-        $orderData['phone'] = $businessInfo['phone'] ?? '';
-        $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
-        $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
-        $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+        enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
         
         if ($rawMode) {
             $rawBytes = $rawConnector ? $rawConnector->getData() : '';
-            header('Content-Type: application/json');
-            echo json_encode([
-                'success' => true,
-                'raw_base64' => base64_encode($rawBytes),
-                'order_data' => $orderData
-            ]);
-            exit;
+            emitRawModeJson($orderData, $rawBytes, $businessInfo, receiptCharsToPaperMm($receiptWidth));
         }
 
         header('Content-Type: application/json');
@@ -1407,8 +1755,11 @@ try {
                    isset($orderData['is_cashup_report']) || 
                    isset($orderData['is_balance_receipt']) || 
                    isset($orderData['is_tab_balance_receipt']) || 
+                   !empty($orderData['is_tab_copy_receipt']) ||
+                   isset($orderData['is_laybye_balance_receipt']) ||
                    isset($orderData['is_payment_receipt']) ||
-                   isset($orderData['open_drawer_only']);
+                   isset($orderData['open_drawer_only']) ||
+                   !empty($orderData['print_to_kitchen_printer']);
 
     // Connect to database and get business info early (before any exit)
     $db = new PDO('sqlite:info.db');
@@ -1426,15 +1777,15 @@ try {
             'vat_rate' => 15.0
         ];
     }
+    $allowedVatModes = ['exclusive', 'inclusive', 'none'];
+    $vMode = $businessInfo['vat_inclusive'] ?? 'exclusive';
+    if (!in_array($vMode, $allowedVatModes, true)) {
+        $vMode = 'exclusive';
+    }
+    $businessInfo['vat_inclusive'] = $vMode;
     
     // ALWAYS enrich orderData with business info from info.db (reliable source)
-    // This ensures business info always matches what's in the database, even if client sent stale data
-    $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
-    $orderData['location'] = $businessInfo['location'] ?? '';
-    $orderData['phone'] = $businessInfo['phone'] ?? '';
-    $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
-    $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
-    $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+    enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
     
     // If printing is not explicitly requested, return success without printing
     if (!$shouldPrint) {
@@ -1447,6 +1798,47 @@ try {
         exit;
     }
 
+    // Kitchen printer (ESC/POS over TCP) — IP/port in product_settings
+    $kitchenPrinterIp = '';
+    $kitchenPrinterPort = 9100;
+    $configuredReceiptWidthMm = 58;
+    try {
+        $posKitchenDb = new PDO('sqlite:' . __DIR__ . '/pos.db');
+        $posKitchenDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        try {
+            $posKitchenDb->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_ip TEXT");
+        } catch (PDOException $e) { /* exists */
+        }
+        try {
+            $posKitchenDb->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_port INTEGER NOT NULL DEFAULT 9100");
+        } catch (PDOException $e) { /* exists */
+        }
+        try {
+            $posKitchenDb->exec("ALTER TABLE product_settings ADD COLUMN receipt_paper_width_mm INTEGER NOT NULL DEFAULT 58");
+        } catch (PDOException $e) { /* exists */
+        }
+        $krow = $posKitchenDb->query("SELECT kitchen_printer_ip, kitchen_printer_port, receipt_paper_width_mm FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        if ($krow) {
+            $kitchenPrinterIp = trim((string)($krow['kitchen_printer_ip'] ?? ''));
+            $kp = (int)($krow['kitchen_printer_port'] ?? 9100);
+            $kitchenPrinterPort = ($kp > 0 && $kp <= 65535) ? $kp : 9100;
+            $dbPaperWidth = (int)($krow['receipt_paper_width_mm'] ?? 58);
+            $configuredReceiptWidthMm = ($dbPaperWidth === 80) ? 80 : 58;
+        }
+    } catch (Exception $e) {
+        error_log('Kitchen printer settings: ' . $e->getMessage());
+    }
+
+    if (!empty($orderData['print_to_kitchen_printer']) && $kitchenPrinterIp === '') {
+        header('Content-Type: application/json');
+        http_response_code(400);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Kitchen printer IP is not configured. Set it under Admin → Settings (kitchen printer).'
+        ]);
+        exit;
+    }
+
     // Prevent printing regular receipts for tab sales - only print kitchen tickets
     // Exception: Allow tab balance receipts (is_tab_balance_receipt), payment receipts (is_payment_receipt), 
     // and kitchen tickets (print_only with tab_id/table_id) to be printed
@@ -1454,7 +1846,8 @@ try {
         !isset($orderData['is_tab_balance_receipt']) && 
         !isset($orderData['is_balance_receipt']) &&
         !isset($orderData['is_payment_receipt']) &&
-        !isset($orderData['print_only'])) {
+        !isset($orderData['print_only']) &&
+        empty($orderData['is_tab_copy_receipt'])) {
         // This is a tab sale - should only print kitchen ticket, not receipt
         header('Content-Type: application/json');
         echo json_encode([
@@ -1469,10 +1862,196 @@ try {
     $vatInclusive = $businessInfo['vat_inclusive'] ?? 'exclusive';
     $vatRate = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
     
-    // Receipt width configuration: 42 for 80mm, 32 for 58mm
-    // Change this variable to switch between printer sizes
-    $receiptWidth = 32; // Default: 80mm (change to 32 for 58mm)
-    $receiptTruncate = $receiptWidth - 3; // For truncating long text (39 for 80mm, 29 for 58mm)
+    // Receipt width: 42 chars ≈ 80mm, 32 ≈ 58mm.
+    $explicitPaperWidthMm = null;
+    if (isset($orderData['receipt_paper_width_mm'])) {
+        $explicitPaperWidthMm = (int)$orderData['receipt_paper_width_mm'];
+    } elseif (isset($orderData['paper_width_mm'])) {
+        $explicitPaperWidthMm = (int)$orderData['paper_width_mm'];
+    }
+    if ($explicitPaperWidthMm !== 58 && $explicitPaperWidthMm !== 80) {
+        $explicitPaperWidthMm = null;
+    }
+    $receiptWidthMm = $explicitPaperWidthMm ?? $configuredReceiptWidthMm;
+    if (!empty($orderData['print_to_kitchen_printer']) && $explicitPaperWidthMm === null) {
+        $receiptWidthMm = 80;
+    }
+    $receiptWidth = ($receiptWidthMm === 80) ? 42 : 32;
+    $receiptTruncate = $receiptWidth - 3;
+
+    $separatorLine = function ($style = 'thin') use ($receiptWidth) {
+        if ($style === 'none') {
+            return '';
+        }
+        $ch = ($style === 'heavy') ? '=' : '-';
+        return str_repeat($ch, $receiptWidth) . "\n";
+    };
+    $formatMoney = function ($amount) {
+        return 'N$ ' . number_format((float)$amount, 2, '.', '');
+    };
+    $fitLeft = function ($text, $maxLen) {
+        $text = trim((string)$text);
+        if ($maxLen <= 0) {
+            return '';
+        }
+        if (strlen($text) <= $maxLen) {
+            return $text;
+        }
+        return substr($text, 0, max(0, $maxLen - 3)) . '...';
+    };
+    $wrapText = function ($text, $width) use ($fitLeft) {
+        $text = trim((string)$text);
+        if ($text === '') {
+            return [''];
+        }
+        if ($width < 4) {
+            return [$fitLeft($text, max(1, $width))];
+        }
+        $words = preg_split('/\s+/', $text);
+        $lines = [];
+        $current = '';
+        foreach ($words as $word) {
+            if ($word === '') {
+                continue;
+            }
+            if ($current === '') {
+                if (strlen($word) <= $width) {
+                    $current = $word;
+                } else {
+                    $lines[] = $fitLeft($word, $width);
+                }
+                continue;
+            }
+            $candidate = $current . ' ' . $word;
+            if (strlen($candidate) <= $width) {
+                $current = $candidate;
+            } else {
+                $lines[] = $current;
+                $current = (strlen($word) <= $width) ? $word : $fitLeft($word, $width);
+            }
+        }
+        if ($current !== '') {
+            $lines[] = $current;
+        }
+        return empty($lines) ? [''] : $lines;
+    };
+    $lineLeftRight = function ($left, $right) use ($receiptWidth, $fitLeft) {
+        $left = trim((string)$left);
+        $right = trim((string)$right);
+        $rightLen = strlen($right);
+        $leftMax = max(1, $receiptWidth - $rightLen - 1);
+        $left = $fitLeft($left, $leftMax);
+        $pad = max(1, $receiptWidth - strlen($left) - $rightLen);
+        return $left . str_repeat(' ', $pad) . $right . "\n";
+    };
+    $lineLabelAmount = function ($label, $amount) use ($lineLeftRight, $formatMoney) {
+        return $lineLeftRight($label, $formatMoney($amount));
+    };
+    $qtyColWidth = 3;
+    $amountColWidth = ($receiptWidth >= 42) ? 12 : 10;
+    $descColWidth = max(8, $receiptWidth - $qtyColWidth - 1 - $amountColWidth);
+    $printItemHeader = function ($printer) use ($qtyColWidth, $descColWidth, $amountColWidth) {
+        $printer->text(str_pad('Qty', $qtyColWidth) . ' ' . str_pad('Description', $descColWidth) . str_pad('Amount', $amountColWidth, ' ', STR_PAD_LEFT) . "\n");
+    };
+    $printItemRow = function ($printer, $qty, $description, $amount) use ($qtyColWidth, $descColWidth, $amountColWidth, $wrapText, $formatMoney) {
+        $qtyText = str_pad((string)max(1, (int)$qty), $qtyColWidth);
+        $amountText = str_pad($formatMoney($amount), $amountColWidth, ' ', STR_PAD_LEFT);
+        $descLines = $wrapText((string)$description, $descColWidth);
+        foreach ($descLines as $idx => $line) {
+            $leftQty = ($idx === 0) ? $qtyText : str_repeat(' ', $qtyColWidth);
+            $rightAmount = ($idx === 0) ? $amountText : str_repeat(' ', $amountColWidth);
+            $printer->text($leftQty . ' ' . str_pad($line, $descColWidth) . $rightAmount . "\n");
+        }
+    };
+    $formatReceiptTime = function ($value) {
+        if ($value === null || $value === '') {
+            return '';
+        }
+        if (is_numeric($value)) {
+            $ts = intval($value);
+        } else {
+            $ts = strtotime((string) $value);
+        }
+        if ($ts === false || $ts <= 0) {
+            $raw = trim((string) $value);
+            return $raw;
+        }
+        return date('g:i A', $ts);
+    };
+    $tabTimingFallback = [
+        'opened_at' => '',
+        'closed_at' => ''
+    ];
+    $tabIdForTiming = intval($orderData['tab_id'] ?? 0);
+    if ($tabIdForTiming > 0) {
+        try {
+            $posTimingDb = new PDO('sqlite:' . __DIR__ . '/pos.db');
+            $posTimingDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $tabTimingStmt = $posTimingDb->prepare("SELECT opened_at, closed_at FROM tabs WHERE id = :id LIMIT 1");
+            $tabTimingStmt->bindValue(':id', $tabIdForTiming, PDO::PARAM_INT);
+            $tabTimingStmt->execute();
+            $tabTimingRow = $tabTimingStmt->fetch(PDO::FETCH_ASSOC);
+            if ($tabTimingRow) {
+                $tabTimingFallback['opened_at'] = $tabTimingRow['opened_at'] ?? '';
+                $tabTimingFallback['closed_at'] = $tabTimingRow['closed_at'] ?? '';
+            }
+        } catch (Exception $e) {
+            error_log('Tab timing fallback lookup failed: ' . $e->getMessage());
+        }
+    }
+    $resolveOpenedTime = function ($orderData) use ($formatReceiptTime, $tabTimingFallback) {
+        $openedCandidates = [
+            $orderData['order_started'] ?? '',
+            $orderData['opened_at'] ?? '',
+            $orderData['created_at'] ?? '',
+            $orderData['tab_opened_at'] ?? '',
+            $orderData['tab_started_at'] ?? '',
+            $tabTimingFallback['opened_at'] ?? ''
+        ];
+        foreach ($openedCandidates as $candidate) {
+            $fmt = $formatReceiptTime($candidate);
+            if ($fmt !== '') {
+                return $fmt;
+            }
+        }
+        return '';
+    };
+    $resolveClosedPaidTime = function ($orderData) use ($formatReceiptTime, $tabTimingFallback) {
+        $maxPaymentTs = null;
+        if (!empty($orderData['payments']) && is_array($orderData['payments'])) {
+            foreach ($orderData['payments'] as $p) {
+                $paymentDateRaw = $p['payment_date'] ?? '';
+                if ($paymentDateRaw === null || $paymentDateRaw === '') {
+                    continue;
+                }
+                $ts = strtotime((string) $paymentDateRaw);
+                if ($ts === false) {
+                    continue;
+                }
+                if ($maxPaymentTs === null || $ts > $maxPaymentTs) {
+                    $maxPaymentTs = $ts;
+                }
+            }
+        }
+        if ($maxPaymentTs !== null) {
+            return date('g:i A', $maxPaymentTs);
+        }
+        $fallbackCandidates = [
+            $orderData['order_ended'] ?? '',
+            $orderData['closed_at'] ?? '',
+            $orderData['payment_date'] ?? '',
+            $orderData['tab_closed_at'] ?? '',
+            $orderData['closed_time'] ?? '',
+            $tabTimingFallback['closed_at'] ?? ''
+        ];
+        foreach ($fallbackCandidates as $candidate) {
+            $fmt = $formatReceiptTime($candidate);
+            if ($fmt !== '') {
+                return $fmt;
+            }
+        }
+        return '';
+    };
     
     // Detect client IP address to determine which printer to use
     $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
@@ -1500,6 +2079,8 @@ try {
         if ($rawMode) {
             $connector = new RawCaptureConnector();
             $rawConnector = $connector;
+        } else if (!empty($orderData['print_to_kitchen_printer']) && $kitchenPrinterIp !== '') {
+            $connector = new NetworkPrintConnector($kitchenPrinterIp, $kitchenPrinterPort);
         } else if ($isNetworkPrinter) {
             // Network printer connection
             $connector = new NetworkPrintConnector("192.168.1.7", 9100);
@@ -1509,7 +2090,10 @@ try {
         }
         $printer = new Printer($connector);
     } catch (Exception $e) {
-        throw new Exception("Printer connection failed for $printerName: " . $e->getMessage());
+        $connLabel = (!empty($orderData['print_to_kitchen_printer']) && $kitchenPrinterIp !== '')
+            ? ('kitchen ' . $kitchenPrinterIp . ':' . $kitchenPrinterPort)
+            : $printerName;
+        throw new Exception("Printer connection failed for $connLabel: " . $e->getMessage());
     }
 
     // Open the cash drawer BEFORE printing for eligible payments
@@ -1527,18 +2111,41 @@ try {
     $isTabSale = isset($orderData['table_id']) || isset($orderData['tab_id']);
     $isPaymentReceipt = isset($orderData['is_payment_receipt']) && $orderData['is_payment_receipt'];
     
-    // Skip header for kitchen tickets (tab sales) - no header or footer
-    if (!$isTabSale || $isPaymentReceipt) {
+    // Skip header for kitchen tickets (tab sales) - no header or footer; show for tab copy (guest check)
+    if (!$isTabSale || $isPaymentReceipt || !empty($orderData['is_tab_copy_receipt'])) {
         try {
             $printer->setJustification(Printer::JUSTIFY_CENTER);
+            printBusinessLogo($printer, $businessInfo, $receiptWidthMm, !$rawMode);
+            // Highlight business name with bold double-size text (readable on thermal paper).
             $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
             $printer->text($businessInfo['name'] . "\n");
             $printer->selectPrintMode(); // Reset print mode
+            $printer->text("\n");
+
+            $printer->setEmphasis(false);
+            $headerCustomText = trim((string)($businessInfo['header_custom_text'] ?? ''));
+            if ($headerCustomText !== '') {
+                $printer->text($headerCustomText . "\n");
+            }
             $printer->setEmphasis(true);
             $printer->text($businessInfo['location'] . "\n");
-            $printer->setEmphasis(false);
-            $printer->text("Tel: " . $businessInfo['phone'] . "\n");
-            $printer->text("Cashier: " . $orderData['cashier_username'] . "\n");
+            if (!empty(trim((string)($businessInfo['phone'] ?? '')))) {
+                $printer->text("Tel: " . $businessInfo['phone'] . "\n");
+            }
+            $shouldShowCashierInHeader =
+                empty($orderData['is_tab_copy_receipt']) &&
+                !$isPaymentReceipt &&
+                empty($orderData['is_cashup_report']) &&
+                empty($orderData['is_cashup_master_report']) &&
+                empty($orderData['is_balance_receipt']) &&
+                empty($orderData['is_tab_balance_receipt']) &&
+                empty($orderData['is_laybye_balance_receipt']);
+            if ($shouldShowCashierInHeader) {
+                $cashierHeaderName = trim((string)($orderData['cashier_username'] ?? $orderData['cashier_name'] ?? ''));
+                if ($cashierHeaderName !== '') {
+                    $printer->text("Cashier: " . $cashierHeaderName . "\n");
+                }
+            }
             // Removed unnecessary feed() - separator line comes next
         } catch (Exception $e) {
             error_log("Error printing header: " . $e->getMessage());
@@ -1622,7 +2229,7 @@ try {
         $cashOnHand = $orderData['cash_on_hand'] ?? 0;
         
         if ($expectedCash > 0 || $cashOnHand > 0) {
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             // Expected Cash in Till
             if ($expectedCash > 0) {
                 $printer->setEmphasis(true);
@@ -1634,7 +2241,7 @@ try {
             if ($cashOnHand > 0) {
                 $printer->text(sprintf("%-20s N$%8.2f\n", "CASH ON HAND:", $cashOnHand));
             }
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
         }
         
         // Add actual cash and difference if provided
@@ -1683,9 +2290,9 @@ try {
         // Print refunded items
         if (isset($orderData['items']) && !empty($orderData['items'])) {
             $printer->setEmphasis(true);
-            $printer->text(sprintf("%-20s %3s %9s\n", "Item", "Qty", "Amount"));
+            $printItemHeader($printer);
             $printer->setEmphasis(false);
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             
             $subtotal = 0;
             foreach ($orderData['items'] as $item) {
@@ -1695,39 +2302,257 @@ try {
                 $amount = $quantity * $price;
                 $subtotal += $amount;
                 
-                // Truncate name if too long
-                if (strlen($name) > $receiptWidth) {
-                    $name = substr($name, 0, $receiptTruncate) . '...';
-                }
-                $printer->text($name . "\n");
-                
-                // Print quantity x price and amount
-                $qtyPrice = sprintf("%d x N$%.2f", $quantity, $price);
-                $amountText = sprintf("N$%.2f", $amount);
-                
-                $spaces = $receiptWidth - strlen($qtyPrice) - strlen($amountText);
-                if ($spaces < 1) $spaces = 1;
-                
-                $printer->text($qtyPrice . str_repeat(' ', $spaces) . $amountText . "\n");
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                $printItemRow($printer, $quantity, $name, $amount);
             }
             
             // Print totals
-            $printer->text(str_repeat('=', $receiptWidth) . "\n");
+            $printer->text($separatorLine('heavy'));
             $printer->setEmphasis(true);
-            $printer->text(sprintf("%-20s N$%8.2f\n", "REFUND TOTAL:", $subtotal));
+            $printer->text($lineLabelAmount("REFUND TOTAL:", $subtotal));
             $printer->setEmphasis(false);
-            $printer->text(str_repeat('=', $receiptWidth) . "\n");
+            $printer->text($separatorLine('heavy'));
         }
         
         // Footer section
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($separatorLine('thin'));
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text($businessInfo['footer_text'] . "\n");
         $printer->feed(3); // Feed enough to ensure footer is fully printed before cut
+    } else if (!empty($orderData['is_tab_copy_receipt'])) {
+        // TAB COPY / GUEST CHECK (itemized, VAT, gratuity, balance due) — N$
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->setEmphasis(true);
+        $printer->text("COPY RECEIPT\n");
+        $printer->setEmphasis(false);
+        $printer->feed(1);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+     
+        $printer->text($separatorLine('thin'));
+        $printer->setEmphasis(true);
+        $printItemHeader($printer);
+        $printer->setEmphasis(false);
+        $printer->text($separatorLine('thin'));
+
+        $lineSum = 0.0;
+        $gratuityFromTabLines = 0.0;
+        if (isset($orderData['items']) && is_array($orderData['items'])) {
+            foreach ($orderData['items'] as $item) {
+                $name = $item['name'] ?? 'Item';
+                $trimName = trim((string) $name);
+                $quantity = intval($item['quantity'] ?? 1);
+                if ($quantity < 1) {
+                    $quantity = 1;
+                }
+                $amount = floatval($item['price'] ?? 0);
+                if ($trimName === 'Gratuity') {
+                    $gratuityFromTabLines += $amount;
+                    continue;
+                }
+                $lineSum += $amount;
+                $unitPrice = $amount / $quantity;
+                $printItemRow($printer, $quantity, $name, $amount);
+            }
+        }
+        $subtotal = $lineSum;
+        $copyVatMode = isset($orderData['vat_inclusive']) ? $orderData['vat_inclusive'] : $vatInclusive;
+        $copyVatRate = isset($orderData['vat_rate']) ? floatval($orderData['vat_rate']) : $vatRate;
+        $vatAmount = 0.0;
+        $regularVatLineAmount = 0.0;
+        $totalWithVat = $subtotal;
+        if ($copyVatMode === 'exclusive' || $copyVatMode === '') {
+            $vatAmount = $subtotal * ($copyVatRate / 100);
+            $regularVatLineAmount = $vatAmount;
+            $totalWithVat = $subtotal + $vatAmount;
+        } elseif ($copyVatMode === 'none') {
+            $regularVatLineAmount = 0.0;
+            $totalWithVat = $subtotal;
+        } elseif ($copyVatMode === 'inclusive') {
+            $regularVatLineAmount = $subtotal - ($subtotal / (1 + ($copyVatRate / 100)));
+            if ($regularVatLineAmount < 0) {
+                $regularVatLineAmount = 0.0;
+            }
+            $regularVatLineAmount = round($regularVatLineAmount, 2);
+            $totalWithVat = $subtotal;
+        } else {
+            $vatAmount = $subtotal * ($copyVatRate / 100);
+            $regularVatLineAmount = $vatAmount;
+            $totalWithVat = $subtotal + $vatAmount;
+        }
+        $rPct = rtrim(rtrim(number_format($copyVatRate, 2, '.', ''), '0'), '.');
+        if ($rPct === '' || $rPct === '.') {
+            $rPct = '0';
+        }
+        $printer->text($separatorLine('thin'));
+        // Subtotal (maintain inline N$ always)
+        $subtotalLabel = "Subtotal:";
+        $subtotalVal = sprintf("N$%8.2f", $subtotal);
+        $pad = max(1, $receiptWidth - strlen($subtotalLabel) - strlen($subtotalVal));
+        $printer->text($subtotalLabel . str_repeat(' ', $pad) . $subtotalVal . "\n");
+
+        $copyVatPrinted = strtolower((string) $copyVatMode) !== 'none';
+        if ($copyVatPrinted) {
+            if ($copyVatMode === 'inclusive') {
+                $regularVatLabel = 'VAT: ' . $rPct . '% (incl.):';
+            } else {
+                $regularVatLabel = 'VAT: ' . $rPct . '% (excl.):';
+            }
+            $vatVal = sprintf("N$%8.2f", $regularVatLineAmount);
+            $vatPad = max(1, $receiptWidth - strlen($regularVatLabel) - strlen($vatVal));
+            $printer->text($regularVatLabel . str_repeat(' ', $vatPad) . $vatVal . "\n");
+        }
+
+        // Make "Total" line slightly bigger and bold (only double height, not double width)
+        $printer->setEmphasis(true);
+        $printer->selectPrintMode(
+            Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED
+        );
+        // Align the N$ in "Total:" in same position as in Subtotal
+        $totLblLeft = "Total:";
+        $totLblAmt = number_format($totalWithVat, 2, '.', '');
+        $totLblRight = sprintf("N$%8s", $totLblAmt);
+        $pad = max(1, $receiptWidth - strlen($totLblLeft) - strlen($totLblRight));
+        $printer->text($totLblLeft . str_repeat(' ', $pad) . $totLblRight . "\n");
+        $printer->selectPrintMode(); // Reset to normal after
+        $printer->setEmphasis(false);
+
+        $gratuity = receipt_resolve_tab_gratuity_for_print($orderData, $gratuityFromTabLines);
+        if ($gratuity <= 0.005 && !empty($orderData['gratuity_percent_applied']) && $lineSum > 0.005) {
+            $gratuity = round($lineSum * (floatval($orderData['gratuity_percent_applied']) / 100), 2);
+        }
+        if ($gratuity <= 0.0 && empty($orderData['gratuity_percent_applied']) && !empty($orderData['payments']) && is_array($orderData['payments'])) {
+            foreach ($orderData['payments'] as $p) {
+                $gratuity += floatval($p['tip_amount'] ?? 0);
+            }
+        }
+        $gratuity = round($gratuity, 2);
+        // #region agent log
+        debug833f8f_log('receipt.php:copyGratuityDecision', 'Copy receipt gratuity totals computed', [
+            'gratuity' => $gratuity,
+            'gratuityFromTabLines' => $gratuityFromTabLines,
+            'gratuity_percent_applied' => $orderData['gratuity_percent_applied'] ?? null,
+            'gratuity_included_in_total' => $orderData['gratuity_included_in_total'] ?? null,
+            'willPrintGratuityLine' => ($gratuity > 0.005),
+            'totalWithVat' => $totalWithVat,
+        ], 'C');
+        // #endregion
+        if ($gratuity > 0.005) {
+            $gLab = receipt_format_gratuity_label($orderData);
+            $printer->text($lineLabelAmount($gLab . ':', $gratuity));
+        }
+        $grandTotal = $totalWithVat + ($gratuity > 0.005 ? $gratuity : 0);
+        // Highlight grand total as the final monetary line (bold + double-height).
+        $printer->setEmphasis(true);
+        $printer->selectPrintMode(
+            Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED
+        );
+        $gLeft = 'Grand total:';
+        $gAmt = number_format($grandTotal, 2, '.', '');
+        $gRight = sprintf("N$%8s", $gAmt);
+        $gPad = max(1, $receiptWidth - strlen($gLeft) - strlen($gRight));
+        $printer->text($gLeft . str_repeat(' ', $gPad) . $gRight . "\n");
+        $printer->selectPrintMode(); // Reset to normal after
+        $printer->setEmphasis(false);
+        $printer->text($separatorLine('thin'));
+        $printer->feed(1);
+
+        $cashierU = $orderData['cashier_username'] ?? 'Unknown';
+        $printer->text("Server: " . $cashierU . "\n");
+        $printer->text("Cashier: " . $cashierU . "\n");
+        $printer->selectPrintMode(Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
+        $printer->text("Table: " . ($orderData['tab_name'] ?? 'N/A') . "\n");
+        $printer->selectPrintMode(Printer::MODE_EMPHASIZED);
+        $printer->text("Order #: " . ($orderData['tab_id'] ?? 'N/A') . "\n");
+        $printer->selectPrintMode();
+        $orderOpenedTime = $resolveOpenedTime($orderData);
+        if ($orderOpenedTime !== '') {
+            $printer->text("Order started: " . $orderOpenedTime . "\n");
+        }
+        $printer->text($separatorLine('thin'));
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text(date('j F Y g:i A') . "\n");
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $rnum = (string)($orderData['receipt_number'] ?? ($orderData['tab_id'] ?? ''));
+        $rcopy = (string)($orderData['receipt_copy_number'] ?? '1');
+        $lab = 'Receipt number:';
+        $rv = $rnum;
+        $pad = max(1, $receiptWidth - strlen($lab) - strlen($rv));
+        $printer->text($lab . str_repeat(' ', $pad) . $rv . "\n");
+        $lab2 = 'Receipt copy #:';
+        $pad2 = max(1, $receiptWidth - strlen($lab2) - strlen($rcopy));
+        $printer->text($lab2 . str_repeat(' ', $pad2) . $rcopy . "\n");
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text($businessInfo['footer_text'] . "\n");
+        $printer->feed(3);
     } else if (isset($orderData['is_balance_receipt']) && $orderData['is_balance_receipt']) {
-        // Check if this is a tab balance receipt or credit sale balance receipt
-        if (isset($orderData['is_tab_balance_receipt']) && $orderData['is_tab_balance_receipt']) {
+        // Check if this is a lay-bye statement, tab balance receipt, or credit sale balance receipt
+        if (isset($orderData['is_laybye_balance_receipt']) && $orderData['is_laybye_balance_receipt']) {
+            $printer->setJustification(Printer::JUSTIFY_CENTER);
+            $printer->selectPrintMode(Printer::MODE_EMPHASIZED);
+            $printer->text("LAY-BYE STATEMENT\n");
+            $printer->selectPrintMode();
+            $printer->feed();
+            $printer->setJustification(Printer::JUSTIFY_LEFT);
+            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text(sprintf("%-12s %s\n", "Reference:", $orderData['laybye_reference'] ?? 'N/A'));
+            if (!empty($orderData['creditor_name']) && ($orderData['creditor_name'] ?? '') !== 'N/A') {
+                $printer->text(sprintf("%-12s %s\n", "Customer:", $orderData['creditor_name']));
+            }
+            $printer->text(sprintf("%-12s %s\n", "Status:", $orderData['laybye_status'] ?? 'N/A'));
+            $printer->text(sprintf("%-12s %s\n", "Plan:", $orderData['laybye_plan_frequency'] ?? 'N/A'));
+            if (!empty($orderData['laybye_next_due_date'])) {
+                $printer->text(sprintf("%-12s %s\n", "Next due:", $orderData['laybye_next_due_date']));
+            }
+            $printer->text(sprintf("%-12s N$%8.2f\n", "Goods total:", floatval($orderData['laybye_goods_total'] ?? 0)));
+            $printer->text(sprintf("%-12s N$%8.2f\n", "Deposit:", floatval($orderData['laybye_deposit_amount'] ?? 0)));
+            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->feed();
+
+            if (isset($orderData['items']) && !empty($orderData['items'])) {
+                $printer->setEmphasis(true);
+                $printer->text("GOODS ON LAY-BYE\n");
+                $printer->setEmphasis(false);
+                $printer->text($separatorLine('thin'));
+                $itemsTotal = 0;
+                foreach ($orderData['items'] as $item) {
+                    $itemName = $item['name'] ?? 'Item';
+                    $qty = intval($item['quantity'] ?? 1);
+                    $unitPrice = isset($item['unit_price']) ? floatval($item['unit_price']) : (floatval($item['price']) / max(1, $qty));
+                    $itemTotal = floatval($item['price']);
+                    $itemsTotal += $itemTotal;
+                    $printItemRow($printer, $qty, $itemName, $itemTotal);
+                }
+                $printer->text($separatorLine('thin'));
+                $printer->setEmphasis(true);
+                $printer->text($lineLabelAmount("ITEMS TOTAL:", $itemsTotal));
+                $printer->setEmphasis(false);
+                $printer->text($separatorLine('thin'));
+                $printer->feed();
+            }
+
+            if (!empty($orderData['laybye_payment_lines']) && is_array($orderData['laybye_payment_lines'])) {
+                $printer->setEmphasis(true);
+                $printer->text("PAYMENT HISTORY\n");
+                $printer->setEmphasis(false);
+                $printer->text($separatorLine('thin'));
+                foreach ($orderData['laybye_payment_lines'] as $line) {
+                    $ln = $line;
+                    if (strlen($ln) > $receiptWidth) {
+                        $ln = substr($ln, 0, $receiptTruncate) . '...';
+                    }
+                    $printer->text($ln . "\n");
+                }
+                $printer->text($separatorLine('thin'));
+                $printer->feed();
+            }
+
+            $printer->setEmphasis(true);
+            $printer->text($separatorLine('heavy'));
+            $printer->text($lineLabelAmount("BALANCE DUE:", floatval($orderData['total_balance'] ?? 0)));
+            $printer->setEmphasis(false);
+            $printer->text($separatorLine('heavy'));
+            $printer->feed(1);
+        } else if (isset($orderData['is_tab_balance_receipt']) && $orderData['is_tab_balance_receipt']) {
             // TAB BALANCE RECEIPT - 48 chars
             $printer->setJustification(Printer::JUSTIFY_CENTER);
             $printer->selectPrintMode(Printer::MODE_EMPHASIZED);
@@ -1735,48 +2560,78 @@ try {
             $printer->selectPrintMode();
             $printer->feed();
             $printer->setJustification(Printer::JUSTIFY_LEFT);
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             $printer->text(sprintf("%-10s %s\n", "Tab:", $orderData['tab_name'] ?? 'N/A'));
             if (isset($orderData['creditor_name']) && $orderData['creditor_name'] !== 'N/A') {
                 $printer->text(sprintf("%-10s %s\n", "Client:", $orderData['creditor_name']));
             }
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             $printer->feed();
             
             // Print outstanding items
             if (isset($orderData['items']) && !empty($orderData['items'])) {
                 $printer->setEmphasis(true);
+                $printItemHeader($printer);
                 $printer->setEmphasis(false);
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                $printer->text($separatorLine('thin'));
                 
                 $itemsTotal = 0;
+                $balanceReceiptGratuity = 0.0;
                 foreach ($orderData['items'] as $item) {
-                    $itemName = $item['name'];
-                    if (strlen($itemName) > ($receiptWidth - 4)) {
-                        $itemName = substr($itemName, 0, ($receiptWidth - 7)) . '...';
-                    }
+                    $itemName = isset($item['name']) ? trim((string) $item['name']) : '';
                     $qty = intval($item['quantity']);
-                    $unitPrice = isset($item['unit_price']) ? floatval($item['unit_price']) : (floatval($item['price']) / $qty);
+                    $unitPrice = isset($item['unit_price']) ? floatval($item['unit_price']) : (floatval($item['price']) / max(1, $qty));
                     $itemTotal = floatval($item['price']);
+                    if ($itemName === 'Gratuity') {
+                        $balanceReceiptGratuity += $itemTotal;
+                        continue;
+                    }
                     $itemsTotal += $itemTotal;
-                    
-                    $printer->text($itemName . "\n");
-                    $printer->text(sprintf("  %dx N$%.2f = N$%.2f\n", $qty, $unitPrice, $itemTotal));
+                    $displayName = $item['name'] ?? '';
+                    $printItemRow($printer, $qty, $displayName, $itemTotal);
                 }
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                if ($balanceReceiptGratuity > 0.0001) {
+                    $printer->text($separatorLine('thin'));
+                    $gPctRaw = $orderData['gratuity_percent_applied'] ?? null;
+                    $gLab = 'Gratuity';
+                    if ($gPctRaw !== null && $gPctRaw !== '') {
+                        $gPctStr = rtrim(rtrim(number_format((float) $gPctRaw, 2, '.', ''), '0'), '.');
+                        if ($gPctStr !== '' && $gPctStr !== '.') {
+                            $gLab .= " ({$gPctStr}%)";
+                        }
+                    }
+                    $printer->text($lineLabelAmount($gLab . ':', round($balanceReceiptGratuity, 2)));
+                    $itemsTotal += round($balanceReceiptGratuity, 2);
+                } else {
+                    $tabGratuityField = round(floatval($orderData['gratuity'] ?? 0), 2);
+                    if ($tabGratuityField > 0.0001) {
+                        $printer->text($separatorLine('thin'));
+                        $gPctRaw = $orderData['gratuity_percent_applied'] ?? null;
+                        $gLab = 'Gratuity';
+                        if ($gPctRaw !== null && $gPctRaw !== '') {
+                            $gPctStr = rtrim(rtrim(number_format((float) $gPctRaw, 2, '.', ''), '0'), '.');
+                            if ($gPctStr !== '' && $gPctStr !== '.') {
+                                $gLab .= " ({$gPctStr}%)";
+                            }
+                        }
+                        $printer->text($lineLabelAmount($gLab . ':', $tabGratuityField));
+                        $itemsTotal += $tabGratuityField;
+                    }
+                }
+                $printer->text($separatorLine('thin'));
                 $printer->setEmphasis(true);
-                $printer->text(sprintf("%-20s N$%8.2f\n", "ITEMS TOTAL:", $itemsTotal));
+                $printer->text($lineLabelAmount("ITEMS TOTAL:", $itemsTotal));
                 $printer->setEmphasis(false);
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                $printer->text($separatorLine('thin'));
                 $printer->feed();
             }
             
             // Print total balance
             $printer->setEmphasis(true);
-            $printer->text(str_repeat('=', $receiptWidth) . "\n");
-            $printer->text(sprintf("%-20s N$%8.2f\n", "OUTSTANDING BALANCE:", $orderData['total_balance']));
+            $printer->text($separatorLine('heavy'));
+            $printer->text($lineLabelAmount("OUTSTANDING BALANCE:", $orderData['total_balance']));
             $printer->setEmphasis(false);
-            $printer->text(str_repeat('=', $receiptWidth) . "\n");
+            $printer->text($separatorLine('heavy'));
             // Reduced from feed(2) to feed(1) to save paper
             $printer->feed(1);
         } else {
@@ -1887,7 +2742,7 @@ try {
         // Only show date and order type for non-tab sales
         $isTabSale = isset($orderData['table_id']) || isset($orderData['tab_id']);
         if (!$isTabSale || isset($orderData['is_payment_receipt'])) {
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             $printer->text("Date: " . date('Y-m-d H:i') . "\n");
             // Optional order type (dine-in vs takeaway) for restaurant POS
             if (isset($orderData['order_type'])) {
@@ -1898,13 +2753,37 @@ try {
             
             // Items section header (only for non-tab sales)
             $printer->setEmphasis(true);
-            $printer->text(sprintf("%-20s %3s %9s\n", "Item", "Qty", "Amount"));
+            $printItemHeader($printer);
             $printer->setEmphasis(false);
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
         } else {
             // For tab sales, items come directly after header (no extra spacing)
         }
         
+        $isPaymentReceiptNow = !empty($orderData['is_payment_receipt']);
+        $gratuityFromItemLines = 0.0;
+        $rawLinesTotal = 0.0;
+        foreach (($orderData['items'] ?? []) as $_posItem) {
+            $lineAmt = floatval($_posItem['price'] ?? 0);
+            if (trim((string) ($_posItem['name'] ?? '')) === 'Gratuity') {
+                $gratuityFromItemLines += $lineAmt;
+                if ($isPaymentReceiptNow) {
+                    continue;
+                }
+            }
+            $rawLinesTotal += $lineAmt;
+        }
+        $posGratuityAmt = round(floatval($orderData['gratuity_amount'] ?? 0), 2);
+        $posGratuityIncluded = isset($orderData['gratuity_included_in_total']) ? ((int) $orderData['gratuity_included_in_total'] !== 0) : true;
+        if ($isPaymentReceiptNow) {
+            $paymentTipsField = round(floatval($orderData['tips'] ?? 0), 2);
+            $posGratuityAmt = receipt_resolve_tab_gratuity_for_print($orderData, $gratuityFromItemLines);
+            $vatBaseSubtotal = $rawLinesTotal;
+        } else {
+            $stripGratuityFromVatBase = ($posGratuityAmt > 0.0001 && $posGratuityIncluded);
+            $vatBaseSubtotal = $stripGratuityFromVatBase ? max(0.0, round($rawLinesTotal - $posGratuityAmt, 2)) : $rawLinesTotal;
+        }
+
         $subtotal = 0;
         
         // For tab sales, show "ITEMS" header
@@ -1920,6 +2799,12 @@ try {
             $price = $item['price'] / $quantity;
             $amount = $item['price'];
             $subtotal += $amount;
+
+            $isKitchenTicketItems = $isTabSale && !isset($orderData['is_payment_receipt']);
+            $skipGratuityLinePrint = trim((string) $name) === 'Gratuity' && (
+                $isPaymentReceiptNow
+                || (!$isKitchenTicketItems && $posGratuityAmt > 0.0001)
+            );
             
             // For tab sales (kitchen tickets), use simple format: "x1 Ice Tea"
             if ($isTabSale && !isset($orderData['is_payment_receipt'])) {
@@ -1929,29 +2814,14 @@ try {
                     $name = substr($name, 0, $maxTabItemLen - 3) . '...';
                 }
                 $printer->text("x" . $quantity . " " . $name . "\n");
-            } else {
-                // Regular receipt format
-                // Print item name (truncate if too long)
-                if (strlen($name) > $receiptWidth) {
-                    $name = substr($name, 0, $receiptTruncate) . '...';
-                }
-                $printer->text($name . "\n");
-                
-                // Print quantity x price and amount on next line
-                $qtyPrice = sprintf("%d x N$%.2f", $quantity, $price);
-                $amountText = sprintf("N$%.2f", $amount);
-                
-                // Ensure proper alignment within receipt width
-                $spaces = $receiptWidth - strlen($qtyPrice) - strlen($amountText);
-                if ($spaces < 1) $spaces = 1;
-                
-                $printer->text($qtyPrice . str_repeat(' ', $spaces) . $amountText . "\n");
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            } elseif (!$skipGratuityLinePrint) {
+                // Regular receipt format with fixed-width columns and wrapped descriptions
+                $printItemRow($printer, $quantity, $name, $amount);
             }
         }
         
-        // Totals section - simplified for tab sales
-        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        // Separate totals block from items with one divider line
+        $printer->text($separatorLine('thin'));
         
         // For payment receipts, show total and payment info
         if (isset($orderData['is_payment_receipt']) && $orderData['is_payment_receipt']) {
@@ -1960,52 +2830,141 @@ try {
             $paymentVatRate = isset($orderData['vat_rate']) ? floatval($orderData['vat_rate']) : $vatRate;
             $tips = floatval($orderData['tips'] ?? 0);
             
-            // Calculate VAT for payment receipt
+            // Calculate VAT for payment receipt; line shows VAT: RATE% (excl.)/(incl.) + amount (omitted when no VAT)
             $vatAmount = 0;
-            $displaySubtotal = $subtotal;
-            $displayTotal = $subtotal;
+            $displaySubtotal = $vatBaseSubtotal;
+            $paymentTotalWithVat = $vatBaseSubtotal;
+            $paymentVatLineAmount = 0.0;
             
-            if ($paymentVatInclusive === 'exclusive') {
-                // Prices exclude VAT, so total is just the subtotal (VAT not included)
-                $vatAmount = $subtotal * ($paymentVatRate / 100);
-                $displaySubtotal = $subtotal;
-                $displayTotal = $subtotal; // Total does not include VAT when VAT is excluded
-                
-                // Don't show VAT breakdown for exclusive - just show total
+            if ($paymentVatInclusive === 'exclusive' || $paymentVatInclusive === '') {
+                $vatAmount = $vatBaseSubtotal * ($paymentVatRate / 100);
+                $displaySubtotal = $vatBaseSubtotal;
+                $paymentTotalWithVat = $vatBaseSubtotal + $vatAmount;
+                $paymentVatLineAmount = $vatAmount;
+            } elseif ($paymentVatInclusive === 'none') {
+                $displaySubtotal = $vatBaseSubtotal;
+                $paymentTotalWithVat = $vatBaseSubtotal;
+                $paymentVatLineAmount = 0.0;
+            } elseif ($paymentVatInclusive === 'inclusive') {
+                $displaySubtotal = $vatBaseSubtotal;
+                $paymentTotalWithVat = $vatBaseSubtotal;
+                $paymentVatLineAmount = $vatBaseSubtotal - ($vatBaseSubtotal / (1 + ($paymentVatRate / 100)));
+                if ($paymentVatLineAmount < 0) {
+                    $paymentVatLineAmount = 0.0;
+                }
+                $paymentVatLineAmount = round($paymentVatLineAmount, 2);
             } else {
-                // Prices include VAT, so show VAT breakdown
-                $vatAmount = $subtotal - ($subtotal / (1 + ($paymentVatRate / 100)));
-                $displaySubtotal = $subtotal - $vatAmount;
-                $displayTotal = $subtotal;
-                
-                // Show subtotal (exclusive)
-                $printer->text(sprintf("%-20s N$%8.2f\n", "Subtotal (ex VAT):", $displaySubtotal));
-                // Show VAT
-                $printer->text(sprintf("%-20s N$%8.2f\n", "VAT (" . number_format($paymentVatRate, 2) . "%):", $vatAmount));
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                $vatAmount = $vatBaseSubtotal * ($paymentVatRate / 100);
+                $displaySubtotal = $vatBaseSubtotal;
+                $paymentTotalWithVat = $vatBaseSubtotal + $vatAmount;
+                $paymentVatLineAmount = $vatAmount;
             }
 
-            // Tips (optional)
-            if ($tips > 0) {
-                $printer->text(sprintf("%-20s N$%8.2f\n", "Tips:", $tips));
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
-                $displayTotal += $tips;
+            // Match copy-receipt totals presentation.
+            $subtotalLabel = "Subtotal:";
+            $subtotalVal = sprintf("N$%8.2f", $displaySubtotal);
+            $subtotalPad = max(1, $receiptWidth - strlen($subtotalLabel) - strlen($subtotalVal));
+            $printer->text($subtotalLabel . str_repeat(' ', $subtotalPad) . $subtotalVal . "\n");
+
+            $paymentVatPrinted = strtolower((string) $paymentVatInclusive) !== 'none';
+            if ($paymentVatPrinted) {
+                $pPct = rtrim(rtrim(number_format($paymentVatRate, 2, '.', ''), '0'), '.');
+                if ($pPct === '' || $pPct === '.') {
+                    $pPct = '0';
+                }
+                if ($paymentVatInclusive === 'inclusive') {
+                    $paymentVatLabel = 'VAT: ' . $pPct . '% (incl.):';
+                } else {
+                    $paymentVatLabel = 'VAT: ' . $pPct . '% (excl.):';
+                }
+                $vatVal = sprintf("N$%8.2f", $paymentVatLineAmount);
+                $vatPad = max(1, $receiptWidth - strlen($paymentVatLabel) - strlen($vatVal));
+                $printer->text($paymentVatLabel . str_repeat(' ', $vatPad) . $vatVal . "\n");
+            }
+
+            $printer->setEmphasis(true);
+            $printer->selectPrintMode(
+                Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED
+            );
+            $totLblLeft = "Total:";
+            $totLblAmt = number_format($paymentTotalWithVat, 2, '.', '');
+            $totLblRight = sprintf("N$%8s", $totLblAmt);
+            $totPad = max(1, $receiptWidth - strlen($totLblLeft) - strlen($totLblRight));
+            $printer->text($totLblLeft . str_repeat(' ', $totPad) . $totLblRight . "\n");
+            $printer->selectPrintMode();
+            $printer->setEmphasis(false);
+
+            $paymentGrandTotal = $paymentTotalWithVat;
+            // #region agent log
+            debug833f8f_log('receipt.php:paymentGratuityDecision', 'Payment receipt gratuity totals computed', [
+                'posGratuityAmt' => $posGratuityAmt,
+                'gratuityFromItemLines' => $gratuityFromItemLines,
+                'paymentTipsField' => $paymentTipsField ?? null,
+                'paymentTotalWithVat' => $paymentTotalWithVat,
+                'gratuity_percent_applied' => $orderData['gratuity_percent_applied'] ?? null,
+                'gratuity_included_in_total' => $orderData['gratuity_included_in_total'] ?? null,
+                'willPrintGratuityLine' => ($posGratuityAmt > 0.005),
+                'tips' => $tips,
+            ], 'C');
+            // #endregion
+            if ($posGratuityAmt > 0.005) {
+                $gLab = receipt_format_gratuity_label($orderData);
+                $printer->text($lineLabelAmount($gLab . ':', $posGratuityAmt));
+                $paymentGrandTotal = round($paymentGrandTotal + $posGratuityAmt, 2);
+            }
+
+            if ($paymentTipsField > 0.005) {
+                $printer->text($lineLabelAmount('Tips:', $paymentTipsField));
+                $paymentGrandTotal = round($paymentGrandTotal + $paymentTipsField, 2);
             }
             
-            // Show total for payment receipt
+            // Final highlighted grand total (bold + double-height).
             $printer->setEmphasis(true);
-            $totalText = sprintf("PAID AMOUNT: N$ %8.2f", $displayTotal);
-            $spaces = $receiptWidth - strlen($totalText);
-            $printer->text(str_repeat(' ', $spaces) . $totalText . "\n");
+            $printer->selectPrintMode(
+                Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED
+            );
+            $gLeft = 'Grand total:';
+            $gAmt = number_format($paymentGrandTotal, 2, '.', '');
+            $gRight = sprintf("N$%8s", $gAmt);
+            $gPad = max(1, $receiptWidth - strlen($gLeft) - strlen($gRight));
+            $printer->text($gLeft . str_repeat(' ', $gPad) . $gRight . "\n");
+            $printer->selectPrintMode();
             $printer->setEmphasis(false);
+            $printer->text($separatorLine('thin'));
             $printer->feed();
+
+            // Copy-receipt identity block for payment bill receipts.
+            $cashierU = $orderData['cashier_username'] ?? 'Unknown';
+            $printer->text("Server: " . $cashierU . "\n");
+            $printer->text("Cashier: " . $cashierU . "\n");
+            $printer->selectPrintMode(Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
+            $tableLabel = $orderData['tab_name'] ?? $orderData['table_name'] ?? ('Table ' . ($orderData['table_id'] ?? $orderData['tab_id'] ?? 'N/A'));
+            $printer->text("Table: " . $tableLabel . "\n");
+            $printer->selectPrintMode(Printer::MODE_EMPHASIZED);
+            $orderNo = $orderData['tab_id'] ?? $orderData['order_id'] ?? $orderData['table_id'] ?? 'N/A';
+            $printer->text("Order #: " . $orderNo . "\n");
+            $printer->selectPrintMode();
+            $paymentOpenedTime = $resolveOpenedTime($orderData);
+            if ($paymentOpenedTime !== '') {
+                $printer->text("Order started: " . $paymentOpenedTime . "\n");
+            }
+            $paymentClosedTime = $resolveClosedPaidTime($orderData);
+            if ($paymentClosedTime === '') {
+                $paymentClosedTime = date('g:i A');
+            }
+            if ($paymentClosedTime !== '') {
+                $printer->text("Order closed: " . $paymentClosedTime . "\n");
+            }
+            $printer->text($separatorLine('thin'));
             
             // Payment information section for payment receipts
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             $printer->setEmphasis(true);
             $printer->text("PAYMENT INFORMATION\n");
             $printer->setEmphasis(false);
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
+
+            $tenderTotal = isset($orderData['total']) ? round(floatval($orderData['total']), 2) : $paymentGrandTotal;
             
             // Display payment method details
             if (isset($orderData['payment_method'])) {
@@ -2013,7 +2972,7 @@ try {
                     $printer->text("Method: Cash\n");
                     if (isset($orderData['cash_received'])) {
                         $printer->text(sprintf("%-10s N$%8.2f\n", "Paid:", $orderData['cash_received']));
-                        $change = max(0, $orderData['cash_received'] - $displayTotal);
+                        $change = max(0, $orderData['cash_received'] - $tenderTotal);
                         if ($change > 0) {
                             $printer->text(sprintf("%-10s N$%8.2f\n", "Change:", $change));
                         }
@@ -2030,10 +2989,10 @@ try {
                         }
                         $printer->text(sprintf("%-10s %s\n", "Ref:", $ref));
                     }
-                    $printer->text(sprintf("%-10s N$%8.2f\n", "Paid:", $displayTotal));
+                    $printer->text(sprintf("%-10s N$%8.2f\n", "Paid:", $tenderTotal));
                 } else if ($orderData['payment_method'] === 'mixed') {
                     $printer->text("Method: Mixed Payment\n");
-                    $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                    $printer->text($separatorLine('thin'));
                     
                     // Cash portion
                     if (isset($orderData['cash_amount']) && $orderData['cash_amount'] > 0) {
@@ -2055,8 +3014,12 @@ try {
                         }
                     }
                     
-                    $printer->text(str_repeat('-', $receiptWidth) . "\n");
-                    $printer->text(sprintf("%-10s N$%8.2f\n", "Total:", $displayTotal));
+                    $printer->text($separatorLine('thin'));
+                    $printer->text($lineLabelAmount("Total:", $tenderTotal));
+                    $mixedChange = receipt_mixed_payment_change($orderData, $tenderTotal);
+                    if ($mixedChange > 0.004) {
+                        $printer->text(sprintf("%-10s N$%8.2f\n", "Change:", $mixedChange));
+                    }
                 }
             }
             $printer->feed();
@@ -2070,46 +3033,114 @@ try {
             // Add extra feed for kitchen tickets to ensure content is fully printed before cut
             $printer->feed(2);
         } else {
-            // Regular receipts with VAT breakdown
-            // Calculate VAT based on settings
+            // Regular receipts: print VAT line when business uses VAT (exclusive or inclusive)
+            $receiptVatMode = isset($orderData['vat_inclusive']) ? $orderData['vat_inclusive'] : $vatInclusive;
             $vatAmount = 0;
-            $displaySubtotal = $subtotal;
-            $displayTotal = $subtotal;
+            $displaySubtotal = $vatBaseSubtotal;
+            $displayTotal = $vatBaseSubtotal;
+            $regularVatLineAmount = 0.0;
+            $tips = floatval($orderData['tips'] ?? 0);
             
-            if ($vatInclusive === 'exclusive') {
-                // Prices exclude VAT, so total is just the subtotal (VAT not included)
-                $vatAmount = $subtotal * ($vatRate / 100);
-                $displaySubtotal = $subtotal;
-                $displayTotal = $subtotal; // Total does not include VAT when VAT is excluded
-                
-                // Don't show VAT breakdown for exclusive - just show total
+            if ($receiptVatMode === 'exclusive' || $receiptVatMode === '') {
+                $vatAmount = $vatBaseSubtotal * ($vatRate / 100);
+                $displaySubtotal = $vatBaseSubtotal;
+                $displayTotal = $vatBaseSubtotal;
+                $regularVatLineAmount = $vatAmount;
+            } elseif ($receiptVatMode === 'none') {
+                $displaySubtotal = $vatBaseSubtotal;
+                $displayTotal = $vatBaseSubtotal;
+                $regularVatLineAmount = 0.0;
+            } elseif ($receiptVatMode === 'inclusive') {
+                $displaySubtotal = $vatBaseSubtotal;
+                $displayTotal = $vatBaseSubtotal;
+                $regularVatLineAmount = $vatBaseSubtotal - ($vatBaseSubtotal / (1 + ($vatRate / 100)));
+                if ($regularVatLineAmount < 0) {
+                    $regularVatLineAmount = 0.0;
+                }
+                $regularVatLineAmount = round($regularVatLineAmount, 2);
             } else {
-                // Prices include VAT, so show VAT breakdown
-                $vatAmount = $subtotal - ($subtotal / (1 + ($vatRate / 100)));
-                $displaySubtotal = $subtotal - $vatAmount;
-                $displayTotal = $subtotal;
-                
-                // Show subtotal (exclusive)
-                $printer->text(sprintf("%-20s N$%8.2f\n", "Subtotal (ex VAT):", $displaySubtotal));
-                // Show VAT
-                $printer->text(sprintf("%-20s N$%8.2f\n", "VAT (" . number_format($vatRate, 2) . "%):", $vatAmount));
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
+                $vatAmount = $vatBaseSubtotal * ($vatRate / 100);
+                $displaySubtotal = $vatBaseSubtotal;
+                $displayTotal = $vatBaseSubtotal;
+                $regularVatLineAmount = $vatAmount;
             }
-            
-            // Show total
+
+            $subtotalLabel = "Subtotal:";
+            $subtotalVal = sprintf("N$%8.2f", $displaySubtotal);
+            $subtotalPad = max(1, $receiptWidth - strlen($subtotalLabel) - strlen($subtotalVal));
+            $printer->text($subtotalLabel . str_repeat(' ', $subtotalPad) . $subtotalVal . "\n");
+
+            $regularVatPrinted = strtolower((string) $receiptVatMode) !== 'none';
+            if ($regularVatPrinted) {
+                $rPct = rtrim(rtrim(number_format($vatRate, 2, '.', ''), '0'), '.');
+                if ($rPct === '' || $rPct === '.') {
+                    $rPct = '0';
+                }
+                if ($receiptVatMode === 'inclusive') {
+                    $regularVatLabel = 'VAT: ' . $rPct . '% (incl.):';
+                } else {
+                    $regularVatLabel = 'VAT: ' . $rPct . '% (excl.):';
+                }
+                $vatVal = sprintf("N$%8.2f", $regularVatLineAmount);
+                $vatPad = max(1, $receiptWidth - strlen($regularVatLabel) - strlen($vatVal));
+                $printer->text($regularVatLabel . str_repeat(' ', $vatPad) . $vatVal . "\n");
+            }
+
+            if ($posGratuityAmt > 0.005) {
+                $gPctRaw = $orderData['gratuity_percent_applied'] ?? null;
+                $gPctStr = '';
+                if ($gPctRaw !== null && $gPctRaw !== '') {
+                    $gPctStr = rtrim(rtrim(number_format((float) $gPctRaw, 2, '.', ''), '0'), '.');
+                }
+                $gLab = 'Gratuity' . ($gPctStr !== '' && $gPctStr !== '.' ? " ({$gPctStr}%)" : '');
+                $gLab .= $posGratuityIncluded ? ', incl. in total' : ', not incl. in due';
+                $printer->text($lineLabelAmount($gLab . ':', $posGratuityAmt));
+                $printer->text($separatorLine('thin'));
+                if ($posGratuityIncluded) {
+                    $displayTotal = round($displayTotal + $posGratuityAmt, 2);
+                }
+            }
+
             $printer->setEmphasis(true);
-            $totalText = sprintf("TOTAL: N$ %8.2f", $displayTotal);
-            $spaces = $receiptWidth - strlen($totalText);
-            $printer->text(str_repeat(' ', $spaces) . $totalText . "\n");
+            $printer->selectPrintMode(
+                Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED
+            );
+            $totLblLeft = "Total:";
+            $totLblAmt = number_format($displayTotal, 2, '.', '');
+            $totLblRight = sprintf("N$%8s", $totLblAmt);
+            $totPad = max(1, $receiptWidth - strlen($totLblLeft) - strlen($totLblRight));
+            $printer->text($totLblLeft . str_repeat(' ', $totPad) . $totLblRight . "\n");
+            $printer->selectPrintMode();
             $printer->setEmphasis(false);
+
+            $regularGrandTotal = $displayTotal;
+            if ($tips > 0) {
+                $printer->text($lineLabelAmount("Tips:", $tips));
+                $regularGrandTotal = round($regularGrandTotal + $tips, 2);
+            }
+
+            $printer->setEmphasis(true);
+            $printer->selectPrintMode(
+                Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED
+            );
+            $gLeft = 'Grand total:';
+            $gAmt = number_format($regularGrandTotal, 2, '.', '');
+            $gRight = sprintf("N$%8s", $gAmt);
+            $gPad = max(1, $receiptWidth - strlen($gLeft) - strlen($gRight));
+            $printer->text($gLeft . str_repeat(' ', $gPad) . $gRight . "\n");
+            $printer->selectPrintMode();
+            $printer->setEmphasis(false);
+            $printer->text($separatorLine('thin'));
             $printer->feed();
             
             // Payment information section (for non-tab sales and payment receipts)
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
             $printer->setEmphasis(true);
             $printer->text("PAYMENT INFORMATION\n");
             $printer->setEmphasis(false);
-            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text($separatorLine('thin'));
+
+            $tenderTotal = isset($orderData['total']) ? round(floatval($orderData['total']), 2) : $regularGrandTotal;
             
             if (isset($orderData['creditor_id'])) {
                 // Credit payment
@@ -2240,7 +3271,7 @@ try {
                 $ref = substr($ref, 0, $maxRefLen - 3) . '...';
             }
             $printer->text(sprintf("%-10s %s\n", "Ref:", $ref));
-            $printer->text(sprintf("%-10s N$%8.2f\n", "Paid:", $subtotal));
+            $printer->text(sprintf("%-10s N$%8.2f\n", "Paid:", $tenderTotal));
         } else if (isset($orderData['payment_method']) && $orderData['payment_method'] === 'mixed') {
             // Mixed payment (Cash + EFT)
             $printer->text("Method: Mixed Payment\n");
@@ -2257,22 +3288,21 @@ try {
                 if (isset($orderData['wallet_provider'])) {
                     $printer->text(sprintf("%-10s %s\n", "Provider:", $orderData['wallet_provider']));
                 }
-                    if (isset($orderData['transaction_ref']) && !empty($orderData['transaction_ref'])) {
-                        $ref = $orderData['transaction_ref'];
-                        if (strlen($ref) > ($receiptWidth - 12)) {
-                            $ref = substr($ref, 0, ($receiptWidth - 15)) . '...';
-                        }
-                        $printer->text(sprintf("%-10s %s\n", "Ref:", $ref));
+                if (isset($orderData['transaction_ref']) && !empty($orderData['transaction_ref'])) {
+                    $ref = $orderData['transaction_ref'];
+                    if (strlen($ref) > ($receiptWidth - 12)) {
+                        $ref = substr($ref, 0, ($receiptWidth - 15)) . '...';
                     }
+                    $printer->text(sprintf("%-10s %s\n", "Ref:", $ref));
                 }
+            }
                 
-                $printer->text(str_repeat('-', $receiptWidth) . "\n");
-                $printer->text(sprintf("%-10s N$%8.2f\n", "Total:", $subtotal));
+            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->text(sprintf("%-10s N$%8.2f\n", "Total:", $tenderTotal));
             
-            // Calculate and show change if cash amount is greater than total
-            if (isset($orderData['cash_amount']) && $orderData['cash_amount'] > $subtotal) {
-                $change = max(0, $orderData['cash_amount'] - $subtotal);
-                $changeText = sprintf("Change: %10s", "N$ " . number_format($change, 2));
+            $mixedChange = receipt_mixed_payment_change($orderData, $tenderTotal);
+            if ($mixedChange > 0.004) {
+                $changeText = sprintf("Change: %10s", "N$ " . number_format($mixedChange, 2));
                 $printer->text($changeText . "\n");
             }
         } else {
@@ -2280,14 +3310,15 @@ try {
             $printer->text("Method: Cash\n");
             $paidText = sprintf("Paid: %10s", "N$ " . number_format($orderData['cash_received'], 2));
             $printer->text($paidText . "\n");
-            $change = max(0, $orderData['cash_received'] - $subtotal);
+            $change = max(0, $orderData['cash_received'] - $tenderTotal);
             $changeText = sprintf("Change: %8s", "N$ " . number_format($change, 2));
             $printer->text($changeText . "\n");
-            }
+        }
+        
         }
         
         // Footer section - skip for kitchen tickets (tab sales)
-        if (!$isTabSale || $isPaymentReceipt) {
+        if (!$isTabSale || $isPaymentReceipt || !empty($orderData['is_tab_copy_receipt'])) {
             $printer->text(str_repeat('-', $receiptWidth) . "\n");
             $printer->setJustification(Printer::JUSTIFY_CENTER);
             $printer->text($businessInfo['footer_text'] . "\n");
@@ -2300,7 +3331,7 @@ try {
     try {
         // Ensure all content including footer is fully printed before cutting
         // For kitchen tickets (tab sales), add extra feed since footer is skipped
-        $isKitchenTicket = (isset($orderData['table_id']) || isset($orderData['tab_id'])) && !isset($orderData['is_payment_receipt']);
+        $isKitchenTicket = (isset($orderData['table_id']) || isset($orderData['tab_id'])) && !isset($orderData['is_payment_receipt']) && empty($orderData['is_tab_copy_receipt']);
         if ($isKitchenTicket) {
             $printer->feed(4); // Extra feed for kitchen tickets to prevent premature cutting
         } else {
@@ -2339,13 +3370,8 @@ try {
             $rawBytes = $connector->getData();
         }
 
-        header('Content-Type: application/json');
-        echo json_encode([
-            'success' => true,
-            'raw_base64' => base64_encode($rawBytes),
-            'order_data' => $orderData
-        ]);
-        exit;
+        $includeLogoInRaw = !$isTabSale || $isPaymentReceipt || !empty($orderData['is_tab_copy_receipt']);
+        emitRawModeJson($orderData, $rawBytes, $businessInfo, $receiptWidthMm, $includeLogoInRaw);
     }
 
     // Return success response with enriched orderData for Android interceptor
@@ -2366,12 +3392,7 @@ try {
             $db = new PDO('sqlite:info.db');
             $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
             if ($businessInfo) {
-                $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
-                $orderData['location'] = $businessInfo['location'] ?? '';
-                $orderData['phone'] = $businessInfo['phone'] ?? '';
-                $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
-                $orderData['vat_inclusive'] = $businessInfo['vat_inclusive'] ?? 'exclusive';
-                $orderData['vat_rate'] = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
+                enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
             }
         } catch (Exception $dbError) {
             // Ignore database errors in error handler

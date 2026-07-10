@@ -13,12 +13,15 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 ?>
 
 <?php
+require_once __DIR__ . '/../userdb_fingerprint_helpers.php';
 // Database connection
 $db = new PDO('sqlite:../user.db');
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+userdb_ensure_fingerprint_columns($db);
 
-
-// Fetch all managers, cashiers, and waitresses
-$users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'waitress') ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+// Fetch staff accounts including administrators
+$users = $db->query("SELECT * FROM users WHERE role IN ('admin', 'cashier', 'manager', 'waitress') ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+$currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 ?>
 
 <!DOCTYPE html>
@@ -65,21 +68,27 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
         </div>
         <div class="flex-1 ml-64 content">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <div class="flex justify-between items-center mb-8">
+                <div class="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between mb-8">
                     <h1 class="text-3xl font-bold">Account Management</h1>
-
-                    <a href="settings" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
-      <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-      </svg>
-      Go Back
-  </a>
-                    <a href="add_user" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md font-semibold text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                        </svg>
-                        Add User
-                    </a>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" id="btnBulkDelete" disabled
+                            class="inline-flex items-center px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:pointer-events-none">
+                            <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>
+                            Delete selected
+                        </button>
+                        <a href="add_user" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md font-semibold text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            Add User
+                        </a>
+                        <a href="settings" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            Back to Settings
+                        </a>
+                    </div>
                 </div>
 
                 <!-- Users Table -->
@@ -101,6 +110,7 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
                                         <div class="flex gap-2 items-center">
                                             <select id="roleFilter" class="py-2 px-3 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500">
                                                 <option value="">All Roles</option>
+                                                <option value="admin">Admin</option>
                                                 <option value="cashier">Cashier</option>
                                                 <option value="manager">Manager</option>
                                                 <option value="waitress">Waitress</option>
@@ -114,14 +124,20 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
                                     <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                                         <thead class="bg-gray-50 dark:bg-gray-700">
                                             <tr>
-                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(0)">
-                                                    ID <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                <th scope="col" class="px-4 py-3 w-12 text-center">
+                                                    <input type="checkbox" id="selectAllPage" title="Select all on this page" class="rounded border-gray-300 text-red-600 focus:ring-red-500">
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(1)">
-                                                    Username <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                    ID <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(2)">
+                                                    Username <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(3)">
                                                     Role <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(4)">
+                                                    Fingerprint <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Actions</th>
                                             </tr>
@@ -129,7 +145,7 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
                                         <tbody id="usersTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
                                             <?php if (empty($users)): ?>
                                                 <tr>
-                                                    <td colspan="4" class="px-6 py-12 text-center">
+                                                    <td colspan="6" class="px-6 py-12 text-center">
                                                         <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                                         <p class="text-gray-500 text-lg">No users found. Add your first user.</p>
                                                     </td>
@@ -139,16 +155,37 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
                                                     <tr class="user-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" 
                                                         data-user-id="<?= $user['id'] ?>"
                                                         data-username="<?= htmlspecialchars(strtolower($user['username'])) ?>"
-                                                        data-role="<?= strtolower($user['role']) ?>">
+                                                        data-role="<?= strtolower($user['role']) ?>"
+                                                        data-fingerprint="<?= (
+                                                            !empty(trim((string)($user['indexfinger'] ?? ''))) && !empty(trim((string)($user['middlefinger'] ?? '')))
+                                                        ) ? '1' : '0' ?>">
+                                                        <td class="px-4 py-4 whitespace-nowrap text-center">
+                                                            <?php $isSelf = ((int) $user['id'] === $currentUserId); ?>
+                                                            <input type="checkbox" class="user-select-cb rounded border-gray-300 text-red-600 focus:ring-red-500" value="<?= (int) $user['id'] ?>" aria-label="Select <?= htmlspecialchars($user['username'], ENT_QUOTES, 'UTF-8') ?>"<?= $isSelf ? ' disabled title="You cannot delete your own account"' : '' ?>>
+                                                        </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200"><?= $user['id'] ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200"><?= htmlspecialchars($user['username']) ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200">
-                                                            <span class="px-2 py-1 text-xs font-semibold rounded-full <?= 
-                                                                $user['role'] === 'manager' ? 'bg-purple-100 text-purple-800' : 
-                                                                ($user['role'] === 'waitress' ? 'bg-pink-100 text-pink-800' : 
-                                                                'bg-blue-100 text-blue-800') ?>">
+                                                            <span class="px-2 py-1 text-xs font-semibold rounded-full <?=
+                                                                $user['role'] === 'admin' ? 'bg-gray-800 text-white' :
+                                                                ($user['role'] === 'manager' ? 'bg-purple-100 text-purple-800' :
+                                                                ($user['role'] === 'waitress' ? 'bg-pink-100 text-pink-800' :
+                                                                'bg-blue-100 text-blue-800')) ?>">
                                                                 <?= ucfirst($user['role']) ?>
                                                             </span>
+                                                        </td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200">
+                                                            <?php
+                                                            $hasFp = !empty(trim((string)($user['indexfinger'] ?? ''))) && !empty(trim((string)($user['middlefinger'] ?? '')));
+                                                            ?>
+                                                            <?php if ($hasFp): ?>
+                                                            <span class="inline-flex items-center gap-1 text-teal-700" title="Fingerprint login enrolled">
+                                                                <i data-lucide="fingerprint" class="w-4 h-4"></i>
+                                                                <span class="text-xs font-medium">Enrolled</span>
+                                                            </span>
+                                                            <?php else: ?>
+                                                            <span class="text-xs text-gray-400">—</span>
+                                                            <?php endif; ?>
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium">
                                                             <div class="flex items-center justify-end gap-2">
@@ -198,6 +235,34 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
         let sortDirection = 'asc';
         let allRows = [];
         let filteredRows = [];
+        const selectedUserIds = new Set();
+
+        function updateBulkDeleteButton() {
+            const btn = document.getElementById('btnBulkDelete');
+            if (btn) btn.disabled = selectedUserIds.size === 0;
+        }
+
+        function syncRowCheckboxFromSet(row) {
+            const cb = row.querySelector('.user-select-cb');
+            if (!cb || cb.disabled) return;
+            const id = parseInt(cb.value, 10);
+            cb.checked = selectedUserIds.has(id);
+        }
+
+        function updateSelectAllPageState() {
+            const master = document.getElementById('selectAllPage');
+            const tableBody = document.getElementById('usersTableBody');
+            if (!master || !tableBody) return;
+            const boxes = [...tableBody.querySelectorAll('.user-select-cb:not(:disabled)')];
+            if (boxes.length === 0) {
+                master.checked = false;
+                master.indeterminate = false;
+                return;
+            }
+            const checked = boxes.filter(b => b.checked).length;
+            master.checked = checked === boxes.length && checked > 0;
+            master.indeterminate = checked > 0 && checked < boxes.length;
+        }
 
         // Initialize Lucide icons
         document.addEventListener('DOMContentLoaded', function() {
@@ -209,6 +274,69 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
             const tableBody = document.getElementById('usersTableBody');
             allRows = Array.from(tableBody.querySelectorAll('.user-row'));
             filteredRows = [...allRows];
+
+            tableBody.addEventListener('change', function(e) {
+                if (!e.target.classList.contains('user-select-cb') || e.target.disabled) return;
+                const id = parseInt(e.target.value, 10);
+                if (e.target.checked) {
+                    selectedUserIds.add(id);
+                } else {
+                    selectedUserIds.delete(id);
+                }
+                updateSelectAllPageState();
+                updateBulkDeleteButton();
+            });
+
+            const selectAllPage = document.getElementById('selectAllPage');
+            if (selectAllPage) {
+                selectAllPage.addEventListener('change', function() {
+                    const checked = this.checked;
+                    tableBody.querySelectorAll('.user-select-cb:not(:disabled)').forEach(function(box) {
+                        box.checked = checked;
+                        const id = parseInt(box.value, 10);
+                        if (checked) {
+                            selectedUserIds.add(id);
+                        } else {
+                            selectedUserIds.delete(id);
+                        }
+                    });
+                    updateBulkDeleteButton();
+                });
+            }
+
+            document.getElementById('btnBulkDelete').addEventListener('click', function() {
+                if (selectedUserIds.size === 0) return;
+                const n = selectedUserIds.size;
+                Swal.fire({
+                    title: 'Delete users?',
+                    html: 'Permanently delete <strong>' + n + '</strong> user(s)? This cannot be undone.',
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonColor: '#dc2626',
+                    cancelButtonColor: '#6b7280',
+                    confirmButtonText: 'Yes, delete',
+                    cancelButtonText: 'Cancel'
+                }).then(function(result) {
+                    if (!result.isConfirmed) return;
+                    fetch('delete_users_bulk.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: Array.from(selectedUserIds) })
+                    })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.success) {
+                            const d = data.deleted != null ? data.deleted : n;
+                            window.location.href = 'users?delete_bulk=success&n=' + encodeURIComponent(d);
+                        } else {
+                            Swal.fire('Error', data.message || 'Delete failed', 'error');
+                        }
+                    })
+                    .catch(function() {
+                        Swal.fire('Error', 'Could not delete users', 'error');
+                    });
+                });
+            });
 
             // Initialize table
             initializeTable();
@@ -270,6 +398,13 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
                 return matchesSearch && matchesRole;
             });
 
+            const visibleIds = new Set(filteredRows.map(function(r) { return parseInt(r.getAttribute('data-user-id'), 10); }));
+            for (const id of [...selectedUserIds]) {
+                if (!visibleIds.has(id)) {
+                    selectedUserIds.delete(id);
+                }
+            }
+
             currentPage = 1;
             renderTable();
         }
@@ -287,17 +422,21 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
                 let aValue, bValue;
 
                 switch(columnIndex) {
-                    case 0: // ID
+                    case 1: // ID
                         aValue = parseInt(a.getAttribute('data-user-id') || 0);
                         bValue = parseInt(b.getAttribute('data-user-id') || 0);
                         break;
-                    case 1: // Username
+                    case 2: // Username
                         aValue = a.getAttribute('data-username') || '';
                         bValue = b.getAttribute('data-username') || '';
                         break;
-                    case 2: // Role
+                    case 3: // Role
                         aValue = a.getAttribute('data-role') || '';
                         bValue = b.getAttribute('data-role') || '';
+                        break;
+                    case 4: // Fingerprint (enrolled first when desc)
+                        aValue = a.getAttribute('data-fingerprint') || '0';
+                        bValue = b.getAttribute('data-fingerprint') || '0';
                         break;
                     default:
                         return 0;
@@ -329,10 +468,11 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
 
             // Add rows for current page
             if (pageRows.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="4" class="px-6 py-12 text-center"><i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i><p class="text-gray-500 text-lg">No users found matching your criteria.</p></td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="6" class="px-6 py-12 text-center"><i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i><p class="text-gray-500 text-lg">No users found matching your criteria.</p></td></tr>';
             } else {
                 pageRows.forEach(row => {
                     tableBody.appendChild(row);
+                    syncRowCheckboxFromSet(row);
                 });
             }
 
@@ -343,6 +483,9 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
 
             // Render pagination
             renderPagination(totalPages);
+
+            updateSelectAllPageState();
+            updateBulkDeleteButton();
 
             // Reinitialize icons
             if (typeof lucide !== 'undefined') {
@@ -447,6 +590,12 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
             
             if (urlParams.has('add')) {
                 showToast('success', 'User added successfully');
+            }
+
+            if (urlParams.has('delete_bulk') && urlParams.get('delete_bulk') === 'success') {
+                const n = urlParams.get('n') || '';
+                showToast('success', n ? ('Deleted ' + n + ' user(s)') : 'Users deleted successfully');
+                window.history.replaceState({}, document.title, window.location.pathname);
             }
         });
     </script>

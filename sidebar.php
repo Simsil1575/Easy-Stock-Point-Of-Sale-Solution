@@ -193,8 +193,11 @@
     // Get user role and check permissions for cashiers
     $userRole = isset($_SESSION['role']) ? strtolower($_SESSION['role']) : '';
     $isAdmin = ($userRole === 'admin');
+    $isManager = ($userRole === 'manager');
+    $isPrivilegedRole = $isAdmin || $isManager;
+    $sidebarCashierPosOnly = $sidebarCashierPosOnly ?? false;
     
-    // Default permissions (all enabled for admins)
+    // Default permissions (all enabled for admins and managers)
     $permissions = [
         'allow_tabs' => true,
         'allow_transactions' => true,
@@ -204,18 +207,17 @@
     ];
     
     // If cashier, check database permissions
-    if (!$isAdmin) {
+    if (!$isPrivilegedRole) {
         try {
-            // Try to find info.db - check current directory first, then parent
-            $dbPath = 'info.db';
+            $dbPath = __DIR__ . '/info.db';
             if (!file_exists($dbPath)) {
-                $dbPath = '../info.db';
+                $dbPath = __DIR__ . '/../info.db';
             }
-            $db = new PDO('sqlite:' . $dbPath);
-            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $infoDb = new PDO('sqlite:' . $dbPath);
+            $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             
             // Get cashier permissions
-            $permResult = $db->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            $permResult = $infoDb->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
             if ($permResult) {
                 $permissions = [
                     'allow_tabs' => (bool)($permResult['allow_tabs'] ?? 1),
@@ -242,10 +244,10 @@
                 </a>
             </li>
 
-
+            <?php if (!$sidebarCashierPosOnly): ?>
 
          <!-- Cashier Operations - Conditional (includes Tabs, Credit Book, Cash In/Out) -->
-         <?php if ($isAdmin || $permissions['allow_tabs'] || $permissions['allow_credit_book'] || $permissions['allow_cash_inout']): ?>
+         <?php if ($isPrivilegedRole || $permissions['allow_tabs'] || $permissions['allow_credit_book'] || $permissions['allow_cash_inout']): ?>
             <li>
                 <a href="cashier-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cashier-center">
                     <svg class="w-7 h-7 mr-4" fill="none" stroke="currentColor" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
@@ -261,11 +263,11 @@
 
 
                         <!-- Reports - Conditional -->
-                        <?php if ($isAdmin || $permissions['allow_transactions']): ?>
+                        <?php if ($isPrivilegedRole || $permissions['allow_transactions']): ?>
     
 
             <!-- Transactions - Conditional -->
-            <?php if ($isAdmin || $permissions['allow_transactions']): ?>
+            <?php if ($isPrivilegedRole || $permissions['allow_transactions']): ?>
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -291,7 +293,7 @@
 
 
             <!-- Settings - Conditional -->
-            <?php if ($isAdmin || $permissions['allow_settings']): ?>
+            <?php if ($isPrivilegedRole || $permissions['allow_settings']): ?>
             <li>
                 <a href="settings" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="settings">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -313,6 +315,8 @@
                 </a>
             </li>
 
+            <?php endif; ?>
+
 
         </ul>
     </nav>
@@ -332,7 +336,7 @@
 
 </aside>
 
-<script src="cashier_inactivity.js"></script>
+<?php include __DIR__ . '/inactivity_bootstrap.php'; ?>
 
 <script>
     function updateActiveLink() {
@@ -343,6 +347,8 @@
         // Cashier-center subpages: Menu stays active when on any of these
         const isCashierSubpage = (
             currentPage === 'credit-tabs' || currentPage.startsWith('credit-tabs') ||
+            currentPage === 'laybye' || currentPage.startsWith('laybye') ||
+            currentPage.startsWith('view-laybye') ||
             currentPage === 'credit-book' || currentPage.startsWith('credit-book') ||
             currentPage.startsWith('credit-transactions') ||
             currentPage.startsWith('view-tab') ||
@@ -371,6 +377,8 @@
                 (currentPage.startsWith('damaged_goods') && href === 'settings') ||
                 (currentPage.startsWith('credit-book') && href === 'credit-book') ||
                 (currentPage.startsWith('view-tab.php') && href === 'credit-tabs') ||
+                (currentPage.startsWith('view-laybye') && href === 'laybye') ||
+                (currentPage.startsWith('laybye') && href === 'laybye') ||
                 (currentPage.startsWith('credit-tabs') && href === 'credit-tabs') ||
                 (currentPage.startsWith('cashier-center') && href === 'cashier-center') ||
                 (currentPage.startsWith('reports-center') && href === 'reports-center')) {

@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/../ensure_laybye_schema.php';
 
 session_start();
 
@@ -18,11 +19,12 @@ $db = new PDO('sqlite:../pos.db');
 // Set the default timezone to Namibian time
 date_default_timezone_set('Africa/Harare');
 
-// Fetch products from the database
+// Fetch products from the database (exclude synthetic lay-bye payment product)
 $stmt = $db->query('
     SELECT p.*, COALESCE(SUM(oi.quantity), 0) as total_sold
     FROM products p
     LEFT JOIN order_items oi ON p.name = oi.product_name
+    WHERE ' . laybyePaymentProductWhereExclude('p.name') . '
     GROUP BY p.id
     ORDER BY total_sold DESC
 ');
@@ -32,7 +34,7 @@ $lowStock = [];
 $outOfStock = [];
 
 // Fetch unique categories
-$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
+$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND " . laybyePaymentProductWhereExclude('name') . " ORDER BY category");
 $categories = [];
 while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
     $categories[] = $cat['category'];
@@ -616,6 +618,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                     <span class="hidden sm:inline">Add Product</span>
                                     <span class="sm:hidden">Add</span>
                                 </a>
+
+                                <a href="bulk_edit_images" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-md shadow-sm whitespace-nowrap flex-shrink-0 transition-colors">
+                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">Bulk Images</span>
+                                    <span class="sm:hidden">Images</span>
+                                </a>
                             </div>
                         </div>
                     </div>
@@ -765,6 +775,13 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                     </svg>
                                     <span>Add Product</span>
                                 </a>
+
+                                <a href="bulk_edit_images" class="inline-flex items-center justify-center px-4 py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-md shadow-sm whitespace-nowrap transition-colors">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                    </svg>
+                                    <span>Bulk Images</span>
+                                </a>
                             </div>
                         </div>
                     </div>
@@ -823,7 +840,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
                             <?php
                             $db = new SQLite3('../pos.db');
-                            $results = $db->query("SELECT * FROM products");
+                            $results = $db->query("SELECT * FROM products WHERE " . laybyePaymentProductWhereExclude('name'));
                             while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
                                 echo "<tr class='hover:bg-gray-50 transition-colors' data-category=\"" . htmlspecialchars($row['category'] ?? '', ENT_QUOTES, 'UTF-8') . "\">";
                                 echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium text-black-900 truncate' title='{$row['name']}'>{$row['name']}</td>";
@@ -1413,8 +1430,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 if (cell.cellIndex === 1) { // quantity column
                     if (newValue === '' || newValue === null) {
                         newValue = '0';
-                    } else if (!/^\d+$/.test(newValue)) {
-                        // If not a valid integer, revert to original value
+                    } else if (!/^-?\d+$/.test(newValue)) {
+                        // If not a valid integer (allows negative stock), revert to original value
                         cell.textContent = originalValue;
                         return;
                     }

@@ -205,11 +205,24 @@ CREATE TABLE IF NOT EXISTS "payments" (
 	PRIMARY KEY("id" AUTOINCREMENT),
 	FOREIGN KEY("sale_id") REFERENCES "credit_sales"("id")
 );
+CREATE TABLE IF NOT EXISTS "product_recipes" (
+	"id"	INTEGER,
+	"product_id"	INTEGER NOT NULL UNIQUE,
+	"created_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	"updated_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("product_id") REFERENCES "products"("id")
+);
 CREATE TABLE IF NOT EXISTS "product_settings" (
 	"id"	INTEGER,
 	"show_all_products"	BOOLEAN NOT NULL DEFAULT 0,
 	"default_print_receipt"	BOOLEAN NOT NULL DEFAULT 0,
+	"show_stock_info"	INTEGER DEFAULT 1,
 	"hide_available_quantity"	BOOLEAN NOT NULL DEFAULT 0,
+	"skip_stock_checks"	BOOLEAN NOT NULL DEFAULT 0,
+	"use_qz_tray"	BOOLEAN NOT NULL DEFAULT 0,
+	"kitchen_printer_ip"	TEXT,
+	"kitchen_printer_port"	INTEGER NOT NULL DEFAULT 9100,
 	PRIMARY KEY("id" AUTOINCREMENT)
 );
 CREATE TABLE IF NOT EXISTS "products" (
@@ -258,8 +271,21 @@ CREATE TABLE IF NOT EXISTS "receiving_records" (
 	"email_attempts"	INTEGER NOT NULL DEFAULT 0,
 	"email_error"	TEXT,
 	"email_sent_at"	DATETIME,
+	"purchase_order_id"	INTEGER,
+	"supplier_id"	INTEGER,
 	"created_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
-	PRIMARY KEY("id" AUTOINCREMENT)
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("purchase_order_id") REFERENCES "purchase_orders"("id"),
+	FOREIGN KEY("supplier_id") REFERENCES "suppliers"("id")
+);
+CREATE TABLE IF NOT EXISTS "recipe_items" (
+	"id"	INTEGER,
+	"recipe_id"	INTEGER NOT NULL,
+	"ingredient_product_id"	INTEGER NOT NULL,
+	"quantity_per_unit"	DECIMAL(10, 4) NOT NULL DEFAULT 0,
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("ingredient_product_id") REFERENCES "products"("id"),
+	FOREIGN KEY("recipe_id") REFERENCES "product_recipes"("id") ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS "refund_items" (
 	"id"	INTEGER,
@@ -328,9 +354,8 @@ CREATE TABLE IF NOT EXISTS "tab_payments" (
 	"payment_date"	DATETIME DEFAULT CURRENT_TIMESTAMP,
 	"cashier_id"	INTEGER,
 	"order_id"	INTEGER,
-	PRIMARY KEY("id" AUTOINCREMENT),
-	FOREIGN KEY("cashier_id") REFERENCES "users"("id"),
-	FOREIGN KEY("tab_id") REFERENCES "tabs"("id") ON DELETE CASCADE
+	"tip_amount"	DECIMAL(10, 2) NOT NULL DEFAULT '0',
+	PRIMARY KEY("id" AUTOINCREMENT)
 );
 CREATE TABLE IF NOT EXISTS "tabs" (
 	"id"	INTEGER,
@@ -581,5 +606,57 @@ CREATE INDEX IF NOT EXISTS "idx_users_email" ON "users" (
 );
 CREATE INDEX IF NOT EXISTS "idx_users_role" ON "users" (
 	"role"
+);
+CREATE TABLE IF NOT EXISTS "suppliers" (
+	"id"	INTEGER,
+	"name"	TEXT NOT NULL,
+	"phone"	TEXT,
+	"email"	TEXT,
+	"notes"	TEXT,
+	"active"	INTEGER NOT NULL DEFAULT 1,
+	"created_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY("id" AUTOINCREMENT)
+);
+CREATE TABLE IF NOT EXISTS "purchase_orders" (
+	"id"	INTEGER,
+	"supplier_id"	INTEGER NOT NULL,
+	"status"	TEXT NOT NULL DEFAULT 'draft' CHECK("status" IN ('draft', 'ordered', 'cancelled', 'partially_received', 'received')),
+	"order_date"	DATE NOT NULL,
+	"expected_date"	DATE,
+	"notes"	TEXT,
+	"total_amount"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	"created_by"	TEXT,
+	"created_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	"updated_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("supplier_id") REFERENCES "suppliers"("id")
+);
+CREATE TABLE IF NOT EXISTS "purchase_order_items" (
+	"id"	INTEGER,
+	"purchase_order_id"	INTEGER NOT NULL,
+	"product_id"	INTEGER,
+	"product_name"	TEXT NOT NULL,
+	"quantity"	INTEGER NOT NULL DEFAULT 1,
+	"quantity_received"	INTEGER NOT NULL DEFAULT 0,
+	"unit_cost"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	"line_total"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("purchase_order_id") REFERENCES "purchase_orders"("id") ON DELETE CASCADE,
+	FOREIGN KEY("product_id") REFERENCES "products"("id")
+);
+CREATE INDEX IF NOT EXISTS "idx_receiving_records_supplier" ON "receiving_records" (
+	"supplier_id"
+);
+CREATE INDEX IF NOT EXISTS "idx_receiving_records_po" ON "receiving_records" (
+	"purchase_order_id"
+);
+CREATE INDEX IF NOT EXISTS "idx_purchase_orders_supplier" ON "purchase_orders" (
+	"supplier_id"
+);
+CREATE INDEX IF NOT EXISTS "idx_purchase_orders_status" ON "purchase_orders" (
+	"status"
+);
+CREATE INDEX IF NOT EXISTS "idx_po_items_po" ON "purchase_order_items" (
+	"purchase_order_id"
 );
 COMMIT;

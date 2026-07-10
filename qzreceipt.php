@@ -228,13 +228,94 @@ if (!$orderData) {
         return chunks;
     }
 
-    // Send chunks sequentially to the printer to avoid buffer overflows
-    function printChunksSequentially(config, chunks, interDelayMs = 75) {
+
+    // QZ logo raster options — must match receipt paper width (Admin → Settings).
+    function resolvePaperWidthMm(orderData, serverPaperWidthMm) {
+        const fromServer = parseInt(serverPaperWidthMm, 10);
+        if (fromServer === 80 || fromServer === 58) {
+            return fromServer;
+        }
+        const fromOrder = parseInt(
+            (orderData && (orderData.receipt_paper_width_mm || orderData.paper_width_mm)),
+            10
+        );
+        return (fromOrder === 80) ? 80 : 58;
+    }
+
+    function getLogoQzOptions(paperWidthMm) {
+        if (paperWidthMm === 80) {
+            // 80 mm thermal (~576 dots printable at 203 dpi).
+            return {
+                language: 'ESCPOS',
+                dotDensity: 'single',
+                pageWidth: 576
+            };
+        }
+        // 58 mm thermal (~384 dots printable at 203 dpi).
+        return {
+            language: 'ESCPOS',
+            dotDensity: 'single',
+            pageWidth: 384
+        };
+    }
+
+    function base64ToHex(b64) {
+        const raw = atob(b64);
+        let hex = '';
+        for (let i = 0; i < raw.length; i++) {
+            hex += raw.charCodeAt(i).toString(16).padStart(2, '0');
+        }
+        return hex;
+    }
+
+    function buildReceiptPrintData(receiptChunks) {
+        return receiptChunks.map(function(part) {
+            return { type: 'raw', format: 'command', flavor: 'plain', data: part };
+        });
+    }
+
+    // Logo first (binary-safe hex job), then receipt text (CP437). Never mix both in one encoded job.
+    function printLogoViaQz(printer, logoEscposBase64, logoPngBase64, paperWidthMm) {
+        const binaryConfig = qz.configs.create(printer, {
+            altPrinting: true,
+            rasterize: false,
+            scaleContent: false,
+            copies: 1
+        });
+
+        if (logoEscposBase64) {
+            const hex = base64ToHex(logoEscposBase64);
+            return qz.print(binaryConfig, [{
+                type: 'raw',
+                format: 'command',
+                flavor: 'hex',
+                data: hex
+            }]).catch(function(err) {
+                console.warn('Logo ESC/POS hex print failed, trying PNG:', err);
+                return printLogoPngViaQz(binaryConfig, logoPngBase64, paperWidthMm);
+            });
+        }
+        return printLogoPngViaQz(binaryConfig, logoPngBase64, paperWidthMm);
+    }
+
+    function printLogoPngViaQz(binaryConfig, logoPngBase64, paperWidthMm) {
+        if (!logoPngBase64) {
+            return Promise.resolve();
+        }
+        return qz.print(binaryConfig, [{
+            type: 'raw',
+            format: 'image',
+            flavor: 'base64',
+            data: logoPngBase64,
+            options: getLogoQzOptions(paperWidthMm)
+        }]);
+    }
+
+    function printReceiptChunksViaQz(config, chunks, interDelayMs) {
         let chain = Promise.resolve();
         chunks.forEach(function(part, idx) {
             chain = chain.then(function() {
-                const data = [{ type: 'raw', format: 'command', flavor: 'plain', data: part }];
-                return qz.print(config, data).then(function() {
+                return qz.print(config, buildReceiptPrintData([part])).then(function() {
                     if (interDelayMs > 0 && idx < chunks.length - 1) {
                         return new Promise(function(resolve) { setTimeout(resolve, interDelayMs); });
                     }
@@ -318,29 +399,48 @@ if (!$orderData) {
 
     // Load order data from PHP or query and auto-print
     function loadOrderData() {
-        // Get order data from URL parameters or POST data
         const urlParams = new URLSearchParams(window.location.search);
+        const storageKey = urlParams.get('key');
         const orderDataParam = urlParams.get('data');
-        
+
+        function finishLoadOrderData() {
+            fetch(window.location.pathname + '?business_info=1', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(info => {
+                    if (info && info.success && info.businessInfo) {
+                        orderData = Object.assign({}, orderData, info.businessInfo);
+                    }
+                    updateStatus('Order data loaded successfully', 'success');
+                    document.getElementById('buttons').style.display = 'block';
+                    attemptAutoPrint();
+                })
+                .catch(() => {
+                    updateStatus('Order data loaded (without business info fallback)', 'info');
+                    document.getElementById('buttons').style.display = 'block';
+                    attemptAutoPrint();
+                });
+        }
+
+        if (storageKey) {
+            try {
+                const stored = sessionStorage.getItem(storageKey);
+                if (!stored) {
+                    throw new Error('Print payload not found in session storage');
+                }
+                orderData = JSON.parse(stored);
+                try { sessionStorage.removeItem(storageKey); } catch (e) { /* ignore */ }
+                finishLoadOrderData();
+                return;
+            } catch (e) {
+                updateStatus('Error loading print payload: ' + e.message, 'error');
+                return;
+            }
+        }
+
         if (orderDataParam) {
             try {
                 orderData = JSON.parse(decodeURIComponent(orderDataParam));
-                // Merge business info from server before printing
-                fetch(window.location.pathname + '?business_info=1', { cache: 'no-store' })
-                    .then(r => r.json())
-                    .then(info => {
-                        if (info && info.success && info.businessInfo) {
-                            orderData = Object.assign({}, orderData, info.businessInfo);
-                        }
-                        updateStatus('Order data loaded successfully', 'success');
-                        document.getElementById('buttons').style.display = 'block';
-                        attemptAutoPrint();
-                    })
-                    .catch(() => {
-                        updateStatus('Order data loaded (without business info fallback)', 'info');
-                        document.getElementById('buttons').style.display = 'block';
-                        attemptAutoPrint();
-                    });
+                finishLoadOrderData();
             } catch (e) {
                 updateStatus('Error parsing order data: ' + e.message, 'error');
             }
@@ -496,13 +596,15 @@ qz.security.setSignaturePromise(function(toSign) {
         const config = qz.configs.create(null, { altPrinting: true, encoding: 'CP437', rasterize: false, scaleContent: false, copies: 1 });
 
         // Hoist for scope access in handlers
-        let receiptDataText = '';
         let receiptLength = 0;
         let rawReceiptText = null;
+        let logoEscposBase64 = null;
+        let logoPngBase64 = null;
+        let receiptPaperWidthMm = 58;
         let rawReceiptPromise = null;
 
         // Get the exact ESC/POS bytes from the server (so formatting matches receipt.php).
-        function ensureRawReceiptText() {
+        function ensureRawReceipt() {
             if (rawReceiptText) return Promise.resolve(rawReceiptText);
             if (rawReceiptPromise) return rawReceiptPromise;
 
@@ -528,7 +630,10 @@ qz.security.setSignaturePromise(function(toSign) {
                 if (!resp.raw_base64) {
                     throw new Error('Missing raw_base64 in receipt.php raw response');
                 }
-                // atob returns a binary string where each character code corresponds to the byte (0-255)
+                logoEscposBase64 = resp.logo_escpos_base64 || null;
+                logoPngBase64 = resp.logo_png_base64 || null;
+                receiptPaperWidthMm = resolvePaperWidthMm(orderData, resp.receipt_paper_width_mm);
+                // Body stream excludes logo raster — safe to decode and chunk on newlines.
                 rawReceiptText = atob(resp.raw_base64);
                 return rawReceiptText;
             });
@@ -540,29 +645,22 @@ qz.security.setSignaturePromise(function(toSign) {
             return qz.printers.getDefault().then(function(printer) {
                 config.setPrinter(printer);
 
-                // Use the server-generated raw ESC/POS stream
-                receiptDataText = rawReceiptText || '';
-
-                // Show printing status for longer receipts
-                receiptLength = receiptDataText ? receiptDataText.length : 0;
+                const receiptDataText = rawReceiptText || '';
+                receiptLength = receiptDataText.length;
                 if (receiptLength > 500) {
                     updateStatus('Printing longer receipt, please wait...', 'info');
                 }
 
-                // Prepare primary and fallback strategies (smaller chunks first for reliability)
                 const primaryChunks = chunkByLines(receiptDataText, 1024);
                 const fallbackChunks = chunkByLines(receiptDataText, 768);
                 const lastResortChunks = chunkByLines(receiptDataText, 512);
 
                 function printWithStrategy(chunks, delay) {
-                    return printChunksSequentially(config, chunks, delay);
+                    return printReceiptChunksViaQz(config, chunks, delay);
                 }
 
                 function printAsSingleJob(chunks) {
-                    const dataArr = chunks.map(function(part) {
-                        return { type: 'raw', format: 'command', flavor: 'plain', data: part };
-                    });
-                    return qz.print(config, dataArr);
+                    return qz.print(config, buildReceiptPrintData(chunks));
                 }
 
                 // Calculate dynamic timeout based on receipt length and type
@@ -620,7 +718,15 @@ qz.security.setSignaturePromise(function(toSign) {
                     return attemptWithRetry();
                 }
 
-                return tryNextStrategy();
+                const logoJob = (logoEscposBase64 || logoPngBase64)
+                    ? printLogoViaQz(printer, logoEscposBase64, logoPngBase64, receiptPaperWidthMm).catch(function(err) {
+                        console.warn('Logo print skipped:', err);
+                    })
+                    : Promise.resolve();
+
+                return logoJob.then(function() {
+                    return tryNextStrategy();
+                });
             });
         }
 
@@ -634,7 +740,7 @@ qz.security.setSignaturePromise(function(toSign) {
                 const drawerPulse = '\x1B\x70\x00\x32\x32';
                 return qz.print(config, [{ type: 'raw', format: 'command', flavor: 'plain', data: drawerPulse }]);
             })
-            : ensureRawReceiptText().then(function() {
+            : ensureRawReceipt().then(function() {
                 return performPrintForData(orderData);
             });
 

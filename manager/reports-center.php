@@ -66,6 +66,19 @@ try {
 } catch (PDOException $e) {
     // Empty array
 }
+
+require_once __DIR__ . '/../ensure_purchase_order_schema.php';
+require_once __DIR__ . '/../purchase_order_lib.php';
+ensurePurchaseOrderSchema($db);
+$suppliers = poListActiveSuppliers($db);
+
+require_once __DIR__ . '/../ui_cards_helper.php';
+ensureUiCardsSchema($infoDb);
+$uiCardScope = 'manager_reports';
+$hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
+$showHiddenUiCards = isset($_GET['show_hidden']);
+$uiCardsCustomizeMode = isset($_GET['customize']) || $showHiddenUiCards;
+$uiCardsApiUrl = '../ui_cards_api.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -311,29 +324,23 @@ try {
             
             <main class="p-4 lg:p-6">
                 <!-- Page Header -->
-                <div class="mb-6">
-                    <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Reports Center</h1>
-                    <p class="text-gray-600">Generate and download comprehensive reports for your business</p>
+                <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="min-w-0 flex-1">
+                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Reports Center</h1>
+                        <p class="text-gray-600">Essential operational reports for daily management (sales, cash, credit, stock alerts, staff)</p>
+                    </div>
+                    <?php $reportsSearchInclude = 'field'; include __DIR__ . '/../includes/reports_center_search.php'; ?>
                 </div>
                 
               
                 <!-- All Reports in One Container -->
-                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6<?= $uiCardsCustomizeMode ? ' ui-cards-customize-mode' : '' ?>">
+                    <?php include __DIR__ . '/../includes/ui_cards_toolbar.php'; ?>
+                    <div id="reportsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Sales Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('sales', 'Sales Report', 'Complete sales overview with totals and breakdowns')">
-                            <div class="flex items-start justify-between mb-3">
-                                <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-receipt text-teal-600 text-xl"></i>
-                                </div>
-                                <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">Sales</span>
-                            </div>
-                            <h3 class="font-semibold text-gray-800 mb-1">Sales Report</h3>
-                            <p class="text-sm text-gray-500">Complete sales overview with totals and breakdowns</p>
-                        </div>
-                        
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('daily_sales', 'Daily Sales Report', 'Detailed sales for a specific day')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="daily_sales" onclick="openReportModal('daily_sales', 'Daily Sales Report', 'Detailed sales for a specific day')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-calendar-day text-teal-600 text-xl"></i>
@@ -344,7 +351,8 @@ try {
                             <p class="text-sm text-gray-500">Detailed sales for a specific day</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('monthly_sales', 'Monthly Sales Report', 'Sales summary for the entire month')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="monthly_sales" onclick="openReportModal('monthly_sales', 'Monthly Sales Report', 'Sales summary for the entire month')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-calendar-alt text-teal-600 text-xl"></i>
@@ -356,18 +364,8 @@ try {
                         </div>
                         
                         <!-- Products Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('plu', 'PLU Report', 'Product lookup codes and pricing')">
-                            <div class="flex items-start justify-between mb-3">
-                                <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-barcode text-blue-600 text-xl"></i>
-                                </div>
-                                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Products</span>
-                            </div>
-                            <h3 class="font-semibold text-gray-800 mb-1">PLU Report</h3>
-                            <p class="text-sm text-gray-500">Product lookup codes and pricing</p>
-                        </div>
-                        
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('item_sales', 'Item Sales Report', 'Individual product sales performance')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="item_sales" onclick="openReportModal('item_sales', 'Item Sales Report', 'Individual product sales performance')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-chart-pie text-blue-600 text-xl"></i>
@@ -379,7 +377,8 @@ try {
                         </div>
                         
                         <!-- Payments Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('cash_sales', 'Cash Sales Report', 'All cash transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cash_sales" onclick="openReportModal('cash_sales', 'Cash Sales Report', 'All cash transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-money-bill-wave text-green-600 text-xl"></i>
@@ -390,7 +389,8 @@ try {
                             <p class="text-sm text-gray-500">All cash transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('card_sales', 'Card Sales Report', 'All EFT/card transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="card_sales" onclick="openReportModal('card_sales', 'Card Sales Report', 'All EFT/card transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-credit-card text-green-600 text-xl"></i>
@@ -401,7 +401,8 @@ try {
                             <p class="text-sm text-gray-500">All EFT/card transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('payment_summary', 'Payment Summary Report', 'Overview of all payment methods')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="payment_summary" onclick="openReportModal('payment_summary', 'Payment Summary Report', 'Overview of all payment methods')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-chart-bar text-green-600 text-xl"></i>
@@ -412,7 +413,44 @@ try {
                             <p class="text-sm text-gray-500">Overview of all payment methods</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('cashup', 'Cash-Up Report', 'Daily cash reconciliation')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="gratuity" onclick="openReportModal('gratuity', 'Gratuity Report', 'Gratuity totals and orders by cashier')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-hand-holding-heart text-teal-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">POS</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Gratuity Report</h3>
+                            <p class="text-sm text-gray-500">Totals and breakdown by cashier</p>
+                        </div>
+                        
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tips" onclick="openReportModal('tips', 'Tips Report', 'Recorded tips and checkout gratuity by cashier')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-amber-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-coins text-amber-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">POS</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Tips Report</h3>
+                            <p class="text-sm text-gray-500">Manual tips, checkout and tab gratuity</p>
+                        </div>
+                        
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="vat" onclick="openReportModal('vat', 'VAT Report', 'VAT position from sales totals and your business VAT settings')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-percent text-emerald-700 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-emerald-100 text-emerald-800 px-2 py-1 rounded-full">Tax</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">VAT Report</h3>
+                            <p class="text-sm text-gray-500">Turnover, calculated VAT, and ex-VAT / gross by your VAT mode</p>
+                        </div>
+                        
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cashup" onclick="openReportModal('cashup', 'Cash-Up Report', 'Daily cash reconciliation')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-cash-register text-green-600 text-xl"></i>
@@ -424,7 +462,8 @@ try {
                         </div>
                         
                         <!-- Credit & Tabs Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('credit_sales', 'Credit Sales Report', 'All credit transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_sales" onclick="openReportModal('credit_sales', 'Credit Sales Report', 'All credit transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-hand-holding-usd text-yellow-600 text-xl"></i>
@@ -435,7 +474,8 @@ try {
                             <p class="text-sm text-gray-500">All credit transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('outstanding_credit', 'Outstanding Credit Report', 'Unpaid credit balances')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="outstanding_credit" onclick="openReportModal('outstanding_credit', 'Outstanding Credit Report', 'Unpaid credit balances')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-exclamation-triangle text-yellow-600 text-xl"></i>
@@ -446,7 +486,8 @@ try {
                             <p class="text-sm text-gray-500">Unpaid credit balances</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('tabs', 'Tabs Report', 'Open and closed tabs summary')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tabs" onclick="openReportModal('tabs', 'Tabs Report', 'Open and closed tabs summary')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-clipboard-list text-yellow-600 text-xl"></i>
@@ -458,7 +499,8 @@ try {
                         </div>
                         
                         <!-- Expenses Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('expenses', 'Expenses Report', 'All business expenses')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="expenses" onclick="openReportModal('expenses', 'Expenses Report', 'All business expenses')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-file-invoice text-red-600 text-xl"></i>
@@ -470,7 +512,8 @@ try {
                         </div>
                         
                         <!-- Stock Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('current_stock', 'Current Stock Report', 'Current inventory levels')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="current_stock" onclick="openReportModal('current_stock', 'Current Stock Report', 'Current inventory levels')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-boxes text-indigo-600 text-xl"></i>
@@ -481,18 +524,8 @@ try {
                             <p class="text-sm text-gray-500">Current inventory levels</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('stock_movement', 'Stock Movement Report', 'Stock in and out movements')">
-                            <div class="flex items-start justify-between mb-3">
-                                <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-exchange-alt text-indigo-600 text-xl"></i>
-                                </div>
-                                <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Stock</span>
-                            </div>
-                            <h3 class="font-semibold text-gray-800 mb-1">Stock Movement Report</h3>
-                            <p class="text-sm text-gray-500">Stock in and out movements</p>
-                        </div>
-                        
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('low_stock', 'Low Stock Report', 'Items below restock level')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="low_stock" onclick="openReportModal('low_stock', 'Low Stock Report', 'Items below restock level')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-exclamation-circle text-indigo-600 text-xl"></i>
@@ -502,20 +535,22 @@ try {
                             <h3 class="font-semibold text-gray-800 mb-1">Low Stock Report</h3>
                             <p class="text-sm text-gray-500">Items below restock level</p>
                         </div>
-                        
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('stock_variance', 'Stock Variance Report', 'Discrepancies between expected and actual stock')">
+
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="supplier_receiving" onclick="openReportModal('supplier_receiving', 'Receiving by Supplier', 'Stock received grouped by supplier')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
-                                <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-not-equal text-indigo-600 text-xl"></i>
+                                <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-truck-loading text-teal-600 text-xl"></i>
                                 </div>
-                                <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Stock</span>
+                                <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">Supplier</span>
                             </div>
-                            <h3 class="font-semibold text-gray-800 mb-1">Stock Variance Report</h3>
-                            <p class="text-sm text-gray-500">Expected vs actual stock</p>
+                            <h3 class="font-semibold text-gray-800 mb-1">Receiving by Supplier</h3>
+                            <p class="text-sm text-gray-500">Receiving history grouped by supplier</p>
                         </div>
                         
                         <!-- Refunds & Voids Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('refunds', 'Refunds Report', 'All refund transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="refunds" onclick="openReportModal('refunds', 'Refunds Report', 'All refund transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-undo-alt text-orange-600 text-xl"></i>
@@ -526,7 +561,8 @@ try {
                             <p class="text-sm text-gray-500">All refund transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('voids', 'Voids Report', 'Voided transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="voids" onclick="openReportModal('voids', 'Voids Report', 'Voided transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-ban text-orange-600 text-xl"></i>
@@ -538,7 +574,8 @@ try {
                         </div>
                         
                         <!-- Staff Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('cashier_sales', 'Cashier Sales Report', 'Sales by individual cashier')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cashier_sales" onclick="openReportModal('cashier_sales', 'Cashier Sales Report', 'Sales by individual cashier')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-pink-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-user-tie text-pink-600 text-xl"></i>
@@ -549,7 +586,8 @@ try {
                             <p class="text-sm text-gray-500">Sales by individual cashier</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('shift', 'Shift Report', 'Staff login/logout activity')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="shift" onclick="openReportModal('shift', 'Shift Report', 'Staff login/logout activity')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-pink-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-clock text-pink-600 text-xl"></i>
@@ -560,30 +598,7 @@ try {
                             <p class="text-sm text-gray-500">Staff login/logout activity</p>
                         </div>
                         
-                        <!-- Accounting Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('profit_loss', 'Profit & Loss Report', 'Revenue, costs, and profit analysis')">
-                            <div class="flex items-start justify-between mb-3">
-                                <div class="w-12 h-12 bg-cyan-100 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-balance-scale text-cyan-600 text-xl"></i>
-                                </div>
-                                <span class="text-xs bg-cyan-100 text-cyan-700 px-2 py-1 rounded-full">Accounting</span>
-                            </div>
-                            <h3 class="font-semibold text-gray-800 mb-1">Profit & Loss Report</h3>
-                            <p class="text-sm text-gray-500">Revenue, costs, and profit analysis</p>
-                        </div>
-                        
-                        <!-- System Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('audit_log', 'Audit Log Report', 'System activity and user actions')">
-                            <div class="flex items-start justify-between mb-3">
-                                <div class="w-12 h-12 bg-gray-200 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-history text-gray-600 text-xl"></i>
-                                </div>
-                                <span class="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded-full">System</span>
-                            </div>
-                            <h3 class="font-semibold text-gray-800 mb-1">Audit Log Report</h3>
-                            <p class="text-sm text-gray-500">System activity and user actions</p>
-                        </div>
-                        
+                        <?php $reportsSearchInclude = 'empty'; include __DIR__ . '/../includes/reports_center_search.php'; ?>
                     </div>
                 </div>
             </main>
@@ -659,6 +674,16 @@ try {
                             <?php endforeach; ?>
                         </select>
                     </div>
+
+                    <div id="supplierFilter" class="mb-4 hidden">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Supplier (Optional)</label>
+                        <select id="supplierId" name="supplier_id" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
+                            <option value="">All Suppliers</option>
+                            <?php foreach ($suppliers as $supplier): ?>
+                                <option value="<?= (int) $supplier['id'] ?>"><?= htmlspecialchars($supplier['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                     
                     <!-- Generate Button -->
                     <div class="flex gap-3 mt-6">
@@ -704,16 +729,22 @@ try {
             document.getElementById('cashierFilter').classList.add('hidden');
             document.getElementById('creditorFilter').classList.add('hidden');
             document.getElementById('categoryFilter').classList.add('hidden');
+            document.getElementById('supplierFilter').classList.add('hidden');
             
-            if (['cashier_sales', 'shift', 'cashup'].includes(type)) {
+            if (['cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type)) {
                 document.getElementById('cashierFilter').classList.remove('hidden');
             }
             
             if (['credit_sales', 'outstanding_credit', 'tabs'].includes(type)) {
                 document.getElementById('creditorFilter').classList.remove('hidden');
             }
+
+            if (type === 'supplier_receiving') {
+                document.getElementById('supplierFilter').classList.remove('hidden');
+            }
             
-            if (['item_sales', 'plu', 'current_stock', 'low_stock'].includes(type)) {
+            var categoryReportTypes = ['sales', 'daily_sales', 'monthly_sales', 'item_sales', 'cash_sales', 'card_sales', 'payment_summary', 'vat', 'credit_sales', 'outstanding_credit', 'tabs', 'refunds', 'voids', 'plu', 'current_stock', 'low_stock', 'stock_movement', 'stock_variance', 'cashier_sales', 'profit_loss'];
+            if (categoryReportTypes.indexOf(type) !== -1) {
                 document.getElementById('categoryFilter').classList.remove('hidden');
             }
             
@@ -812,5 +843,6 @@ try {
             }
         });
     </script>
+    <?php $reportsSearchInclude = 'script'; include __DIR__ . '/../includes/reports_center_search.php'; ?>
 </body>
 </html>

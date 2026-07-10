@@ -153,13 +153,20 @@ if ($db) {
     $q->execute();
     $expensesOnly = (float)$q->fetchColumn();
 
-    // Tips
-    $q = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type='cash-out' AND (description LIKE '%Tips%' OR description LIKE '%tip%') AND (" . getRangeWhere('created_at') . ")" . getCashierFilter('cashier_id'));
-    $q->bindParam(':startDatetime', $startDatetime);
-    $q->bindParam(':endDatetime', $endDatetime);
-    bindCashierParam($q);
-    $q->execute();
-    $tipsSystem = (float)$q->fetchColumn();
+    // Tips (from tips table only — not cash-out)
+    $tipsSystem = 0;
+    try {
+        if ($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='tips'")->fetchColumn()) {
+            $q = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM tips WHERE (" . getRangeWhere('created_at') . ")" . getCashierFilter('cashier_id'));
+            $q->bindParam(':startDatetime', $startDatetime);
+            $q->bindParam(':endDatetime', $endDatetime);
+            bindCashierParam($q);
+            $q->execute();
+            $tipsSystem = (float) $q->fetchColumn();
+        }
+    } catch (PDOException $e) {
+        $tipsSystem = 0;
+    }
 
     // Cash Back
     $q = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type='cash-out' AND (description LIKE '%Cash Back%' OR description LIKE '%cash back%') AND (" . getRangeWhere('created_at') . ")" . getCashierFilter('cashier_id'));

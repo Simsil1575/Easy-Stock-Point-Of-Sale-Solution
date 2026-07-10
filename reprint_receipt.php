@@ -13,9 +13,79 @@ date_default_timezone_set('Africa/Harare');
 
 // Include the receipt printing libraries
 require __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/receipt_payment_helper.php';
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
+
+/**
+ * Attach lay-bye account context when this order_id is a lay-bye till payment.
+ */
+function reprintEnrichLaybyeContext(PDO $dbPos, array &$receiptData): void
+{
+    if (empty($receiptData['order_id'])) {
+        return;
+    }
+    $st = $dbPos->prepare("
+        SELECT lp.payment_kind, la.reference AS laybye_reference, la.balance_due, la.plan_frequency,
+               la.next_due_date, cr.name AS laybye_creditor_name
+        FROM laybye_payments lp
+        INNER JOIN laybye_accounts la ON la.id = lp.laybye_id
+        LEFT JOIN creditors cr ON cr.id = la.creditor_id
+        WHERE lp.order_id = ?
+        LIMIT 1
+    ");
+    $st->execute([(int) $receiptData['order_id']]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return;
+    }
+    $receiptData['laybye_reference'] = $row['laybye_reference'];
+    $receiptData['laybye_payment_kind'] = $row['payment_kind'];
+    $receiptData['laybye_balance_due'] = round(floatval($row['balance_due']), 2);
+    $receiptData['laybye_plan_frequency'] = $row['plan_frequency'];
+    $receiptData['laybye_next_due_date'] = $row['next_due_date'];
+    $receiptData['laybye_creditor_name'] = $row['laybye_creditor_name'];
+}
+
+/**
+ * Normalize a DB line into receipt item format (price = line total).
+ * order_items.price is line total; credit_sale_items.price is unit price.
+ */
+function reprintFormatLineItem(string $name, int $quantity, float $dbPrice, bool $dbPriceIsUnit): ?array
+{
+    if ($name === '' || $quantity < 1) {
+        return null;
+    }
+    $unitPrice = $dbPriceIsUnit ? $dbPrice : ($quantity > 0 ? $dbPrice / $quantity : $dbPrice);
+    $lineTotal = $dbPriceIsUnit ? $dbPrice * $quantity : $dbPrice;
+    if ($lineTotal <= 0) {
+        return null;
+    }
+    return [
+        'name' => $name,
+        'quantity' => $quantity,
+        'unit_price' => round($unitPrice, 2),
+        'price' => round($lineTotal, 2),
+    ];
+}
+
+function reprintFormatLineItems(array $items, bool $dbPriceIsUnit): array
+{
+    $formattedItems = [];
+    foreach ($items as $item) {
+        $line = reprintFormatLineItem(
+            (string) ($item['name'] ?? ''),
+            intval($item['quantity'] ?? 0),
+            floatval($item['price'] ?? 0),
+            $dbPriceIsUnit
+        );
+        if ($line !== null) {
+            $formattedItems[] = $line;
+        }
+    }
+    return $formattedItems;
+}
 
 // Get POST parameters
 $transactionId = $_POST['transaction_id'] ?? '';
@@ -60,7 +130,7 @@ try {
     
     $receiptData = null;
     
-    if ($saleType === 'credit' || strpos($saleType, 'Credit') !== false) {
+    if ($saleType === 'credit' || $saleType === 'paid' || $saleType === 'partial' || strpos($saleType, 'Credit') !== false) {
         // Handle credit sales
         $creditQuery = $dbPos->prepare("
             SELECT 
@@ -98,24 +168,7 @@ try {
         $itemsQuery->execute();
         $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
         
-        // Format items for receipt
-        // IMPORTANT: price should be TOTAL for the line item (matches receipt.php and home.php format)
-        $formattedItems = [];
-        foreach ($items as $item) {
-            $quantity = intval($item['quantity']);
-            // In credit_sale_items, price is stored as unit price, so calculate total
-            $unitPrice = floatval($item['price']);
-            $totalPrice = $unitPrice * $quantity; // Calculate total price for line item
-            
-            // Only add if we have valid data
-            if (!empty($item['name']) && $totalPrice > 0) {
-                $formattedItems[] = [
-                    'name' => $item['name'],
-                    'quantity' => $quantity,
-                    'price' => $totalPrice  // Total price for this line item (matches receipt.php expectation)
-                ];
-            }
-        }
+        $formattedItems = reprintFormatLineItems($items, true);
         
         error_log("Credit sale - Formatted " . count($formattedItems) . " items from " . count($items) . " database items for sale_id: $transactionId");
         
@@ -187,24 +240,7 @@ try {
         $itemsQuery->execute();
         $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
         
-        // Format items for receipt
-        // IMPORTANT: price should be TOTAL for the line item (matches receipt.php and home.php format)
-        $formattedItems = [];
-        foreach ($items as $item) {
-            $quantity = intval($item['quantity']);
-            // In order_items, price is stored as unit price, so calculate total
-            $unitPrice = floatval($item['price']);
-            $totalPrice = $unitPrice * $quantity; // Calculate total price for line item
-            
-            // Only add if we have valid data
-            if (!empty($item['name']) && $totalPrice > 0) {
-                $formattedItems[] = [
-                    'name' => $item['name'],
-                    'quantity' => $quantity,
-                    'price' => $totalPrice  // Total price for this line item (matches receipt.php expectation)
-                ];
-            }
-        }
+        $formattedItems = reprintFormatLineItems($items, false);
         
         error_log("EFT order - Formatted " . count($formattedItems) . " items from " . count($items) . " database items for order_id: $transactionId");
         
@@ -217,6 +253,7 @@ try {
             'cashier_username' => $_SESSION['username'],
             'created_at' => $eftData['created_at']
         ];
+        reprintEnrichLaybyeContext($dbPos, $receiptData);
         
     } else {
         // Handle cash sales
@@ -252,25 +289,10 @@ try {
         $itemsQuery->execute();
         $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
         
-        // Format items for receipt
-        // IMPORTANT: price should be TOTAL for the line item (matches receipt.php and home.php format)
-        $formattedItems = [];
+        $formattedItems = reprintFormatLineItems($items, false);
         $total = 0;
-        foreach ($items as $item) {
-            $quantity = intval($item['quantity']);
-            // In order_items, price is stored as unit price, so calculate total
-            $unitPrice = floatval($item['price']);
-            $lineTotal = $unitPrice * $quantity; // Calculate total price for line item
-            
-            // Only add if we have valid data
-            if (!empty($item['name']) && $lineTotal > 0) {
-                $formattedItems[] = [
-                    'name' => $item['name'],
-                    'quantity' => $quantity,
-                    'price' => $lineTotal // Total price for this line item (matches receipt.php expectation)
-                ];
-                $total += $lineTotal;
-            }
+        foreach ($formattedItems as $item) {
+            $total += floatval($item['price']);
         }
         
         // Log for debugging
@@ -284,6 +306,7 @@ try {
             'created_at' => $cashData['created_at'],
             'payment_method' => 'cash'
         ];
+        reprintEnrichLaybyeContext($dbPos, $receiptData);
     }
     
     if (!$receiptData) {
@@ -337,40 +360,14 @@ try {
                 $itemsQuery = $dbPos->prepare("SELECT product_name as name, quantity, price FROM order_items WHERE order_id = ?");
                 $itemsQuery->execute([$receiptData['order_id']]);
                 $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
-                $formattedItems = [];
-                foreach ($items as $item) {
-                    $quantity = intval($item['quantity']);
-                    $unitPrice = floatval($item['price']);
-                    $totalPrice = $unitPrice * $quantity; // Calculate total for line item
-                    
-                    if (!empty($item['name']) && $totalPrice > 0) {
-                        $formattedItems[] = [
-                            'name' => $item['name'],
-                            'quantity' => $quantity,
-                            'price' => $totalPrice  // Total price for line item
-                        ];
-                    }
-                }
+                $formattedItems = reprintFormatLineItems($items, false);
                 $receiptData['items'] = $formattedItems;
                 error_log("Android reprint - Fetched " . count($formattedItems) . " items from order_items for order_id: " . $receiptData['order_id']);
             } elseif (isset($receiptData['sale_id'])) {
                 $itemsQuery = $dbPos->prepare("SELECT product_name as name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
                 $itemsQuery->execute([$receiptData['sale_id']]);
                 $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
-                $formattedItems = [];
-                foreach ($items as $item) {
-                    $quantity = intval($item['quantity']);
-                    $unitPrice = floatval($item['price']);
-                    $totalPrice = $unitPrice * $quantity; // Calculate total for line item
-                    
-                    if (!empty($item['name']) && $totalPrice > 0) {
-                        $formattedItems[] = [
-                            'name' => $item['name'],
-                            'quantity' => $quantity,
-                            'price' => $totalPrice  // Total price for line item
-                        ];
-                    }
-                }
+                $formattedItems = reprintFormatLineItems($items, true);
                 $receiptData['items'] = $formattedItems;
                 error_log("Android reprint - Fetched " . count($formattedItems) . " items from credit_sale_items for sale_id: " . $receiptData['sale_id']);
             }
@@ -512,9 +509,10 @@ try {
             foreach ($receiptData['items'] as $item) {
                 $name = $item['name'] ?? 'Item';
                 $quantity = intval($item['quantity'] ?? 1);
-                // price should be total for the line item (matches receipt.php format)
                 $amount = floatval($item['price'] ?? 0);
-                $price = $quantity > 0 ? $amount / $quantity : $amount; // Calculate unit price
+                $unitPrice = isset($item['unit_price'])
+                    ? floatval($item['unit_price'])
+                    : ($quantity > 0 ? $amount / $quantity : $amount);
                 $subtotal += $amount;
                 
                 // Print item name (truncate if too long)
@@ -523,8 +521,8 @@ try {
                 }
                 $printer->text($name . "\n");
                 
-                // Print quantity x price and amount on next line
-                $qtyPrice = sprintf("%d x N$%.2f", $quantity, $price);
+                // Print quantity x unit price and line amount
+                $qtyPrice = sprintf("%d x N$%.2f", $quantity, $unitPrice);
                 $amountText = sprintf("N$%.2f", $amount);
                 
                 // Ensure proper alignment within receipt width
@@ -630,10 +628,9 @@ try {
             $printer->text(str_repeat('-', $receiptWidth) . "\n");
             $printer->text(sprintf("%-10s N$%8.2f\n", "Total:", $subtotal));
             
-            // Calculate and show change if cash amount is greater than total
-            if (isset($receiptData['cash_amount']) && $receiptData['cash_amount'] > $subtotal) {
-                $change = $receiptData['cash_amount'] - $subtotal;
-                $changeText = sprintf("Change: %10s", "N$ " . number_format($change, 2));
+            $mixedChange = receipt_mixed_payment_change($receiptData, $subtotal);
+            if ($mixedChange > 0.004) {
+                $changeText = sprintf("Change: %10s", "N$ " . number_format($mixedChange, 2));
                 $printer->text($changeText . "\n");
             }
         } else {
@@ -646,6 +643,29 @@ try {
             $change = $change >= 0 ? $change : 0;
             $changeText = sprintf("Change: %10s", "N$ " . number_format($change, 2));
             $printer->text($changeText . "\n");
+        }
+        
+        if (!empty($receiptData['laybye_reference'])) {
+            $printer->feed();
+            $printer->setEmphasis(true);
+            $printer->text("LAY-BYE (balance as of reprint)\n");
+            $printer->setEmphasis(false);
+            $printer->text(sprintf("%-12s %s\n", "Ref:", $receiptData['laybye_reference']));
+            if (!empty($receiptData['laybye_creditor_name'])) {
+                $printer->text(sprintf("%-12s %s\n", "Customer:", $receiptData['laybye_creditor_name']));
+            }
+            if (!empty($receiptData['laybye_payment_kind'])) {
+                $printer->text(sprintf("%-12s %s\n", "Payment:", $receiptData['laybye_payment_kind']));
+            }
+            if (isset($receiptData['laybye_balance_due'])) {
+                $printer->text(sprintf("%-12s N$%8.2f\n", "Balance due:", floatval($receiptData['laybye_balance_due'])));
+            }
+            if (!empty($receiptData['laybye_plan_frequency'])) {
+                $printer->text(sprintf("%-12s %s\n", "Plan:", $receiptData['laybye_plan_frequency']));
+            }
+            if (!empty($receiptData['laybye_next_due_date'])) {
+                $printer->text(sprintf("%-12s %s\n", "Next due:", $receiptData['laybye_next_due_date']));
+            }
         }
         
         $printer->feed();

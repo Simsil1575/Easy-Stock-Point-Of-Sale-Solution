@@ -579,4 +579,48 @@ CREATE INDEX IF NOT EXISTS "idx_users_email" ON "users" (
 CREATE INDEX IF NOT EXISTS "idx_users_role" ON "users" (
 	"role"
 );
+CREATE TABLE IF NOT EXISTS "laybye_accounts" (
+	"id"	INTEGER,
+	"creditor_id"	INTEGER NOT NULL,
+	"reference"	TEXT,
+	"total_amount"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	"balance_due"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	"deposit_amount"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	"plan_frequency"	TEXT NOT NULL DEFAULT 'weekly' CHECK("plan_frequency" IN ('weekly', 'monthly')),
+	"installment_amount"	DECIMAL(10, 2) NOT NULL DEFAULT 0,
+	"next_due_date"	DATE,
+	"status"	TEXT NOT NULL DEFAULT 'active' CHECK("status" IN ('active', 'completed', 'cancelled')),
+	"opened_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	"closed_at"	DATETIME,
+	"cashier_id"	TEXT,
+	"notes"	TEXT,
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("creditor_id") REFERENCES "creditors"("id")
+);
+CREATE TABLE IF NOT EXISTS "laybye_items" (
+	"id"	INTEGER,
+	"laybye_id"	INTEGER NOT NULL,
+	"product_name"	TEXT NOT NULL,
+	"quantity"	INTEGER NOT NULL DEFAULT 1,
+	"price"	DECIMAL(10, 2) NOT NULL,
+	"buying_price"	DECIMAL(10, 2),
+	"added_at"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	"added_by"	TEXT,
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("laybye_id") REFERENCES "laybye_accounts"("id") ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS "laybye_payments" (
+	"id"	INTEGER,
+	"laybye_id"	INTEGER NOT NULL,
+	"amount"	DECIMAL(10, 2) NOT NULL,
+	"payment_method"	TEXT NOT NULL CHECK("payment_method" IN ('cash', 'eft', 'mixed')),
+	"transaction_ref"	TEXT,
+	"wallet_provider"	TEXT,
+	"payment_date"	DATETIME DEFAULT CURRENT_TIMESTAMP,
+	"cashier_id"	TEXT,
+	"order_id"	INTEGER,
+	"payment_kind"	TEXT NOT NULL DEFAULT 'installment' CHECK("payment_kind" IN ('deposit', 'installment', 'refund')),
+	PRIMARY KEY("id" AUTOINCREMENT),
+	FOREIGN KEY("laybye_id") REFERENCES "laybye_accounts"("id") ON DELETE CASCADE
+);
 COMMIT;

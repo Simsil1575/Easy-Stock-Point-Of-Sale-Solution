@@ -310,7 +310,7 @@ try {
                     <div class="bg-white shadow-xl rounded-xl p-4 lg:p-8 mb-6 lg:mb-8 relative z-10">
                         <h2 class="text-xl lg:text-2xl font-bold mb-4 lg:mb-6">Update Account Details</h2>
                         
-                        <form action="" method="POST" class="space-y-6">
+                        <form action="" method="POST" class="space-y-6" autocomplete="off">
                             <?php
                             try {
                                 $pdo = new PDO('sqlite:user.db');
@@ -365,7 +365,7 @@ try {
                                                 <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                                             </svg>
                                         </div>
-                                        <input type="password" name="current_password" id="current_password" required
+                                        <input type="password" name="current_password" id="current_password" required autocomplete="off"
                                             class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
@@ -378,7 +378,7 @@ try {
                                                 <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                                             </svg>
                                         </div>
-                                        <input type="password" name="new_password" id="new_password" 
+                                        <input type="password" name="new_password" id="new_password" autocomplete="off"
                                             class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>

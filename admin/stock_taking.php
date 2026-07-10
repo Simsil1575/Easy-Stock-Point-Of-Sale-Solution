@@ -1132,11 +1132,36 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
     <script src="3.4.16"></script>
     <style>
         .toast-notification {
-            transition: opacity 0.5s, transform 0.5s;
-            transform: translateX(100%);
-            opacity: 0;
-            animation: slideIn 0.5s forwards;
+            transition: opacity 0.3s ease;
         }
+        #stockToastHost {
+            position: fixed;
+            top: 5.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.5rem;
+            width: min(22rem, calc(100vw - 2rem));
+            pointer-events: none;
+        }
+        .page-toast {
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            color: #fff;
+            font-size: 0.875rem;
+            line-height: 1.35;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            pointer-events: auto;
+        }
+        .page-toast--success { background: #0d9488; }
+        .page-toast--error { background: #e11d48; }
+        .page-toast--info { background: #0369a1; }
         @keyframes slideIn {
             from {
                 transform: translateX(100%);
@@ -1472,22 +1497,27 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             
             #itemsBeingCounted table th:nth-child(1),
             #itemsBeingCounted table td:nth-child(1) {
-                width: 45% !important; /* Product name - most space */
+                width: 34% !important; /* Product name - most space */
             }
             
             #itemsBeingCounted table th:nth-child(2),
             #itemsBeingCounted table td:nth-child(2) {
-                width: 18% !important; /* Expected */
+                width: 15% !important; /* Expected */
             }
             
             #itemsBeingCounted table th:nth-child(3),
             #itemsBeingCounted table td:nth-child(3) {
-                width: 18% !important; /* Actual */
+                width: 15% !important; /* Actual */
             }
             
             #itemsBeingCounted table th:nth-child(4),
             #itemsBeingCounted table td:nth-child(4) {
-                width: 19% !important; /* Actions */
+                width: 18% !important; /* Difference */
+            }
+
+            #itemsBeingCounted table th:nth-child(5),
+            #itemsBeingCounted table td:nth-child(5) {
+                width: 18% !important; /* Actions */
             }
         }
         
@@ -1523,21 +1553,26 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             
             #itemsBeingCounted table th:nth-child(1),
             #itemsBeingCounted table td:nth-child(1) {
-                width: 40% !important; /* Product name - most space */
+                width: 34% !important; /* Product name - most space */
             }
             
             #itemsBeingCounted table th:nth-child(2),
             #itemsBeingCounted table td:nth-child(2) {
-                width: 20% !important; /* Expected */
+                width: 14% !important; /* Expected */
             }
             
             #itemsBeingCounted table th:nth-child(3),
             #itemsBeingCounted table td:nth-child(3) {
-                width: 20% !important; /* Actual */
+                width: 14% !important; /* Actual */
             }
             
             #itemsBeingCounted table th:nth-child(4),
             #itemsBeingCounted table td:nth-child(4) {
+                width: 18% !important; /* Difference */
+            }
+
+            #itemsBeingCounted table th:nth-child(5),
+            #itemsBeingCounted table td:nth-child(5) {
                 width: 20% !important; /* Actions */
             }
         }
@@ -1648,7 +1683,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
         }
     </style>
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-50" data-server-date="<?= htmlspecialchars(date('Y-m-d'), ENT_QUOTES, 'UTF-8') ?>">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
@@ -1740,6 +1775,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             
             <!-- Spacer for fixed header (increased height to accommodate report section) -->
             <div class="h-28 sm:h-24 mb-4"></div>
+            <div id="stockToastHost" aria-live="polite" aria-atomic="true"></div>
             
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
@@ -1951,6 +1987,10 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                                             <span class="sm:hidden">Act</span>
                                         </th>
                                         <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
+                                            <span class="hidden sm:inline">Difference</span>
+                                            <span class="sm:hidden">Diff</span>
+                                        </th>
+                                        <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
                                             Actions
                                         </th>
                                     </tr>
@@ -1961,10 +2001,22 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                         </div>
                     </div>
                     <div class="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 bg-gray-50 border-t border-gray-200">
-                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-4">
-                            <div class="flex items-center gap-2 sm:gap-4 flex-wrap">
-                                <span class="text-[10px] sm:text-xs lg:text-sm text-gray-600">Total Items:</span>
-                                <span id="totalDiffItems" class="text-xs sm:text-base lg:text-lg font-semibold text-gray-900">0</span>
+                        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                            <div class="rounded-lg bg-white border border-gray-200 px-3 py-2">
+                                <p class="text-[10px] sm:text-xs uppercase tracking-wide text-gray-500">Total Items</p>
+                                <p id="totalDiffItems" class="text-sm sm:text-base lg:text-lg font-semibold text-gray-900">0</p>
+                            </div>
+                            <div class="rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+                                <p class="text-[10px] sm:text-xs uppercase tracking-wide text-red-500">Total Short</p>
+                                <p id="totalShortAmount" class="text-sm sm:text-base lg:text-lg font-semibold text-red-700">N$0.00</p>
+                            </div>
+                            <div class="rounded-lg bg-green-50 border border-green-100 px-3 py-2">
+                                <p class="text-[10px] sm:text-xs uppercase tracking-wide text-green-600">Total Over</p>
+                                <p id="totalOverAmount" class="text-sm sm:text-base lg:text-lg font-semibold text-green-700">N$0.00</p>
+                            </div>
+                            <div class="rounded-lg bg-slate-100 border border-slate-200 px-3 py-2">
+                                <p class="text-[10px] sm:text-xs uppercase tracking-wide text-slate-500">Net Difference</p>
+                                <p id="totalNetAmount" class="text-sm sm:text-base lg:text-lg font-semibold text-slate-800">N$0.00</p>
                             </div>
                         </div>
                     </div>
@@ -2028,12 +2080,12 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             const endDate = reportEndDate.value;
             
             if (!startDate || !endDate) {
-                alert('Please select both start and end dates');
+                showToast('Please select both start and end dates', 'error');
                 return;
             }
             
             if (new Date(startDate) > new Date(endDate)) {
-                alert('Start date cannot be after end date');
+                showToast('Start date cannot be after end date', 'error');
                 return;
             }
             
@@ -2070,12 +2122,12 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             const endDate = reportEndDate.value;
             
             if (!startDate || !endDate) {
-                alert('Please select both start and end dates');
+                showToast('Please select both start and end dates', 'error');
                 return;
             }
             
             if (new Date(startDate) > new Date(endDate)) {
-                alert('Start date cannot be after end date');
+                showToast('Start date cannot be after end date', 'error');
                 return;
             }
             
@@ -2113,6 +2165,80 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
         const bulkActionsPanel = document.getElementById('bulkActionsPanel');
         const selectedCount = document.getElementById('selectedCount');
         const submitStockTakingBtn = document.getElementById('submitStockTakingBtn');
+
+        const STOCK_TAKING_DRAFT_PREFIX = 'stock_taking_qty_draft_';
+        function getStockTakingDraftKey() {
+            const serverDate = document.body.dataset.serverDate || new Date().toISOString().slice(0, 10);
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
+            return STOCK_TAKING_DRAFT_PREFIX + serverDate + '_' + stockType;
+        }
+        function collectActualQuantitiesMap() {
+            const map = {};
+            document.querySelectorAll('.stock-taking-row').forEach(row => {
+                const id = row.dataset.productId;
+                const input = row.querySelector('.actual-quantity');
+                if (!id || !input) return;
+                const v = input.value.trim();
+                if (v !== '') map[id] = v;
+            });
+            return map;
+        }
+        let stockTakingDraftSaveTimer = null;
+        /** After a successful submit, skip draft save on beforeunload (it would re-persist cleared storage from DOM). */
+        let suppressStockTakingDraftSave = false;
+        function saveStockTakingDraftToStorage() {
+            try {
+                const map = collectActualQuantitiesMap();
+                const key = getStockTakingDraftKey();
+                if (Object.keys(map).length === 0) {
+                    localStorage.removeItem(key);
+                } else {
+                    localStorage.setItem(key, JSON.stringify(map));
+                }
+            } catch (e) { /* ignore quota / private mode */ }
+        }
+        function scheduleSaveStockTakingDraft() {
+            clearTimeout(stockTakingDraftSaveTimer);
+            stockTakingDraftSaveTimer = setTimeout(saveStockTakingDraftToStorage, 250);
+        }
+        function applyStockTakingDraftFromStorage() {
+            const key = getStockTakingDraftKey();
+            let map = {};
+            try {
+                const raw = localStorage.getItem(key);
+                if (raw) map = JSON.parse(raw) || {};
+            } catch (e) { map = {}; }
+            document.querySelectorAll('.stock-taking-row').forEach(row => {
+                const id = row.dataset.productId;
+                const input = row.querySelector('.actual-quantity');
+                if (!input) return;
+                if (map[id] !== undefined && map[id] !== null && String(map[id]).trim() !== '') {
+                    input.value = String(map[id]);
+                } else {
+                    input.value = '';
+                }
+            });
+            updateItemsBeingCounted();
+        }
+        function clearCurrentStockTakingDraft() {
+            try {
+                localStorage.removeItem(getStockTakingDraftKey());
+            } catch (e) { /* ignore */ }
+        }
+        function resetStockTakingAfterSuccessfulSubmit() {
+            suppressStockTakingDraftSave = true;
+            clearCurrentStockTakingDraft();
+            document.querySelectorAll('.stock-taking-row .actual-quantity').forEach(input => {
+                input.value = '';
+            });
+            updateItemsBeingCounted();
+        }
+
+        window.addEventListener('beforeunload', () => {
+            clearTimeout(stockTakingDraftSaveTimer);
+            if (suppressStockTakingDraftSave) return;
+            saveStockTakingDraftToStorage();
+        });
 
         // Initialize
         showPage(currentPage);
@@ -2365,12 +2491,15 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                     quantityInput.value = bulkQuantity;
                 }
             });
+            updateItemsBeingCounted();
+            saveStockTakingDraftToStorage();
         });
 
-        // Update items being counted when quantity changes
+        // Update items being counted when quantity changes; auto-save draft for page reload / return visit
         tableBody.addEventListener('input', (e) => {
             if (e.target.classList.contains('actual-quantity')) {
                 updateItemsBeingCounted();
+                scheduleSaveStockTakingDraft();
             }
         });
 
@@ -2379,10 +2508,16 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             const items = [];
             const rows = document.querySelectorAll('.stock-taking-row');
             const stockType = document.querySelector('input[name="stockType"]:checked').value;
+            let totalShortAmount = 0;
+            let totalOverAmount = 0;
             rows.forEach(row => {
                 const productName = row.children[2].textContent.trim();
                 const openingStock = parseInt(row.querySelector('.expected-stock').textContent) || 0;
-                const actualQuantity = parseInt(row.querySelector('.actual-quantity').value) || 0;
+                const actualQuantityInput = row.querySelector('.actual-quantity');
+                const actualQuantityRaw = actualQuantityInput ? actualQuantityInput.value.trim() : '';
+                const hasActualQuantity = actualQuantityRaw !== '';
+                const actualQuantity = hasActualQuantity ? (parseInt(actualQuantityRaw, 10) || 0) : 0;
+                const unitPrice = parseFloat(row.dataset.price) || 0;
                 
                 let expected;
                 if (stockType === 'opening') {
@@ -2392,13 +2527,23 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                     expected = parseInt(row.querySelector('.expected-closing-stock')?.textContent) || parseInt(row.dataset.quantity) || 0;
                 }
                 
-                // Only add items that have actual quantity entered
-                if (actualQuantity > 0) {
+                // Include any entered count, including zero, so shortages are reflected.
+                if (hasActualQuantity) {
+                    const difference = actualQuantity - expected;
+                    const amountDifference = difference * unitPrice;
+                    if (amountDifference < 0) {
+                        totalShortAmount += Math.abs(amountDifference);
+                    } else if (amountDifference > 0) {
+                        totalOverAmount += amountDifference;
+                    }
+
                     items.push({ 
                         productName, 
                         expected, 
                         actualQuantity, 
-                        productId: row.dataset.productId
+                        productId: row.dataset.productId,
+                        difference,
+                        amountDifference
                     });
                 }
             });
@@ -2407,23 +2552,45 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             const tbody = document.getElementById('itemsBeingCountedBody');
             const countedItemsCount = document.getElementById('countedItemsCount');
             const totalDiffItems = document.getElementById('totalDiffItems');
+            const totalShortAmountEl = document.getElementById('totalShortAmount');
+            const totalOverAmountEl = document.getElementById('totalOverAmount');
+            const totalNetAmountEl = document.getElementById('totalNetAmount');
 
             if (items.length === 0) {
                 container.classList.add('hidden');
                 countedItemsCount.textContent = '0 items';
                 totalDiffItems.textContent = '0';
+                totalShortAmountEl.textContent = 'N$0.00';
+                totalOverAmountEl.textContent = 'N$0.00';
+                totalNetAmountEl.textContent = 'N$0.00';
+                totalNetAmountEl.className = 'text-sm sm:text-base lg:text-lg font-semibold text-slate-800';
                 return;
             }
 
             container.classList.remove('hidden');
             countedItemsCount.textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
             totalDiffItems.textContent = items.length;
+            totalShortAmountEl.textContent = `N$${totalShortAmount.toFixed(2)}`;
+            totalOverAmountEl.textContent = `N$${totalOverAmount.toFixed(2)}`;
+            const netDifference = totalOverAmount - totalShortAmount;
+            totalNetAmountEl.textContent = `${netDifference >= 0 ? 'N$' : '-N$'}${Math.abs(netDifference).toFixed(2)}`;
+            totalNetAmountEl.className = `text-sm sm:text-base lg:text-lg font-semibold ${
+                netDifference < 0 ? 'text-red-700' : netDifference > 0 ? 'text-green-700' : 'text-slate-800'
+            }`;
 
             tbody.innerHTML = items.map((it, index) => `
                 <tr class="hover:bg-gray-50 transition-colors" data-product-id="${it.productId}">
                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 text-[10px] sm:text-xs lg:text-sm font-medium text-gray-900 break-words">${it.productName}</td>
                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-700">${it.expected}</td>
                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-700">${it.actualQuantity}</td>
+                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm">
+                        <div class="font-semibold ${it.difference < 0 ? 'text-red-600' : it.difference > 0 ? 'text-green-600' : 'text-gray-700'}">
+                            ${it.difference > 0 ? '+' : ''}${it.difference}
+                        </div>
+                        <div class="text-[9px] sm:text-[11px] text-gray-500">
+                            ${it.amountDifference >= 0 ? '+' : '-'}N$${Math.abs(it.amountDifference).toFixed(2)}
+                        </div>
+                    </td>
                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm">
                         <button onclick="removeItemFromCounted('${it.productId}')" class="inline-flex items-center px-2 py-1 text-xs font-medium text-red-600 hover:text-red-800 hover:bg-red-50 rounded-md transition-colors" title="Remove from list">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2449,6 +2616,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             
             // Update the items being counted list
             updateItemsBeingCounted();
+            saveStockTakingDraftToStorage();
         }
 
         // Submit stock taking
@@ -2557,6 +2725,8 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                     
                     showToast(successMessage, 'success');
                     
+                    resetStockTakingAfterSuccessfulSubmit();
+                    
                     // Refresh page after PDF download completes
                     setTimeout(() => {
                         location.reload();
@@ -2598,53 +2768,32 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
 
         // Toast notification function
         function showToast(message, type = 'info') {
-            const existingToasts = document.querySelectorAll('.toast-notification');
-            existingToasts.forEach(toast => toast.remove());
+            const host = document.getElementById('stockToastHost');
+            if (!host) return;
 
             const icons = {
-                success: `<svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>`,
-                error: `<svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-                </svg>`,
-                info: `<svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>`
+                success: '<i class="fas fa-check-circle mt-0.5 flex-shrink-0"></i>',
+                error: '<i class="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>',
+                info: '<i class="fas fa-info-circle mt-0.5 flex-shrink-0"></i>'
             };
 
             const toast = document.createElement('div');
-            toast.className = `toast-notification fixed top-4 right-4 px-4 py-3 rounded-md text-white shadow-lg z-50 flex items-center gap-2 ${
-                type === 'success' ? 'bg-teal-500' : 
-                type === 'error' ? 'bg-rose-600' : 
-                'bg-sky-500'
-            }`;
-            
-            toast.innerHTML = `
-                ${icons[type]}
-                <span>${message}</span>
-            `;
-
-            document.body.appendChild(toast);
+            toast.className = `page-toast page-toast--${type} toast-notification`;
+            toast.innerHTML = `${icons[type] || icons.info}<span>${message}</span>`;
+            host.appendChild(toast);
 
             setTimeout(() => {
-                toast.classList.add('opacity-0', 'translate-x-full');
-                setTimeout(() => {
-                    toast.remove();
-                }, 500);
-            }, 3000);
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
         }
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
-            // Add event listeners for stock type radio buttons
             document.querySelectorAll('input[name="stockType"]').forEach(radio => {
-                radio.addEventListener('change', () => { updateStockTypeDisplay(); updateItemsBeingCounted(); });
+                radio.addEventListener('change', () => { updateStockTypeDisplay(); });
             });
-            
-            // Initialize display
             updateStockTypeDisplay();
-            updateItemsBeingCounted();
         });
         
         function updateStockTypeDisplay() {
@@ -2666,11 +2815,6 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                     const expectedClosingStockSpan = row.querySelector('.expected-closing-stock');
                     expectedStockSpan.style.display = 'inline';
                     expectedClosingStockSpan.style.display = 'none';
-                    
-                    const actualQuantityInput = row.querySelector('.actual-quantity');
-                    
-                    // Set actual quantity to empty/zero - user must enter manually
-                    actualQuantityInput.value = '';
                 });
             } else {
                 openingStockHeader.innerHTML = '<span class="hidden sm:inline">Expected Closing Stock</span><span class="sm:hidden">Closing</span>';
@@ -2685,13 +2829,9 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                     const expectedClosingStockSpan = row.querySelector('.expected-closing-stock');
                     expectedStockSpan.style.display = 'none';
                     expectedClosingStockSpan.style.display = 'inline';
-                    
-                    const actualQuantityInput = row.querySelector('.actual-quantity');
-                    
-                    // Set actual quantity to empty/zero - user must enter manually
-                    actualQuantityInput.value = '';
                 });
             }
+            applyStockTakingDraftFromStorage();
         }
     </script>
 

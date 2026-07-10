@@ -13,6 +13,33 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Include secure activation helper
 require_once '../activation_helper.php';
+
+require_once __DIR__ . '/../manager_pin_helper.php';
+$manager_pin_configured = false;
+try {
+    $manager_pin_configured = managerVoidPinIsConfigured();
+} catch (Throwable $e) {
+}
+
+$manager_pin_error = '';
+$manager_pin_success = false;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin'])) {
+    $newPin = trim($_POST['manager_void_pin_new'] ?? '');
+    $confirm = trim($_POST['manager_void_pin_confirm'] ?? '');
+    if (strlen($newPin) < 4) {
+        $manager_pin_error = 'PIN must be at least 4 characters.';
+    } elseif ($newPin !== $confirm) {
+        $manager_pin_error = 'PIN confirmation does not match.';
+    } else {
+        try {
+            setManagerVoidPin($newPin);
+            $manager_pin_success = true;
+            $manager_pin_configured = true;
+        } catch (Throwable $e) {
+            $manager_pin_error = $e->getMessage();
+        }
+    }
+}
 ?>
 
 
@@ -360,9 +387,52 @@ require_once '../activation_helper.php';
                 </script>
 
                 <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
+                    <h2 class="text-2xl font-bold mb-2">Manager void PIN</h2>
+                    <p class="text-sm text-gray-600 mb-6">Required to void or delete transactions from Reports. Stored securely in the business info database.</p>
+                    <?php if ($manager_pin_configured): ?>
+                    <p class="text-sm text-teal-700 mb-4 font-medium">A manager PIN is currently set.</p>
+                    <?php else: ?>
+                    <p class="text-sm text-amber-700 mb-4 font-medium">No PIN set yet — voiding transactions from reports will be blocked until you set one.</p>
+                    <?php endif; ?>
+                    <form method="POST" action="" class="space-y-4 max-w-md" autocomplete="off">
+                        <input type="hidden" name="save_manager_void_pin" value="1">
+                        <div>
+                            <label for="manager_void_pin_new" class="block text-sm font-medium text-gray-700 mb-1">New PIN</label>
+                            <input type="password" name="manager_void_pin_new" id="manager_void_pin_new" autocomplete="off" inputmode="numeric" minlength="4" required
+                                class="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-gray-600 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label for="manager_void_pin_confirm" class="block text-sm font-medium text-gray-700 mb-1">Confirm PIN</label>
+                            <input type="password" name="manager_void_pin_confirm" id="manager_void_pin_confirm" autocomplete="off" inputmode="numeric" minlength="4" required
+                                class="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-gray-600 focus:border-transparent">
+                        </div>
+                        <button type="submit" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-700 transition-colors duration-200">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+                            </svg>
+                            Save manager PIN
+                        </button>
+                    </form>
+                </div>
+
+                <?php if ($manager_pin_success): ?>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {
+                        showAlert('success', 'Success', 'Manager void PIN saved.');
+                    });
+                </script>
+                <?php elseif ($manager_pin_error !== ''): ?>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {
+                        showAlert('error', 'Error', <?= json_encode($manager_pin_error, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>);
+                    });
+                </script>
+                <?php endif; ?>
+
+                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
                         <h2 class="text-2xl font-bold mb-6">Update Account Details</h2>
                         
-                        <form action="" method="POST" class="space-y-6">
+                        <form action="" method="POST" class="space-y-6" autocomplete="off">
                             <?php
                             try {
                                 $pdo = new PDO('sqlite:../user.db');
@@ -417,7 +487,7 @@ require_once '../activation_helper.php';
                                                 <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                                             </svg>
                                         </div>
-                                        <input type="password" name="current_password" id="current_password" required
+                                        <input type="password" name="current_password" id="current_password" required autocomplete="off"
                                             class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
@@ -430,7 +500,7 @@ require_once '../activation_helper.php';
                                                 <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                                             </svg>
                                         </div>
-                                        <input type="password" name="new_password" id="new_password" 
+                                        <input type="password" name="new_password" id="new_password" autocomplete="off"
                                             class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>

@@ -269,6 +269,7 @@ public class MainActivity extends AppCompatActivity {
                 "                                enrichedData.is_cashup_report === true || " +
                 "                                enrichedData.is_balance_receipt === true || " +
                 "                                enrichedData.is_tab_balance_receipt === true || " +
+                "                                enrichedData.is_tab_copy_receipt === true || " +
                 "                                enrichedData.is_payment_receipt === true || " +
                 "                                enrichedData.open_drawer_only === true;" +
                 "            " +
@@ -349,6 +350,7 @@ public class MainActivity extends AppCompatActivity {
                 "                                  enrichedData.is_cashup_report === true || " +
                 "                                  enrichedData.is_balance_receipt === true || " +
                 "                                  enrichedData.is_tab_balance_receipt === true || " +
+                "                                  enrichedData.is_tab_copy_receipt === true || " +
                 "                                  enrichedData.is_payment_receipt === true || " +
                 "                                  enrichedData.open_drawer_only === true;" +
                 "              " +

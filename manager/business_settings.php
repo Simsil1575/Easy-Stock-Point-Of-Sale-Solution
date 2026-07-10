@@ -57,7 +57,7 @@ try {
     }
     
     // Handle form submission
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['update_receipt_setting']) && !isset($_POST['import_csv']) && !isset($_POST['update_cashier_permissions']) && !isset($_POST['update_cashier_inactivity']) && !isset($_POST['update_pos_interface'])) {
         // Validate inputs
         $name = trim($_POST['name'] ?? '');
         $location = trim($_POST['location'] ?? '');
@@ -218,6 +218,27 @@ try {
         }
     }
     
+    // Handle POS interface form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_pos_interface'])) {
+        try {
+            require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
+            $posDb = new PDO('sqlite:../pos.db');
+            $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $checkStmt = $posDb->query('SELECT COUNT(*) FROM product_settings')->fetchColumn();
+            if ((int) $checkStmt === 0) {
+                $posDb->exec('INSERT INTO product_settings (show_all_products, default_print_receipt) VALUES (0, 0)');
+            }
+
+            ensureTouchKeyboardSettingsColumn($posDb);
+            $enabled = isset($_POST['touch_keyboard_enabled']) ? 1 : 0;
+            $posDb->prepare('UPDATE product_settings SET touch_keyboard_enabled = ? WHERE id = 1')->execute([$enabled]);
+            $successMessage = 'POS interface settings updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating POS interface settings: ' . $e->getMessage();
+        }
+    }
+
     // Handle CSV import
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['import_csv'])) {
         try {
@@ -388,6 +409,54 @@ try {
             $errorMessage = 'Error updating cashier permissions: ' . $e->getMessage();
         }
     }
+
+    // Handle inactivity settings form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_cashier_inactivity'])) {
+        try {
+            require_once __DIR__ . '/../inactivity_settings_helper.php';
+            $posDb = new PDO('sqlite:../pos.db');
+            $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $posDb->exec("CREATE TABLE IF NOT EXISTS product_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                show_all_products BOOLEAN NOT NULL DEFAULT 0,
+                default_print_receipt BOOLEAN NOT NULL DEFAULT 0
+            )");
+            ensureInactivitySettingsColumns($posDb);
+
+            $checkStmt = $posDb->query("SELECT COUNT(*) FROM product_settings")->fetchColumn();
+            if ($checkStmt == 0) {
+                $posDb->exec("INSERT INTO product_settings (show_all_products, default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, inactivity_role_cashier) VALUES (0, 0, 1, 120, 1)");
+            }
+
+            $cashierInactivityEnabled = isset($_POST['cashier_inactivity_enabled']) ? 1 : 0;
+            $inactivityRoleAdmin = isset($_POST['inactivity_role_admin']) ? 1 : 0;
+            $inactivityRoleManager = isset($_POST['inactivity_role_manager']) ? 1 : 0;
+            $inactivityRoleCashier = isset($_POST['inactivity_role_cashier']) ? 1 : 0;
+            $inactivityRoleWaitress = isset($_POST['inactivity_role_waitress']) ? 1 : 0;
+            $idleSeconds = (int) ($_POST['cashier_idle_timeout_seconds'] ?? 120);
+            if ($idleSeconds < 30) {
+                $idleSeconds = 30;
+            }
+            if ($idleSeconds > 3600) {
+                $idleSeconds = 3600;
+            }
+
+            $updateStmt = $posDb->prepare("UPDATE product_settings SET cashier_inactivity_enabled = ?, cashier_idle_timeout_seconds = ?, inactivity_role_admin = ?, inactivity_role_manager = ?, inactivity_role_cashier = ?, inactivity_role_waitress = ? WHERE id = 1");
+            $updateStmt->execute([
+                $cashierInactivityEnabled,
+                $idleSeconds,
+                $inactivityRoleAdmin,
+                $inactivityRoleManager,
+                $inactivityRoleCashier,
+                $inactivityRoleWaitress,
+            ]);
+
+            $successMessage = 'Inactivity logout settings updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating inactivity settings: ' . $e->getMessage();
+        }
+    }
     
     // Get current cashier permissions
     $cashierPermissions = [
@@ -426,9 +495,18 @@ try {
         // Use defaults if error
     }
     
-    // Get current receipt setting
+    // Get current receipt and inactivity settings
     $defaultPrintReceipt = 0;
+    $cashierInactivityEnabled = 1;
+    $cashierIdleTimeoutSeconds = 120;
+    $inactivityRoleAdmin = 0;
+    $inactivityRoleManager = 0;
+    $inactivityRoleCashier = 1;
+    $inactivityRoleWaitress = 0;
+    $touchKeyboardEnabled = 0;
     try {
+        require_once __DIR__ . '/../inactivity_settings_helper.php';
+        require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
         $posDb = new PDO('sqlite:../pos.db');
         $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         
@@ -445,12 +523,33 @@ try {
         if(!$columnExists) {
             $posDb->exec("ALTER TABLE product_settings ADD COLUMN default_print_receipt BOOLEAN NOT NULL DEFAULT 0");
         }
+        ensureInactivitySettingsColumns($posDb);
+        ensureTouchKeyboardSettingsColumn($posDb);
         
         // Get current setting
-        $receiptSetting = $posDb->query("SELECT default_print_receipt FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $receiptSetting = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
         $defaultPrintReceipt = $receiptSetting ? ($receiptSetting['default_print_receipt'] ?? 0) : 0;
+        $cashierInactivityEnabled = $receiptSetting ? (int) ($receiptSetting['cashier_inactivity_enabled'] ?? 1) : 1;
+        $cashierIdleTimeoutSeconds = $receiptSetting ? (int) ($receiptSetting['cashier_idle_timeout_seconds'] ?? 120) : 120;
+        $inactivityRoleAdmin = $receiptSetting ? (int) ($receiptSetting['inactivity_role_admin'] ?? 0) : 0;
+        $inactivityRoleManager = $receiptSetting ? (int) ($receiptSetting['inactivity_role_manager'] ?? 0) : 0;
+        $inactivityRoleCashier = $receiptSetting ? (int) ($receiptSetting['inactivity_role_cashier'] ?? 1) : 1;
+        $inactivityRoleWaitress = $receiptSetting ? (int) ($receiptSetting['inactivity_role_waitress'] ?? 0) : 0;
+        $touchKeyboardEnabled = $receiptSetting ? (int) ($receiptSetting['touch_keyboard_enabled'] ?? 0) : 0;
+        if ($cashierIdleTimeoutSeconds < 30) {
+            $cashierIdleTimeoutSeconds = 30;
+        }
+        if ($cashierIdleTimeoutSeconds > 3600) {
+            $cashierIdleTimeoutSeconds = 3600;
+        }
     } catch(PDOException $e) {
         $defaultPrintReceipt = 0;
+        $cashierInactivityEnabled = 1;
+        $cashierIdleTimeoutSeconds = 120;
+        $inactivityRoleAdmin = 0;
+        $inactivityRoleManager = 0;
+        $inactivityRoleCashier = 1;
+        $inactivityRoleWaitress = 0;
     }
     
     // Get current business info
@@ -818,6 +917,93 @@ try {
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
                                 </svg>
                                 Save Permissions
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Inactivity Logout Section -->
+                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
+                    <h2 class="text-2xl font-bold mb-6">Inactivity Logout</h2>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
+                        <p class="text-sm text-blue-700">
+                            When enabled, selected user roles are logged out automatically after a period of inactivity (when the cart is empty on POS).
+                        </p>
+                    </div>
+                    <form action="" method="POST" class="space-y-4">
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="cashier_inactivity_enabled" class="block text-sm font-medium text-gray-700 mb-1">Enable inactivity logout</label>
+                                <p class="text-xs text-gray-500">Master switch for automatic logout by role.</p>
+                            </div>
+                            <div class="ml-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="cashier_inactivity_enabled" id="cashier_inactivity_enabled" class="sr-only peer" <?php echo $cashierInactivityEnabled ? 'checked' : ''; ?>>
+                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <p class="block text-sm font-medium text-gray-700 mb-3">Apply inactivity timer to</p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_admin" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleAdmin ? 'checked' : ''; ?>> Admin
+                                </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_manager" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleManager ? 'checked' : ''; ?>> Manager
+                                </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_cashier" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleCashier ? 'checked' : ''; ?>> Cashier
+                                </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_waitress" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleWaitress ? 'checked' : ''; ?>> Waitress
+                                </label>
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Idle timeout (seconds)</label>
+                            <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds" value="<?php echo (int) $cashierIdleTimeoutSeconds; ?>" min="30" max="3600" step="1" class="mt-1 block w-40 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
+                            <p class="mt-2 text-xs text-gray-500">Allowed range: 30–3600 seconds. Default is 120.</p>
+                        </div>
+                        <div class="flex justify-end">
+                            <button type="submit" name="update_cashier_inactivity" value="1" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                Save Inactivity Settings
+                            </button>
+                        </div>
+                    </form>
+                </div>
+                
+                <!-- POS Interface Section -->
+                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
+                    <h2 class="text-2xl font-bold mb-6">POS Interface</h2>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
+                        <p class="text-sm text-blue-700">
+                            Control on-screen touch keyboard behavior on desktop and tablet POS screens. When disabled, staff use the physical keyboard only.
+                        </p>
+                    </div>
+                    <form action="" method="POST" class="space-y-4">
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="touch_keyboard_enabled" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Enable touch keyboard
+                                </label>
+                                <p class="text-xs text-gray-500">Shows the on-screen keyboard panel for cash, payment, login, and tab fields on desktop/tablet POS screens.</p>
+                            </div>
+                            <div class="ml-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="touch_keyboard_enabled" id="touch_keyboard_enabled"
+                                           class="sr-only peer"
+                                           <?php echo $touchKeyboardEnabled ? 'checked' : ''; ?>>
+                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="flex justify-end">
+                            <button type="submit"
+                                    name="update_pos_interface"
+                                    value="1"
+                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                Save POS Interface Settings
                             </button>
                         </div>
                     </form>

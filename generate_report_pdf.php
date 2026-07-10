@@ -6,7 +6,7 @@ date_default_timezone_set('Africa/Harare');
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SESSION['role'])) {
-    header("Location: ");
+    header("Location: ../");
     exit();
 }
 
@@ -104,6 +104,89 @@ function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTim
 // Format currency
 function formatCurrency($amount) {
     return number_format((float)$amount, 2);
+}
+
+/** Print HTML for a table cell: each line item with qty and line total (price is line total in DB). */
+function renderTransactionItemsCell(array $items): void {
+    if ($items === []) {
+        echo '—';
+        return;
+    }
+    echo '<div class="tx-items">';
+    foreach ($items as $li) {
+        $name = htmlspecialchars((string) ($li['product_name'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $qty = (int) ($li['quantity'] ?? 0);
+        $lineTotal = formatCurrency($li['price'] ?? 0);
+        echo '<div class="tx-item-line">' . $name . ' ×' . $qty . ' — N$' . $lineTotal . '</div>';
+    }
+    echo '</div>';
+}
+
+/**
+ * Parse void_transactions.items (JSON from POS / deleted-order snapshot, or legacy text).
+ * @return list<array{product_name: string, quantity: float|int, price: float}>
+ */
+function parseVoidTransactionItemsField(?string $itemsField): array {
+    if ($itemsField === null || trim($itemsField) === '') {
+        return [];
+    }
+    $decoded = json_decode($itemsField, true);
+    if (json_last_error() !== JSON_ERROR_NONE || $decoded === null) {
+        return [];
+    }
+    if (isset($decoded['name']) || isset($decoded['product_name'])) {
+        $decoded = [$decoded];
+    }
+    if (!is_array($decoded)) {
+        return [];
+    }
+    $out = [];
+    foreach ($decoded as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $name = (string) ($row['product_name'] ?? $row['name'] ?? $row['productName'] ?? '');
+        $qty = $row['quantity'] ?? $row['qty'] ?? 1;
+        $price = $row['price'] ?? $row['line_total'] ?? $row['total'] ?? 0;
+        $out[] = [
+            'product_name' => $name,
+            'quantity' => is_numeric($qty) ? 0 + $qty : 1,
+            'price' => is_numeric($price) ? (float) $price : 0.0,
+        ];
+    }
+    return $out;
+}
+
+/** Line items cell for voids (supports fractional quantities). */
+function renderVoidLineItemsCell(array $items): void {
+    if ($items === []) {
+        echo '—';
+        return;
+    }
+    echo '<div class="tx-items">';
+    foreach ($items as $li) {
+        $name = htmlspecialchars((string) ($li['product_name'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $q = $li['quantity'] ?? 1;
+        if (is_numeric($q)) {
+            $qf = (float) $q;
+            $qtyStr = (abs(fmod($qf, 1.0)) < 1e-6) ? (string) (int) $qf : rtrim(rtrim(sprintf('%.3f', $qf), '0'), '.');
+        } else {
+            $qtyStr = '1';
+        }
+        $lineTotal = formatCurrency($li['price'] ?? 0);
+        echo '<div class="tx-item-line">' . $name . ' ×' . $qtyStr . ' — N$' . $lineTotal . '</div>';
+    }
+    echo '</div>';
+}
+
+function voidSourceLabel(?string $voidSource): string {
+    $s = $voidSource ?? 'void';
+    $map = [
+        'void' => 'Void',
+        'deleted_order' => 'Deleted order',
+        'deleted_credit' => 'Deleted credit',
+    ];
+    return $map[$s] ?? ucfirst(str_replace('_', ' ', $s));
 }
 
 // Get cash data for one business day (includes all fields from admin/get_cashup_data.php)
@@ -253,18 +336,23 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
     $stmt->execute($params);
     $cashBackSystem = (float)$stmt->fetchColumn();
     
-    // 11. Tips (system value)
-    $stmt = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) FROM cash_transactions
-        WHERE type = 'cash-out' 
-        AND (description LIKE '%Tips%' OR description LIKE '%tip%')
-        AND (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
-    ");
-    $stmt->execute($params);
-    $tipsSystem = (float)$stmt->fetchColumn();
+    // 11. Tips (system value) — from tips table only (never cash-out)
+    $tipsSystem = 0;
+    try {
+        if ($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='tips'")->fetchColumn()) {
+            $stmt = $db->prepare("
+                SELECT COALESCE(SUM(amount), 0) FROM tips
+                WHERE (
+                    (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
+                    (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
+                )
+            ");
+            $stmt->execute($params);
+            $tipsSystem = (float) $stmt->fetchColumn();
+        }
+    } catch (PDOException $e) {
+        $tipsSystem = 0;
+    }
     
     // 12. Voids
     $voids = 0;
@@ -355,6 +443,8 @@ function getReportTitle($type) {
         'refunds' => 'Refunds Report',
         'voids' => 'Voids Report',
         'cashier_sales' => 'Cashier Sales Report',
+        'gratuity' => 'Gratuity Report',
+        'tips' => 'Tips Report',
         'shift' => 'Shift Report',
         'profit_loss' => 'Profit & Loss Report',
         'audit_log' => 'Audit Log Report'
@@ -384,29 +474,72 @@ switch ($reportType) {
         ");
         $ordersQuery->execute();
         $orders = $ordersQuery->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Get totals
+
+        $categoryFilterActive = ($category !== '' && $category !== null);
+        $orderItemsStmt = $db->prepare("
+            SELECT oi.product_name, oi.quantity, oi.price, p.category
+            FROM order_items oi
+            LEFT JOIN products p ON oi.product_name = p.name
+            WHERE oi.order_id = ?
+        ");
+        $eftStmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM eft_payments WHERE order_id = ?");
+
+        $filteredOrders = [];
+        foreach ($orders as $order) {
+            $orderItemsStmt->execute([$order['id']]);
+            $itemRows = $orderItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $eftStmt->execute([$order['id']]);
+            $eftAmount = (float) $eftStmt->fetchColumn();
+            $origTotal = (float) $order['total'];
+
+            if ($categoryFilterActive) {
+                $catItems = [];
+                foreach ($itemRows as $row) {
+                    if (($row['category'] ?? '') === $category) {
+                        $catItems[] = $row;
+                    }
+                }
+                if (count($catItems) === 0) {
+                    continue;
+                }
+                $categorySubtotal = 0.0;
+                foreach ($catItems as $ci) {
+                    $categorySubtotal += (float) $ci['price'];
+                }
+                $ratio = ($origTotal > 0) ? ($categorySubtotal / $origTotal) : 0.0;
+                $order['total'] = $categorySubtotal;
+                $order['eft_amount'] = round($eftAmount * $ratio, 2);
+                $order['cash_amount'] = round($categorySubtotal - $order['eft_amount'], 2);
+                $order['items'] = array_map(static function ($row) {
+                    return [
+                        'product_name' => $row['product_name'],
+                        'quantity' => $row['quantity'],
+                        'price' => $row['price'],
+                    ];
+                }, $catItems);
+            } else {
+                $order['eft_amount'] = $eftAmount;
+                $order['cash_amount'] = $origTotal - $eftAmount;
+                $order['items'] = array_map(static function ($row) {
+                    return [
+                        'product_name' => $row['product_name'],
+                        'quantity' => $row['quantity'],
+                        'price' => $row['price'],
+                    ];
+                }, $itemRows);
+            }
+            $filteredOrders[] = $order;
+        }
+        $orders = $filteredOrders;
+
         $cashTotal = 0;
         $cardTotal = 0;
-        
-        foreach ($orders as &$order) {
-            // Get EFT amount for this order
-            $eftQuery = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM eft_payments WHERE order_id = ?");
-            $eftQuery->execute([$order['id']]);
-            $eftAmount = $eftQuery->fetchColumn();
-            
-            $order['eft_amount'] = $eftAmount;
-            $order['cash_amount'] = $order['total'] - $eftAmount;
-            
+        foreach ($orders as $order) {
             $cashTotal += $order['cash_amount'];
-            $cardTotal += $eftAmount;
-            
-            // Get order items
-            $itemsQuery = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ?");
-            $itemsQuery->execute([$order['id']]);
-            $order['items'] = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
+            $cardTotal += $order['eft_amount'];
         }
-        
+
         // Get credit sales
         $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
         $creditQuery = $db->prepare("
@@ -417,8 +550,65 @@ switch ($reportType) {
             ORDER BY cs.created_at DESC
         ");
         $creditQuery->execute();
-        $creditSales = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
-        
+        $creditSalesRaw = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
+
+        $creditItemsStmt = $db->prepare("
+            SELECT csi.product_name, csi.quantity, csi.price, p.category
+            FROM credit_sale_items csi
+            LEFT JOIN products p ON csi.product_name = p.name
+            WHERE csi.sale_id = ?
+        ");
+
+        $creditSales = [];
+        foreach ($creditSalesRaw as $sale) {
+            if ($categoryFilterActive) {
+                $creditItemsStmt->execute([$sale['id']]);
+                $crows = $creditItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+                $catRows = [];
+                foreach ($crows as $row) {
+                    if (($row['category'] ?? '') === $category) {
+                        $catRows[] = $row;
+                    }
+                }
+                if (count($catRows) === 0) {
+                    continue;
+                }
+                $categorySubtotal = 0.0;
+                foreach ($catRows as $cr) {
+                    $categorySubtotal += (float) $cr['price'];
+                }
+                $origCreditTotal = (float) $sale['total_amount'];
+                $ratio = ($origCreditTotal > 0) ? ($categorySubtotal / $origCreditTotal) : 0.0;
+                $sale['total_amount'] = $categorySubtotal;
+                $sale['paid_amount'] = round((float) $sale['paid_amount'] * $ratio, 2);
+                $outstanding = $sale['total_amount'] - $sale['paid_amount'];
+                if ($outstanding <= 0.005) {
+                    $sale['payment_status'] = 'paid';
+                } elseif ($sale['paid_amount'] > 0) {
+                    $sale['payment_status'] = 'partial';
+                } else {
+                    $sale['payment_status'] = 'unpaid';
+                }
+                $sale['items'] = array_map(static function ($r) {
+                    return [
+                        'product_name' => $r['product_name'],
+                        'quantity' => $r['quantity'],
+                        'price' => $r['price'],
+                    ];
+                }, $catRows);
+            }
+            $creditSales[] = $sale;
+        }
+
+        if (!$categoryFilterActive) {
+            $csiPlainStmt = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
+            foreach ($creditSales as &$cs) {
+                $csiPlainStmt->execute([$cs['id']]);
+                $cs['items'] = $csiPlainStmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+            unset($cs);
+        }
+
         $creditTotal = array_sum(array_column($creditSales, 'total_amount'));
         $creditPaid = array_sum(array_column($creditSales, 'paid_amount'));
         
@@ -524,6 +714,12 @@ switch ($reportType) {
                 $totalCash += $cashAmount;
             }
         }
+        $oiCashStmt = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ?");
+        foreach ($cashOrders as &$co) {
+            $oiCashStmt->execute([$co['id']]);
+            $co['items'] = $oiCashStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        unset($co);
         
         $reportData = [
             'orders' => $cashOrders,
@@ -546,6 +742,18 @@ switch ($reportType) {
         ");
         $eftQuery->execute();
         $eftPayments = $eftQuery->fetchAll(PDO::FETCH_ASSOC);
+        
+        $itemsByOrderId = [];
+        $oiCardStmt = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ?");
+        foreach ($eftPayments as &$payment) {
+            $oid = $payment['order_id'];
+            if (!array_key_exists($oid, $itemsByOrderId)) {
+                $oiCardStmt->execute([$oid]);
+                $itemsByOrderId[$oid] = $oiCardStmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+            $payment['items'] = $itemsByOrderId[$oid];
+        }
+        unset($payment);
         
         $totalEft = array_sum(array_column($eftPayments, 'amount'));
         
@@ -724,9 +932,16 @@ switch ($reportType) {
         ");
         $creditQuery->execute();
         $outstanding = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
-        
+
+        $osItemsStmt = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
+        foreach ($outstanding as &$osRow) {
+            $osItemsStmt->execute([$osRow['id']]);
+            $osRow['items'] = $osItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        unset($osRow);
+
         $totalOutstanding = array_sum(array_column($outstanding, 'outstanding'));
-        
+
         $reportData = [
             'outstanding' => $outstanding,
             'summary' => [
@@ -942,6 +1157,11 @@ switch ($reportType) {
         ");
         $voidsQuery->execute();
         $voids = $voidsQuery->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($voids as &$v) {
+            $v['line_items'] = parseVoidTransactionItemsField($v['items'] ?? null);
+        }
+        unset($v);
         
         $totalVoids = array_sum(array_column($voids, 'total'));
         
@@ -1003,16 +1223,99 @@ switch ($reportType) {
         usort($cashierSales, fn($a, $b) => $b['grand_total'] <=> $a['grand_total']);
         
         $totalSales = array_sum(array_column($cashierSales, 'grand_total'));
+
+        $selectedCashierUserId = '';
+        if ($cashierId) {
+            foreach ($allCashiers as $u) {
+                if ($u['username'] === $cashierId) {
+                    $selectedCashierUserId = (string) $u['id'];
+                    break;
+                }
+            }
+        }
+        if ($cashierId) {
+            $orderDetailQuery = $db->prepare("
+                SELECT o.id, o.total, o.created_at, COALESCE(o.cashier_id, 'Unknown') as cashier_name
+                FROM orders o
+                WHERE ($ordersWhereClause) AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
+                ORDER BY o.created_at DESC
+            ");
+            $orderDetailQuery->execute([$cashierId, $selectedCashierUserId]);
+        } else {
+            $orderDetailQuery = $db->prepare("
+                SELECT o.id, o.total, o.created_at, COALESCE(o.cashier_id, 'Unknown') as cashier_name
+                FROM orders o
+                WHERE ($ordersWhereClause)
+                ORDER BY o.created_at DESC
+            ");
+            $orderDetailQuery->execute();
+        }
+        $orderTransactions = $orderDetailQuery->fetchAll(PDO::FETCH_ASSOC);
+        $oiDetailStmt = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ?");
+        foreach ($orderTransactions as &$ot) {
+            $oiDetailStmt->execute([$ot['id']]);
+            $ot['items'] = $oiDetailStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        unset($ot);
+
+        $creditDetailWhere = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        if ($cashierId) {
+            $creditDetailQuery = $db->prepare("
+                SELECT cs.*, c.name as creditor_name
+                FROM credit_sales cs
+                LEFT JOIN creditors c ON cs.creditor_id = c.id
+                WHERE ($creditDetailWhere) AND (cs.cashier_id = ? OR CAST(cs.cashier_id AS TEXT) = ?)
+                ORDER BY cs.created_at DESC
+            ");
+            $creditDetailQuery->execute([$cashierId, $selectedCashierUserId]);
+        } else {
+            $creditDetailQuery = $db->prepare("
+                SELECT cs.*, c.name as creditor_name
+                FROM credit_sales cs
+                LEFT JOIN creditors c ON cs.creditor_id = c.id
+                WHERE ($creditDetailWhere)
+                ORDER BY cs.created_at DESC
+            ");
+            $creditDetailQuery->execute();
+        }
+        $creditTransactions = $creditDetailQuery->fetchAll(PDO::FETCH_ASSOC);
+        $csiDetailStmt = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
+        foreach ($creditTransactions as &$ct) {
+            $csiDetailStmt->execute([$ct['id']]);
+            $ct['items'] = $csiDetailStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        unset($ct);
         
         $reportData = [
             'cashiers' => $cashierSales,
+            'order_transactions' => $orderTransactions,
+            'credit_transactions' => $creditTransactions,
             'summary' => [
                 'total_cashiers' => count($cashierSales),
                 'total_sales' => $totalSales
             ]
         ];
         break;
-        
+
+    case 'gratuity':
+        require_once __DIR__ . '/gratuity_report_helper.php';
+        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $reportData = buildGratuityReportData(
+            $db,
+            $userDb,
+            $ordersWhereClause,
+            $cashierId,
+            resolveGratuityReportRate($db, 7.0)
+        );
+        break;
+
+    case 'tips':
+        require_once __DIR__ . '/tips_report_helper.php';
+        $tipsWhereClause = getBusinessDayWhereClause('t.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $reportData = buildTipsReportData($db, $userDb, $tipsWhereClause, $ordersWhereClause, $cashierId);
+        break;
+
     case 'shift':
         // Get shift/login data
         $cashierCondition = $cashierId ? " AND ul.user_id = " . $db->quote($cashierId) : "";
@@ -1404,6 +1707,26 @@ header('Content-Type: text/html; charset=utf-8');
             max-width: 300px;
         }
         
+        .tx-items {
+            font-size: 10px;
+            color: #444;
+            text-align: left;
+            max-width: 320px;
+        }
+        .tx-item-line {
+            margin: 2px 0;
+            line-height: 1.35;
+        }
+        
+        .voids-detail-table th {
+            font-size: 9px;
+            line-height: 1.2;
+        }
+        .voids-detail-table td {
+            font-size: 11px;
+            vertical-align: top;
+        }
+        
         .no-data {
             text-align: center;
             padding: 40px;
@@ -1432,6 +1755,9 @@ header('Content-Type: text/html; charset=utf-8');
             <div class="business-info">Tel: <?= htmlspecialchars($businessPhone) ?></div>
         <?php endif; ?>
         <div class="date-range"><?= htmlspecialchars($dateRange) ?></div>
+        <?php if ($category !== '' && in_array($reportType, ['sales', 'daily_sales', 'monthly_sales'], true)): ?>
+            <div class="business-info">Category: <?= htmlspecialchars($category) ?></div>
+        <?php endif; ?>
         <div class="generated">Generated on <?= date('F j, Y \a\t H:i') ?> by <?= htmlspecialchars($_SESSION['username']) ?></div>
     </div>
     
@@ -1474,6 +1800,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Order #</th>
                     <th>Date/Time</th>
                     <th>Cashier</th>
+                    <th>Products</th>
                     <th class="text-right">Cash</th>
                     <th class="text-right">Card</th>
                     <th class="text-right">Total</th>
@@ -1485,13 +1812,14 @@ header('Content-Type: text/html; charset=utf-8');
                     <td>#<?= $order['id'] ?></td>
                     <td><?= date('M j, H:i', strtotime($order['created_at'])) ?></td>
                     <td><?= htmlspecialchars($order['cashier_name'] ?? 'Unknown') ?></td>
+                    <td class="items-list"><?php renderTransactionItemsCell($order['items'] ?? []); ?></td>
                     <td class="text-right">N$<?= formatCurrency($order['cash_amount']) ?></td>
                     <td class="text-right">N$<?= formatCurrency($order['eft_amount']) ?></td>
                     <td class="text-right font-bold">N$<?= formatCurrency($order['total']) ?></td>
                 </tr>
                 <?php endforeach; ?>
                 <tr class="total-row">
-                    <td colspan="3">Total</td>
+                    <td colspan="4">Total</td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['cash_total']) ?></td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['card_total']) ?></td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['cash_total'] + $reportData['summary']['card_total']) ?></td>
@@ -1510,6 +1838,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Sale #</th>
                     <th>Date</th>
                     <th>Customer</th>
+                    <th>Products</th>
                     <th class="text-right">Amount</th>
                     <th class="text-right">Paid</th>
                     <th class="text-right">Outstanding</th>
@@ -1522,6 +1851,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <td>#<?= $sale['id'] ?></td>
                     <td><?= date('M j, H:i', strtotime($sale['created_at'])) ?></td>
                     <td><?= htmlspecialchars($sale['creditor_name'] ?? 'Unknown') ?></td>
+                    <td class="items-list"><?php renderTransactionItemsCell($sale['items'] ?? []); ?></td>
                     <td class="text-right">N$<?= formatCurrency($sale['total_amount']) ?></td>
                     <td class="text-right text-green">N$<?= formatCurrency($sale['paid_amount']) ?></td>
                     <td class="text-right <?= ($sale['total_amount'] - $sale['paid_amount']) > 0 ? 'text-red' : '' ?>">N$<?= formatCurrency($sale['total_amount'] - $sale['paid_amount']) ?></td>
@@ -1533,7 +1863,7 @@ header('Content-Type: text/html; charset=utf-8');
                 </tr>
                 <?php endforeach; ?>
                 <tr class="total-row">
-                    <td colspan="3">Total Credit Sales</td>
+                    <td colspan="4">Total Credit Sales</td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['credit_total']) ?></td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['credit_paid']) ?></td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['credit_outstanding']) ?></td>
@@ -1639,6 +1969,7 @@ header('Content-Type: text/html; charset=utf-8');
                 <tr>
                     <th>Order #</th>
                     <th>Date/Time</th>
+                    <th>Products</th>
                     <th class="text-right">Cash Amount</th>
                 </tr>
             </thead>
@@ -1648,15 +1979,16 @@ header('Content-Type: text/html; charset=utf-8');
                     <tr>
                         <td>#<?= $order['id'] ?></td>
                         <td><?= date('M j, Y H:i', strtotime($order['created_at'])) ?></td>
+                        <td class="items-list"><?php renderTransactionItemsCell($order['items'] ?? []); ?></td>
                         <td class="text-right font-bold">N$<?= formatCurrency($order['cash_amount']) ?></td>
                     </tr>
                     <?php endforeach; ?>
                     <tr class="total-row">
-                        <td colspan="2">Total</td>
+                        <td colspan="3">Total</td>
                         <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_cash']) ?></td>
                     </tr>
                 <?php else: ?>
-                    <tr><td colspan="3" class="no-data">No cash sales found for this period</td></tr>
+                    <tr><td colspan="4" class="no-data">No cash sales found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -1678,6 +2010,7 @@ header('Content-Type: text/html; charset=utf-8');
                 <tr>
                     <th>Order #</th>
                     <th>Date/Time</th>
+                    <th>Products</th>
                     <th>Reference</th>
                     <th>Provider</th>
                     <th class="text-right">Amount</th>
@@ -1689,17 +2022,18 @@ header('Content-Type: text/html; charset=utf-8');
                     <tr>
                         <td>#<?= $payment['order_id'] ?></td>
                         <td><?= date('M j, Y H:i', strtotime($payment['payment_date'])) ?></td>
+                        <td class="items-list"><?php renderTransactionItemsCell($payment['items'] ?? []); ?></td>
                         <td><?= htmlspecialchars($payment['transaction_ref'] ?? '-') ?></td>
                         <td><?= htmlspecialchars($payment['wallet_provider'] ?? '-') ?></td>
                         <td class="text-right font-bold">N$<?= formatCurrency($payment['amount']) ?></td>
                     </tr>
                     <?php endforeach; ?>
                     <tr class="total-row">
-                        <td colspan="4">Total</td>
+                        <td colspan="5">Total</td>
                         <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_eft']) ?></td>
                     </tr>
                 <?php else: ?>
-                    <tr><td colspan="5" class="no-data">No card sales found for this period</td></tr>
+                    <tr><td colspan="6" class="no-data">No card sales found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -2088,6 +2422,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Date</th>
                     <th>Customer</th>
                     <th>Phone</th>
+                    <th>Products</th>
                     <th class="text-right">Amount</th>
                     <th class="text-right">Paid</th>
                     <th class="text-right">Balance</th>
@@ -2102,6 +2437,7 @@ header('Content-Type: text/html; charset=utf-8');
                         <td><?= date('M j, Y', strtotime($sale['created_at'])) ?></td>
                         <td><?= htmlspecialchars($sale['creditor_name'] ?? 'Unknown') ?></td>
                         <td><?= htmlspecialchars($sale['creditor_phone'] ?? '-') ?></td>
+                        <td class="items-list"><?php renderTransactionItemsCell($sale['items'] ?? []); ?></td>
                         <td class="text-right">N$<?= formatCurrency($sale['total_amount']) ?></td>
                         <td class="text-right text-green">N$<?= formatCurrency($sale['paid_amount']) ?></td>
                         <td class="text-right text-red">N$<?= formatCurrency($sale['total_amount'] - $sale['paid_amount']) ?></td>
@@ -2113,7 +2449,7 @@ header('Content-Type: text/html; charset=utf-8');
                     </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="8" class="no-data">No credit sales found for this period</td></tr>
+                    <tr><td colspan="9" class="no-data">No credit sales found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -2137,6 +2473,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Phone</th>
                     <th>Sale Date</th>
                     <th>Due Date</th>
+                    <th>Products</th>
                     <th class="text-right">Total</th>
                     <th class="text-right">Paid</th>
                     <th class="text-right">Outstanding</th>
@@ -2150,17 +2487,18 @@ header('Content-Type: text/html; charset=utf-8');
                         <td><?= htmlspecialchars($item['creditor_phone'] ?? '-') ?></td>
                         <td><?= date('M j, Y', strtotime($item['created_at'])) ?></td>
                         <td><?= $item['due_date'] ? date('M j, Y', strtotime($item['due_date'])) : '-' ?></td>
+                        <td class="items-list"><?php renderTransactionItemsCell($item['items'] ?? []); ?></td>
                         <td class="text-right">N$<?= formatCurrency($item['total_amount']) ?></td>
                         <td class="text-right text-green">N$<?= formatCurrency($item['paid_amount']) ?></td>
                         <td class="text-right text-red font-bold">N$<?= formatCurrency($item['outstanding']) ?></td>
                     </tr>
                     <?php endforeach; ?>
                     <tr class="total-row">
-                        <td colspan="6">Total Outstanding</td>
+                        <td colspan="7">Total Outstanding</td>
                         <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_outstanding']) ?></td>
                     </tr>
                 <?php else: ?>
-                    <tr><td colspan="7" class="no-data">No outstanding credit found</td></tr>
+                    <tr><td colspan="8" class="no-data">No outstanding credit found</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -2192,6 +2530,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Name</th>
                     <th>Customer</th>
                     <th>Opened</th>
+                    <th>Products</th>
                     <th class="text-right">Balance</th>
                     <th>Status</th>
                 </tr>
@@ -2204,6 +2543,7 @@ header('Content-Type: text/html; charset=utf-8');
                         <td><?= htmlspecialchars($tab['tab_name']) ?></td>
                         <td><?= htmlspecialchars($tab['creditor_name'] ?? '-') ?></td>
                         <td><?= date('M j, Y H:i', strtotime($tab['opened_at'])) ?></td>
+                        <td class="items-list"><?php renderTransactionItemsCell($tab['items'] ?? []); ?></td>
                         <td class="text-right font-bold">N$<?= formatCurrency($tab['current_balance']) ?></td>
                         <td>
                             <span class="badge <?= $tab['status'] === 'open' ? 'badge-warning' : 'badge-success' ?>">
@@ -2213,7 +2553,7 @@ header('Content-Type: text/html; charset=utf-8');
                     </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="6" class="no-data">No tabs found for this period</td></tr>
+                    <tr><td colspan="7" class="no-data">No tabs found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -2457,6 +2797,7 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Date/Time</th>
                     <th>Cashier</th>
                     <th>Reason</th>
+                    <th>Products</th>
                     <th class="text-right">Amount</th>
                 </tr>
             </thead>
@@ -2469,15 +2810,16 @@ header('Content-Type: text/html; charset=utf-8');
                         <td><?= date('M j, Y H:i', strtotime($refund['created_at'])) ?></td>
                         <td><?= htmlspecialchars($refund['cashier_name'] ?? 'Unknown') ?></td>
                         <td><?= htmlspecialchars($refund['reason'] ?? '-') ?></td>
+                        <td class="items-list"><?php renderTransactionItemsCell($refund['items'] ?? []); ?></td>
                         <td class="text-right text-red font-bold">N$<?= formatCurrency($refund['total_amount']) ?></td>
                     </tr>
                     <?php endforeach; ?>
                     <tr class="total-row">
-                        <td colspan="5">Total</td>
+                        <td colspan="6">Total</td>
                         <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_amount']) ?></td>
                     </tr>
                 <?php else: ?>
-                    <tr><td colspan="6" class="no-data">No refunds found for this period</td></tr>
+                    <tr><td colspan="7" class="no-data">No refunds found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -2494,35 +2836,80 @@ header('Content-Type: text/html; charset=utf-8');
             </div>
         </div>
         
-        <table>
+        <table class="voids-detail-table">
             <thead>
                 <tr>
                     <th>Void #</th>
-                    <th>Order #</th>
+                    <th>Transaction</th>
                     <th>Date/Time</th>
-                    <th>Payment Method</th>
-                    <th>Items</th>
-                    <th class="text-right">Amount</th>
+                    <th>Cashier</th>
+                    <th>Source</th>
+                    <th>Payment</th>
+                    <th>EFT ref / provider</th>
+                    <th class="text-right">Cash in</th>
+                    <th class="text-right">EFT</th>
+                    <th>Line items</th>
+                    <th class="text-right">Total</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (!empty($reportData['voids'])): ?>
                     <?php foreach ($reportData['voids'] as $void): ?>
                     <tr>
-                        <td>#<?= $void['id'] ?></td>
-                        <td>#<?= $void['order_id'] ?? '-' ?></td>
+                        <td>#<?= htmlspecialchars((string)($void['id'] ?? '')) ?></td>
+                        <td class="items-list">
+                            <?php if (!empty($void['order_id'])): ?>
+                                Order #<?= htmlspecialchars((string) $void['order_id']) ?>
+                            <?php elseif (!empty($void['credit_sale_id'])): ?>
+                                Credit #<?= htmlspecialchars((string) $void['credit_sale_id']) ?>
+                                <?php if (!empty($void['creditor_name'])): ?>
+                                    <br><span class="text-gray"><?= htmlspecialchars($void['creditor_name']) ?></span>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                —
+                            <?php endif; ?>
+                        </td>
                         <td><?= date('M j, Y H:i', strtotime($void['voided_at'])) ?></td>
-                        <td><?= htmlspecialchars($void['payment_method'] ?? '-') ?></td>
-                        <td class="items-list"><?= htmlspecialchars(substr($void['items'] ?? '-', 0, 50)) ?>...</td>
+                        <td><?= htmlspecialchars((string)($void['cashier_id'] ?? 'Unknown')) ?></td>
+                        <td><?= htmlspecialchars(voidSourceLabel($void['void_source'] ?? null)) ?></td>
+                        <td><?= htmlspecialchars((string)($void['payment_method'] ?? '—')) ?></td>
+                        <td class="items-list">
+                            <?php
+                            $vref = trim((string) ($void['transaction_ref'] ?? ''));
+                            $vprov = trim((string) ($void['wallet_provider'] ?? ''));
+                            if ($vref === '' && $vprov === '') {
+                                echo '—';
+                            } else {
+                                echo $vref !== '' ? htmlspecialchars($vref) : '—';
+                                if ($vprov !== '') {
+                                    echo '<br><span class="text-gray">' . htmlspecialchars($vprov) . '</span>';
+                                }
+                            }
+                            ?>
+                        </td>
+                        <td class="text-right">N$<?= formatCurrency($void['cash_received'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($void['eft_amount'] ?? 0) ?></td>
+                        <td class="items-list">
+                            <?php
+                            $parsed = $void['line_items'] ?? [];
+                            if ($parsed !== []) {
+                                renderVoidLineItemsCell($parsed);
+                            } elseif (!empty($void['items'])) {
+                                echo '<div class="tx-items"><div class="tx-item-line">' . nl2br(htmlspecialchars((string) $void['items'], ENT_QUOTES, 'UTF-8')) . '</div></div>';
+                            } else {
+                                echo '—';
+                            }
+                            ?>
+                        </td>
                         <td class="text-right text-red font-bold">N$<?= formatCurrency($void['total']) ?></td>
                     </tr>
                     <?php endforeach; ?>
                     <tr class="total-row">
-                        <td colspan="5">Total</td>
+                        <td colspan="10">Total</td>
                         <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_amount']) ?></td>
                     </tr>
                 <?php else: ?>
-                    <tr><td colspan="6" class="no-data">No voids found for this period</td></tr>
+                    <tr><td colspan="11" class="no-data">No voids found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -2570,6 +2957,227 @@ header('Content-Type: text/html; charset=utf-8');
                     </tr>
                 <?php else: ?>
                     <tr><td colspan="6" class="no-data">No cashier sales found for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+        
+        <h3 class="section-title">Cash &amp; card orders (line items)</h3>
+        <?php if (!empty($reportData['order_transactions'])): ?>
+        <table>
+            <thead>
+                <tr>
+                    <th>Order #</th>
+                    <th>Date/Time</th>
+                    <th>Cashier</th>
+                    <th>Products</th>
+                    <th class="text-right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($reportData['order_transactions'] as $tx): ?>
+                <tr>
+                    <td>#<?= $tx['id'] ?></td>
+                    <td><?= date('M j, Y H:i', strtotime($tx['created_at'])) ?></td>
+                    <td><?= htmlspecialchars($tx['cashier_name'] ?? 'Unknown') ?></td>
+                    <td class="items-list"><?php renderTransactionItemsCell($tx['items'] ?? []); ?></td>
+                    <td class="text-right font-bold">N$<?= formatCurrency($tx['total']) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php else: ?>
+        <div class="no-data">No orders in this period</div>
+        <?php endif; ?>
+        
+        <h3 class="section-title">Credit sales (line items)</h3>
+        <?php if (!empty($reportData['credit_transactions'])): ?>
+        <table>
+            <thead>
+                <tr>
+                    <th>Sale #</th>
+                    <th>Date</th>
+                    <th>Customer</th>
+                    <th>Products</th>
+                    <th class="text-right">Amount</th>
+                    <th class="text-right">Paid</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($reportData['credit_transactions'] as $ctx): ?>
+                <tr>
+                    <td>#<?= $ctx['id'] ?></td>
+                    <td><?= date('M j, Y H:i', strtotime($ctx['created_at'])) ?></td>
+                    <td><?= htmlspecialchars($ctx['creditor_name'] ?? 'Unknown') ?></td>
+                    <td class="items-list"><?php renderTransactionItemsCell($ctx['items'] ?? []); ?></td>
+                    <td class="text-right">N$<?= formatCurrency($ctx['total_amount']) ?></td>
+                    <td class="text-right">N$<?= formatCurrency($ctx['paid_amount']) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php else: ?>
+        <div class="no-data">No credit sales in this period</div>
+        <?php endif; ?>
+        
+    <?php break; case 'gratuity': ?>
+        <div class="summary-cards">
+            <div class="summary-card positive">
+                <div class="label">Total gratuity (<?= htmlspecialchars((string) ($reportData['summary']['gratuity_rate_percent'] ?? 7)) ?>% of sales)</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_gratuity']) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Total sales</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_sales'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Orders (period)</div>
+                <div class="value"><?= (int) $reportData['summary']['total_orders'] ?></div>
+            </div>
+        </div>
+
+        <h3 class="section-title">Gratuity by cashier</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cashier</th>
+                    <th class="text-right">Cash</th>
+                    <th class="text-right">Card / EFT</th>
+                    <th class="text-right">Total sales</th>
+                    <th class="text-right">Gratuity total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['by_cashier'])): ?>
+                    <?php foreach ($reportData['by_cashier'] as $row): ?>
+                    <tr>
+                        <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['cash_total'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['card_total'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['total_sales'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['gratuity_total']) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <tr class="total-row">
+                        <td><strong>Totals</strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['detail_cash_total'] ?? 0) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['detail_card_total'] ?? 0) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_sales'] ?? 0) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_gratuity']) ?></strong></td>
+                    </tr>
+                <?php else: ?>
+                    <tr><td colspan="5" class="no-data">No order data for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+        
+    <?php break; case 'tips': ?>
+        <div class="summary-cards">
+            <div class="summary-card positive">
+                <div class="label">Total tips</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_tips'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Manual tips</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['manual_tips_total'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Checkout / tab gratuity</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['order_gratuity_total'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Entries</div>
+                <div class="value"><?= (int) ($reportData['summary']['total_entries'] ?? 0) ?></div>
+            </div>
+        </div>
+
+        <h3 class="section-title">Tips by payment method</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th class="text-right">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Cash</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['cash'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Card / EFT</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['card'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Inventory</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['inventory'] ?? 0) ?></td>
+                </tr>
+                <?php if (($reportData['summary']['by_method']['other'] ?? 0) > 0): ?>
+                <tr>
+                    <td>Other</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['other'] ?? 0) ?></td>
+                </tr>
+                <?php endif; ?>
+                <tr class="total-row">
+                    <td><strong>Total</strong></td>
+                    <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_tips'] ?? 0) ?></strong></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3 class="section-title">Tips by cashier</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cashier</th>
+                    <th class="text-right">Cash</th>
+                    <th class="text-right">Card / EFT</th>
+                    <th class="text-right">Inventory</th>
+                    <th class="text-right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['by_cashier'])): ?>
+                    <?php foreach ($reportData['by_cashier'] as $row): ?>
+                    <tr>
+                        <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['cash_total'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['card_total'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['inventory_total'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['total'] ?? 0) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="5" class="no-data">No tips recorded for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+
+        <h3 class="section-title">Tip entries</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date / time</th>
+                    <th>Source</th>
+                    <th>Cashier</th>
+                    <th>Method</th>
+                    <th class="text-right">Amount</th>
+                    <th>Reference</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['entries'])): ?>
+                    <?php foreach ($reportData['entries'] as $row): ?>
+                    <tr>
+                        <td><?= htmlspecialchars((string) ($row['created_at'] ?? '')) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['source'] ?? '')) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['payment_method'] ?? '')) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['amount'] ?? 0) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['reference'] ?? '')) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="6" class="no-data">No tip entries for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

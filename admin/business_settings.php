@@ -21,6 +21,7 @@ $printerPort = 'COM4'; // Default value
 $closingTime = '22:00'; // Default closing time
 $vatInclusive = 'exclusive'; // Default VAT setting (exclusive)
 $vatRate = 15.0; // Default Namibian VAT rate (15%)
+$allowedVatModes = ['exclusive', 'inclusive', 'none'];
 
 // Connect to database
 try {
@@ -33,6 +34,7 @@ try {
         name TEXT NOT NULL,
         location TEXT NOT NULL,
         phone TEXT NOT NULL,
+        header_custom_text TEXT NOT NULL DEFAULT '',
         footer_text TEXT NOT NULL,
         printer_port TEXT NOT NULL DEFAULT 'COM4',
         closing_time TEXT NOT NULL DEFAULT '22:00',
@@ -55,28 +57,137 @@ try {
     if(!in_array('vat_rate', $columnNames)) {
         $db->exec("ALTER TABLE business_info ADD COLUMN vat_rate REAL NOT NULL DEFAULT 15.0");
     }
+
+    if(!in_array('header_custom_text', $columnNames)) {
+        $db->exec("ALTER TABLE business_info ADD COLUMN header_custom_text TEXT NOT NULL DEFAULT ''");
+    }
+
+    if(!in_array('logo_path', $columnNames)) {
+        $db->exec("ALTER TABLE business_info ADD COLUMN logo_path TEXT NOT NULL DEFAULT ''");
+    }
     
     // Handle form submission
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['update_receipt_setting']) && !isset($_POST['import_csv']) && !isset($_POST['update_cashier_permissions']) && !isset($_POST['update_cashier_inactivity']) && !isset($_POST['update_waitress_permissions']) && !isset($_POST['update_pos_interface'])) {
         // Validate inputs
         $name = trim($_POST['name'] ?? '');
         $location = trim($_POST['location'] ?? '');
         $phone = trim($_POST['phone'] ?? '');
+        $header_custom_text = trim($_POST['header_custom_text'] ?? '');
         $footer_text = trim($_POST['footer_text'] ?? '');
         $printer_port = trim($_POST['printer_port'] ?? 'COM4');
         $closing_time = trim($_POST['closing_time'] ?? '22:00');
         $vat_inclusive = trim($_POST['vat_inclusive'] ?? 'exclusive');
+        if (!in_array($vat_inclusive, $allowedVatModes, true)) {
+            $vat_inclusive = 'exclusive';
+        }
         $vat_rate = floatval($_POST['vat_rate'] ?? 15.0);
+        $convertInventoryPrices = !empty($_POST['convert_inventory_prices']);
         
         // Validate VAT rate (should be between 0 and 100)
         if ($vat_rate < 0 || $vat_rate > 100) {
             $errorMessage = 'VAT rate must be between 0 and 100.';
-        } elseif (empty($name) || empty($location) || empty($phone)) {
-            $errorMessage = 'Business name, location, and phone are required fields.';
+        } elseif (empty($name) || empty($location)) {
+            $errorMessage = 'Business name and location are required fields.';
         } else {
+            $logoPath = '';
+            $currentRow = $db->query("SELECT logo_path FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            $logoPath = trim((string)($currentRow['logo_path'] ?? ''));
+
+            if (!empty($_POST['remove_logo'])) {
+                if ($logoPath !== '') {
+                    $oldLogoFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $logoPath);
+                    if (is_file($oldLogoFile)) {
+                        @unlink($oldLogoFile);
+                    }
+                }
+                $logoPath = '';
+            }
+
+            if (isset($_FILES['business_logo']) && is_array($_FILES['business_logo']) && ($_FILES['business_logo']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+                $uploadTmp = $_FILES['business_logo']['tmp_name'];
+                $maxBytes = 2 * 1024 * 1024;
+                if (($_FILES['business_logo']['size'] ?? 0) > $maxBytes) {
+                    $errorMessage = 'Logo file is too large. Maximum size is 2 MB.';
+                } else {
+                    $allowedMimes = [
+                        'image/jpeg' => 'jpg',
+                        'image/png' => 'png',
+                        'image/gif' => 'gif',
+                        'image/webp' => 'webp',
+                    ];
+                    $detectedMime = '';
+                    if (function_exists('finfo_open')) {
+                        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                        if ($finfo) {
+                            $detectedMime = (string)finfo_file($finfo, $uploadTmp);
+                            finfo_close($finfo);
+                        }
+                    }
+                    if ($detectedMime === '' || !isset($allowedMimes[$detectedMime])) {
+                        $errorMessage = 'Invalid logo file. Please upload a JPG, PNG, GIF, or WebP image.';
+                    } elseif (!function_exists('imagecreatetruecolor')) {
+                        $errorMessage = 'PHP GD extension is required to process the logo image.';
+                    } else {
+                        $uploadDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'business';
+                        if (!is_dir($uploadDir) && !@mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+                            $errorMessage = 'Could not create logo upload folder.';
+                        } else {
+                            $src = null;
+                            if ($detectedMime === 'image/jpeg') {
+                                $src = @imagecreatefromjpeg($uploadTmp);
+                            } elseif ($detectedMime === 'image/png') {
+                                $src = @imagecreatefrompng($uploadTmp);
+                            } elseif ($detectedMime === 'image/gif') {
+                                $src = @imagecreatefromgif($uploadTmp);
+                            } elseif ($detectedMime === 'image/webp' && function_exists('imagecreatefromwebp')) {
+                                $src = @imagecreatefromwebp($uploadTmp);
+                            }
+                            if (!$src) {
+                                $errorMessage = 'Could not read the uploaded logo image.';
+                            } else {
+                                $destFile = $uploadDir . DIRECTORY_SEPARATOR . 'logo.png';
+                                $srcW = imagesx($src);
+                                $srcH = imagesy($src);
+                                $flat = imagecreatetruecolor($srcW, $srcH);
+                                if ($flat === false) {
+                                    $errorMessage = 'Could not prepare the logo image.';
+                                    imagedestroy($src);
+                                } else {
+                                    $white = imagecolorallocate($flat, 255, 255, 255);
+                                    imagefilledrectangle($flat, 0, 0, $srcW, $srcH, $white);
+                                    imagealphablending($flat, true);
+                                    imagealphablending($src, true);
+                                    imagecopy($flat, $src, 0, 0, 0, 0, $srcW, $srcH);
+                                    imagedestroy($src);
+                                    $src = $flat;
+                                    if (!@imagepng($src, $destFile)) {
+                                        $errorMessage = 'Failed to save the logo image.';
+                                    } else {
+                                        if ($logoPath !== '' && $logoPath !== 'uploads/business/logo.png') {
+                                            $oldLogoFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $logoPath);
+                                            if (is_file($oldLogoFile)) {
+                                                @unlink($oldLogoFile);
+                                            }
+                                        }
+                                        $logoPath = 'uploads/business/logo.png';
+                                    }
+                                    imagedestroy($src);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ($errorMessage !== '') {
+                // Skip DB update when logo validation failed
+            } else {
             // Get current VAT settings before updating
             $currentBusinessInfo = $db->query("SELECT vat_inclusive, vat_rate FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
             $oldVatInclusive = $currentBusinessInfo ? ($currentBusinessInfo['vat_inclusive'] ?? 'exclusive') : 'exclusive';
+            if (!in_array($oldVatInclusive, $allowedVatModes, true)) {
+                $oldVatInclusive = 'exclusive';
+            }
             $oldVatRate = $currentBusinessInfo ? (floatval($currentBusinessInfo['vat_rate'] ?? 15.0)) : 15.0;
             
             // Check if a record exists
@@ -88,32 +199,39 @@ try {
                     name = :name, 
                     location = :location, 
                     phone = :phone, 
+                    header_custom_text = :header_custom_text,
                     footer_text = :footer_text,
                     printer_port = :printer_port,
                     closing_time = :closing_time,
                     vat_inclusive = :vat_inclusive,
-                    vat_rate = :vat_rate
+                    vat_rate = :vat_rate,
+                    logo_path = :logo_path
                     WHERE id = 1");
             } else {
                 // Insert new record
                 $stmt = $db->prepare("INSERT INTO business_info 
-                    (name, location, phone, footer_text, printer_port, closing_time, vat_inclusive, vat_rate) 
-                    VALUES (:name, :location, :phone, :footer_text, :printer_port, :closing_time, :vat_inclusive, :vat_rate)");
+                    (name, location, phone, header_custom_text, footer_text, printer_port, closing_time, vat_inclusive, vat_rate, logo_path) 
+                    VALUES (:name, :location, :phone, :header_custom_text, :footer_text, :printer_port, :closing_time, :vat_inclusive, :vat_rate, :logo_path)");
             }
             
             $stmt->execute([
                 ':name' => $name,
                 ':location' => $location,
                 ':phone' => $phone,
+                ':header_custom_text' => $header_custom_text,
                 ':footer_text' => $footer_text,
                 ':printer_port' => $printer_port,
                 ':closing_time' => $closing_time,
                 ':vat_inclusive' => $vat_inclusive,
-                ':vat_rate' => $vat_rate
+                ':vat_rate' => $vat_rate,
+                ':logo_path' => $logoPath
             ]);
             
-            // Convert product prices if VAT setting changed
-            if ($oldVatInclusive !== $vat_inclusive) {
+            $modeChanged = ($oldVatInclusive !== $vat_inclusive);
+            $inclusiveRateChanged = ($oldVatRate != $vat_rate && $vat_inclusive === 'inclusive');
+            
+            // Convert product prices only if requested (optional)
+            if ($convertInventoryPrices && $modeChanged) {
                 try {
                     $posDb = new PDO('sqlite:../pos.db');
                     $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -127,19 +245,19 @@ try {
                         $oldPrice = floatval($product['price']);
                         $newPrice = $oldPrice;
                         
-                        // Convert based on direction of change
                         if ($oldVatInclusive === 'exclusive' && $vat_inclusive === 'inclusive') {
-                            // Converting from exclusive to inclusive: add VAT
                             $newPrice = $oldPrice * (1 + ($vat_rate / 100));
                         } elseif ($oldVatInclusive === 'inclusive' && $vat_inclusive === 'exclusive') {
-                            // Converting from inclusive to exclusive: remove VAT
                             $newPrice = $oldPrice / (1 + ($vat_rate / 100));
+                        } elseif ($oldVatInclusive === 'inclusive' && $vat_inclusive === 'none') {
+                            $newPrice = $oldPrice / (1 + ($oldVatRate / 100));
+                        } elseif ($oldVatInclusive === 'none' && $vat_inclusive === 'inclusive') {
+                            $newPrice = $oldPrice * (1 + ($vat_rate / 100));
                         }
+                        // exclusive <-> none: no change (both use ex-VAT shelf prices)
                         
-                        // Round to 2 decimal places
                         $newPrice = round($newPrice, 2);
                         
-                        // Update product price
                         $updateStmt->execute([
                             ':price' => $newPrice,
                             ':id' => $product['id']
@@ -147,13 +265,21 @@ try {
                         $convertedCount++;
                     }
                     
-                    $successMessage = 'Business information updated successfully! ' . $convertedCount . ' product price(s) converted from ' . 
-                                    ($oldVatInclusive === 'exclusive' ? 'VAT exclusive' : 'VAT inclusive') . ' to ' . 
-                                    ($vat_inclusive === 'exclusive' ? 'VAT exclusive' : 'VAT inclusive') . '.';
+                    $label = function ($m) {
+                        if ($m === 'exclusive') {
+                            return 'VAT excluded';
+                        }
+                        if ($m === 'inclusive') {
+                            return 'VAT included';
+                        }
+                        return 'No VAT';
+                    };
+                    $successMessage = 'Business information updated successfully! ' . $convertedCount . ' product price(s) converted from ' .
+                        $label($oldVatInclusive) . ' to ' . $label($vat_inclusive) . '.';
                 } catch (PDOException $e) {
                     $successMessage = 'Business information updated successfully! However, there was an error converting product prices: ' . $e->getMessage();
                 }
-            } elseif ($oldVatRate != $vat_rate && $vat_inclusive === 'inclusive') {
+            } elseif ($convertInventoryPrices && $inclusiveRateChanged) {
                 // VAT rate changed and prices are inclusive - need to recalculate
                 try {
                     $posDb = new PDO('sqlite:../pos.db');
@@ -183,11 +309,96 @@ try {
                     $successMessage = 'Business information updated successfully! However, there was an error recalculating product prices: ' . $e->getMessage();
                 }
             } else {
-                $successMessage = 'Business information updated successfully!';
+                if (!$convertInventoryPrices && ($modeChanged || $inclusiveRateChanged)) {
+                    $successMessage = 'Business information updated successfully! VAT settings were saved. Product prices in your inventory were not changed — enable "Adjust inventory prices" and save again if you want all shelf prices recalculated automatically.';
+                } else {
+                    $successMessage = 'Business information updated successfully!';
+                }
+            }
             }
         }
     }
     
+    // Handle cashier inactivity settings form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_cashier_inactivity'])) {
+        try {
+            $posDb = new PDO('sqlite:../pos.db');
+            $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $posDb->exec("CREATE TABLE IF NOT EXISTS product_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                show_all_products BOOLEAN NOT NULL DEFAULT 0,
+                default_print_receipt BOOLEAN NOT NULL DEFAULT 0
+            )");
+
+            try {
+                $posDb->exec("ALTER TABLE product_settings ADD COLUMN cashier_idle_timeout_seconds INTEGER NOT NULL DEFAULT 120");
+            } catch (PDOException $e) {
+            }
+            try {
+                $posDb->exec("ALTER TABLE product_settings ADD COLUMN cashier_inactivity_enabled BOOLEAN NOT NULL DEFAULT 1");
+            } catch (PDOException $e) {
+            }
+            foreach ([
+                "ALTER TABLE product_settings ADD COLUMN inactivity_role_admin INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE product_settings ADD COLUMN inactivity_role_manager INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE product_settings ADD COLUMN inactivity_role_cashier INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE product_settings ADD COLUMN inactivity_role_waitress INTEGER NOT NULL DEFAULT 0",
+            ] as $inactivityRoleSql) {
+                try {
+                    $posDb->exec($inactivityRoleSql);
+                } catch (PDOException $e) {
+                }
+            }
+
+            $checkStmt = $posDb->query("SELECT COUNT(*) FROM product_settings")->fetchColumn();
+            if ($checkStmt == 0) {
+                $posDb->exec("INSERT INTO product_settings (show_all_products, default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds) VALUES (0, 0, 1, 120)");
+            }
+
+            $cashierInactivityEnabled = isset($_POST['cashier_inactivity_enabled']) ? 1 : 0;
+            $inactivityRoleAdmin = isset($_POST['inactivity_role_admin']) ? 1 : 0;
+            $inactivityRoleManager = isset($_POST['inactivity_role_manager']) ? 1 : 0;
+            $inactivityRoleCashier = isset($_POST['inactivity_role_cashier']) ? 1 : 0;
+            $inactivityRoleWaitress = isset($_POST['inactivity_role_waitress']) ? 1 : 0;
+            $idleSeconds = (int) ($_POST['cashier_idle_timeout_seconds'] ?? 120);
+            if ($idleSeconds < 30) {
+                $idleSeconds = 30;
+            }
+            if ($idleSeconds > 3600) {
+                $idleSeconds = 3600;
+            }
+
+            $updateStmt = $posDb->prepare("UPDATE product_settings SET cashier_inactivity_enabled = ?, cashier_idle_timeout_seconds = ?, inactivity_role_admin = ?, inactivity_role_manager = ?, inactivity_role_cashier = ?, inactivity_role_waitress = ? WHERE id = 1");
+            $updateStmt->execute([
+                $cashierInactivityEnabled,
+                $idleSeconds,
+                $inactivityRoleAdmin,
+                $inactivityRoleManager,
+                $inactivityRoleCashier,
+                $inactivityRoleWaitress,
+            ]);
+            require_once __DIR__ . '/../inactivity_settings_helper.php';
+            $dbPath = realpath(__DIR__ . '/../pos.db') ?: (__DIR__ . '/../pos.db');
+            debugInactivityLog('admin/business_settings.php:save', 'saved inactivity settings', [
+                'db_path' => $dbPath,
+                'rows_affected' => $updateStmt->rowCount(),
+                'enabled' => $cashierInactivityEnabled,
+                'idle_seconds' => $idleSeconds,
+                'roles' => [
+                    'admin' => $inactivityRoleAdmin,
+                    'manager' => $inactivityRoleManager,
+                    'cashier' => $inactivityRoleCashier,
+                    'waitress' => $inactivityRoleWaitress,
+                ],
+            ], 'E');
+
+            $successMessage = 'Inactivity logout settings updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating cashier inactivity settings: ' . $e->getMessage();
+        }
+    }
+
     // Handle receipt settings form submission
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_receipt_setting'])) {
         try {
@@ -207,14 +418,74 @@ try {
                 $posDb->exec("INSERT INTO product_settings (show_all_products, default_print_receipt) VALUES (0, 0)");
             }
             
-            // Update setting
-            $newValue = isset($_POST['default_print_receipt']) ? 1 : 0;
-            $updateStmt = $posDb->prepare("UPDATE product_settings SET default_print_receipt = ? WHERE id = 1");
-            $updateStmt->execute([$newValue]);
+            // Ensure columns exist
+            try {
+                $posDb->exec("ALTER TABLE product_settings ADD COLUMN drawer_open_on_checkout TEXT NOT NULL DEFAULT 'on_ok'");
+            } catch (PDOException $e) {
+                // Column already exists
+            }
+            try {
+                $posDb->exec("ALTER TABLE product_settings ADD COLUMN show_reverse_transaction BOOLEAN NOT NULL DEFAULT 1");
+            } catch (PDOException $e) {
+                // Column already exists
+            }
             
-            $successMessage = 'Receipt setting updated successfully!';
+            // Update settings
+            $newPrintReceipt = isset($_POST['default_print_receipt']) ? 1 : 0;
+            $newDrawerSetting = isset($_POST['drawer_open_on_checkout']) ? trim($_POST['drawer_open_on_checkout']) : 'on_ok';
+            $newShowReverse = isset($_POST['show_reverse_transaction']) ? 1 : 0;
+            
+            // Validate drawer setting
+            if (!in_array($newDrawerSetting, ['on_ok', 'on_checkout'], true)) {
+                $newDrawerSetting = 'on_ok';
+            }
+            
+            $updateStmt = $posDb->prepare("UPDATE product_settings SET default_print_receipt = ?, drawer_open_on_checkout = ?, show_reverse_transaction = ? WHERE id = 1");
+            $updateStmt->execute([$newPrintReceipt, $newDrawerSetting, $newShowReverse]);
         } catch(PDOException $e) {
-            $errorMessage = 'Error updating receipt setting: ' . $e->getMessage();
+            $errorMessage = 'Error updating receipt settings: ' . $e->getMessage();
+        }
+    }
+
+    // Handle POS interface form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_pos_interface'])) {
+        try {
+            require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
+            $posDb = new PDO('sqlite:../pos.db');
+            $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $checkStmt = $posDb->query('SELECT COUNT(*) FROM product_settings')->fetchColumn();
+            if ((int) $checkStmt === 0) {
+                $posDb->exec('INSERT INTO product_settings (show_all_products, default_print_receipt) VALUES (0, 0)');
+            }
+
+            ensureTouchKeyboardSettingsColumn($posDb);
+            $enabled = isset($_POST['touch_keyboard_enabled']) ? 1 : 0;
+            $posDb->prepare('UPDATE product_settings SET touch_keyboard_enabled = ? WHERE id = 1')->execute([$enabled]);
+            $successMessage = 'POS interface settings updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating POS interface settings: ' . $e->getMessage();
+        }
+    }
+
+    // Handle waitress permissions form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_waitress_permissions'])) {
+        try {
+            $posDb = new PDO('sqlite:../pos.db');
+            $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            require_once __DIR__ . '/../tab_balance_helper.php';
+            ensure_waitress_can_take_tab_payments_column($posDb);
+
+            $checkStmt = $posDb->query('SELECT COUNT(*) FROM product_settings')->fetchColumn();
+            if ((int) $checkStmt === 0) {
+                $posDb->exec('INSERT INTO product_settings (show_all_products, default_print_receipt, waitress_can_take_tab_payments) VALUES (0, 0, 0)');
+            }
+
+            $enabled = isset($_POST['waitress_can_take_tab_payments']) ? 1 : 0;
+            $posDb->prepare('UPDATE product_settings SET waitress_can_take_tab_payments = ? WHERE id = 1')->execute([$enabled]);
+            $successMessage = 'Waitress permissions updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating waitress permissions: ' . $e->getMessage();
         }
     }
     
@@ -426,11 +697,16 @@ try {
         // Use defaults if error
     }
     
-    // Get current receipt setting
+    // Get current receipt and cashier inactivity settings
     $defaultPrintReceipt = 0;
+    $cashierInactivityEnabled = 1;
+    $cashierIdleTimeoutSeconds = 120;
+    $touchKeyboardEnabled = 0;
     try {
+        require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
         $posDb = new PDO('sqlite:../pos.db');
         $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        ensureTouchKeyboardSettingsColumn($posDb);
         
         // Check if default_print_receipt column exists, if not add it
         $columns = $posDb->query("PRAGMA table_info(product_settings)")->fetchAll(PDO::FETCH_ASSOC);
@@ -445,12 +721,66 @@ try {
         if(!$columnExists) {
             $posDb->exec("ALTER TABLE product_settings ADD COLUMN default_print_receipt BOOLEAN NOT NULL DEFAULT 0");
         }
+        try {
+            $posDb->exec("ALTER TABLE product_settings ADD COLUMN cashier_idle_timeout_seconds INTEGER NOT NULL DEFAULT 120");
+        } catch (PDOException $e) {
+        }
+        try {
+            $posDb->exec("ALTER TABLE product_settings ADD COLUMN cashier_inactivity_enabled BOOLEAN NOT NULL DEFAULT 1");
+        } catch (PDOException $e) {
+        }
+        try {
+            $posDb->exec("ALTER TABLE product_settings ADD COLUMN drawer_open_on_checkout TEXT NOT NULL DEFAULT 'on_ok'");
+        } catch (PDOException $e) {
+        }
+        try {
+            $posDb->exec("ALTER TABLE product_settings ADD COLUMN show_reverse_transaction BOOLEAN NOT NULL DEFAULT 1");
+        } catch (PDOException $e) {
+        }
+        try {
+            $posDb->exec("ALTER TABLE product_settings ADD COLUMN waitress_can_take_tab_payments BOOLEAN NOT NULL DEFAULT 0");
+        } catch (PDOException $e) {
+        }
+        foreach ([
+            "ALTER TABLE product_settings ADD COLUMN inactivity_role_admin INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE product_settings ADD COLUMN inactivity_role_manager INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE product_settings ADD COLUMN inactivity_role_cashier INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE product_settings ADD COLUMN inactivity_role_waitress INTEGER NOT NULL DEFAULT 0",
+        ] as $inactivityRoleSql) {
+            try {
+                $posDb->exec($inactivityRoleSql);
+            } catch (PDOException $e) {
+            }
+        }
         
         // Get current setting
-        $receiptSetting = $posDb->query("SELECT default_print_receipt FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+        $receiptSetting = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, drawer_open_on_checkout, show_reverse_transaction, waitress_can_take_tab_payments, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
         $defaultPrintReceipt = $receiptSetting ? ($receiptSetting['default_print_receipt'] ?? 0) : 0;
+        $cashierInactivityEnabled = $receiptSetting ? (int) ($receiptSetting['cashier_inactivity_enabled'] ?? 1) : 1;
+        $cashierIdleTimeoutSeconds = $receiptSetting ? (int) ($receiptSetting['cashier_idle_timeout_seconds'] ?? 120) : 120;
+        $inactivityRoleAdmin = $receiptSetting ? (int) ($receiptSetting['inactivity_role_admin'] ?? 0) : 0;
+        $inactivityRoleManager = $receiptSetting ? (int) ($receiptSetting['inactivity_role_manager'] ?? 0) : 0;
+        $inactivityRoleCashier = $receiptSetting ? (int) ($receiptSetting['inactivity_role_cashier'] ?? 1) : 1;
+        $inactivityRoleWaitress = $receiptSetting ? (int) ($receiptSetting['inactivity_role_waitress'] ?? 0) : 0;
+        $drawerOpenOnCheckout = $receiptSetting ? ($receiptSetting['drawer_open_on_checkout'] ?? 'on_ok') : 'on_ok';
+        $showReverseTransaction = $receiptSetting ? (int) ($receiptSetting['show_reverse_transaction'] ?? 1) : 1;
+        $waitressCanTakeTabPayments = $receiptSetting ? (int) ($receiptSetting['waitress_can_take_tab_payments'] ?? 0) : 0;
+        $touchKeyboardEnabled = $receiptSetting ? (int) ($receiptSetting['touch_keyboard_enabled'] ?? 0) : 0;
+        if ($cashierIdleTimeoutSeconds < 30) {
+            $cashierIdleTimeoutSeconds = 30;
+        }
+        if ($cashierIdleTimeoutSeconds > 3600) {
+            $cashierIdleTimeoutSeconds = 3600;
+        }
     } catch(PDOException $e) {
         $defaultPrintReceipt = 0;
+        $cashierInactivityEnabled = 1;
+        $cashierIdleTimeoutSeconds = 120;
+        $inactivityRoleAdmin = 0;
+        $inactivityRoleManager = 0;
+        $inactivityRoleCashier = 1;
+        $inactivityRoleWaitress = 0;
+        $waitressCanTakeTabPayments = 0;
     }
     
     // Get current business info
@@ -462,6 +792,8 @@ try {
             'name' => 'POS SOLUTION',
             'location' => 'Your Business Address',
             'phone' => 'Your Phone Number',
+            'header_custom_text' => '',
+            'logo_path' => '',
             'footer_text' => 'Thank you for your purchase!',
             'printer_port' => 'COM4',
             'closing_time' => '22:00',
@@ -472,6 +804,9 @@ try {
         $printerPort = $businessInfo['printer_port'];
         $closingTime = $businessInfo['closing_time'] ?? '22:00';
         $vatInclusive = $businessInfo['vat_inclusive'] ?? 'exclusive';
+        if (!in_array($vatInclusive, $allowedVatModes, true)) {
+            $vatInclusive = 'exclusive';
+        }
         $vatRate = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
     }
     
@@ -529,7 +864,7 @@ try {
                         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
                         </svg>
-                        Go Back
+                        Back to Settings
                     </a>
                 </div>
                 
@@ -565,7 +900,7 @@ try {
                 
                 <!-- Business Settings Form -->
                 <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6">
-                    <form method="post" action="">
+                    <form method="post" action="" enctype="multipart/form-data">
                         <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                             <div class="col-span-2 sm:col-span-1">
                                 <label for="name" class="block text-sm font-medium text-gray-700">Business Name</label>
@@ -582,7 +917,39 @@ try {
                             <div class="col-span-2 sm:col-span-1">
                                 <label for="phone" class="block text-sm font-medium text-gray-700">Phone Number</label>
                                 <input type="text" id="phone" name="phone" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
-                                       value="<?php echo htmlspecialchars($businessInfo['phone']); ?>" required>
+                                       value="<?php echo htmlspecialchars($businessInfo['phone']); ?>">
+                            </div>
+
+                            <?php
+                            $currentLogoPath = trim((string)($businessInfo['logo_path'] ?? ''));
+                            $logoPreviewUrl = '';
+                            if ($currentLogoPath !== '') {
+                                $logoFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $currentLogoPath);
+                                if (is_file($logoFile)) {
+                                    $logoPreviewUrl = '../' . str_replace('\\', '/', $currentLogoPath) . '?v=' . filemtime($logoFile);
+                                }
+                            }
+                            ?>
+                            <div class="col-span-2">
+                                <label for="business_logo" class="block text-sm font-medium text-gray-700">Receipt Business Logo</label>
+                                <p class="mt-1 text-xs text-gray-500 mb-3">Upload a logo to print at the top of every receipt (sales, reports, payments, etc.). Recommended: square or wide PNG/JPG, max 2 MB.</p>
+                                <?php if ($logoPreviewUrl !== ''): ?>
+                                    <div class="mb-4 flex flex-col sm:flex-row sm:items-center gap-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                                        <img src="<?php echo htmlspecialchars($logoPreviewUrl); ?>" alt="Current business logo" class="h-20 w-auto max-w-[200px] object-contain bg-white border border-gray-200 rounded p-2">
+                                        <label class="inline-flex items-center text-sm text-gray-700">
+                                            <input type="checkbox" name="remove_logo" value="1" class="h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500 mr-2">
+                                            Remove current logo
+                                        </label>
+                                    </div>
+                                <?php endif; ?>
+                                <input type="file" id="business_logo" name="business_logo" accept="image/jpeg,image/png,image/gif,image/webp"
+                                       class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100">
+                            </div>
+
+                            <div class="col-span-2 sm:col-span-1">
+                                <label for="header_custom_text" class="block text-sm font-medium text-gray-700">Receipt Header Custom Text</label>
+                                <input type="text" id="header_custom_text" name="header_custom_text" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
+                                       value="<?php echo htmlspecialchars($businessInfo['header_custom_text'] ?? ''); ?>" placeholder="Optional text shown under business name">
                             </div>
                             
                             <div class="col-span-2 sm:col-span-1">
@@ -623,11 +990,7 @@ try {
                                 <div id="androidPrinterSettings" class="mt-4">
                                     <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
                                         <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                            <div class="flex-1">
-                                                <h4 class="text-sm font-semibold text-blue-900 mb-1">📱 Android Printer Settings</h4>
-                                                <p class="text-xs text-blue-700">Configure Bluetooth, USB, or Network printers for Android devices</p>
-                                                <p id="androidPrinterStatus" class="text-xs text-blue-600 mt-1 hidden"></p>
-                                            </div>
+                                         
                                             <button type="button" 
                                                     onclick="openAndroidPrinterSettings()"
                                                     class="w-full sm:w-auto inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150 ease-in-out">
@@ -660,8 +1023,7 @@ try {
                                         </div>
                                         <div class="ml-3">
                                             <p class="text-sm text-yellow-700">
-                                                <strong>Important:</strong> Changing the VAT setting or VAT rate will automatically convert all product prices in your inventory. 
-                                                Make sure to backup your data before making changes.
+                                                <strong>Important:</strong> If you change the VAT mode or the VAT rate (while on VAT included), you can optionally recalculate all product prices below. Back up your data before using that option.
                                             </p>
                                         </div>
                                     </div>
@@ -669,16 +1031,19 @@ try {
                                 
                                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                                     <div class="col-span-2 sm:col-span-1">
-                                        <label for="vat_inclusive" class="block text-sm font-medium text-gray-700 mb-2">Price Display</label>
+                                        <label for="vat_inclusive" class="block text-sm font-medium text-gray-700 mb-2">VAT on sales</label>
                                         <select id="vat_inclusive" name="vat_inclusive" class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
-                                            <option value="exclusive" <?php echo ($vatInclusive === 'exclusive') ? 'selected' : ''; ?>>VAT Exclusive (Prices shown exclude VAT)</option>
-                                            <option value="inclusive" <?php echo ($vatInclusive === 'inclusive') ? 'selected' : ''; ?>>VAT Inclusive (Prices shown include VAT)</option>
+                                            <option value="exclusive" <?php echo ($vatInclusive === 'exclusive') ? 'selected' : ''; ?>>VAT excluded (ex VAT / add VAT at sale)</option>
+                                            <option value="inclusive" <?php echo ($vatInclusive === 'inclusive') ? 'selected' : ''; ?>>VAT included (shelf prices include VAT; receipt shows embedded VAT in brackets)</option>
+                                            <option value="none" <?php echo ($vatInclusive === 'none') ? 'selected' : ''; ?>>No VAT</option>
                                         </select>
                                         <p class="mt-1 text-xs text-gray-500">
                                             <?php if ($vatInclusive === 'exclusive'): ?>
-                                                Prices displayed will exclude VAT. VAT will be added at checkout.
+                                                Prices are ex VAT; VAT is applied according to your rate. Receipt does not list a VAT amount line.
+                                            <?php elseif ($vatInclusive === 'inclusive'): ?>
+                                                Prices include VAT. The receipt shows the included VAT amount (in brackets) calculated from the total and your VAT rate.
                                             <?php else: ?>
-                                                Prices displayed will include VAT. No additional VAT will be added at checkout.
+                                                No VAT; prices have no tax component. Receipt does not add VAT.
                                             <?php endif; ?>
                                         </p>
                                     </div>
@@ -689,6 +1054,17 @@ try {
                                                class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
                                                value="<?php echo htmlspecialchars(number_format($vatRate, 2, '.', '')); ?>" required>
                                         <p class="mt-1 text-xs text-gray-500">Enter the VAT rate percentage (e.g., 15 for 15%). Default is 15% for Namibia.</p>
+                                    </div>
+                                    
+                                    <div class="col-span-2 flex items-start p-4 bg-gray-50 border border-gray-200 rounded-md">
+                                        <div class="flex items-center h-5">
+                                            <input id="convert_inventory_prices" name="convert_inventory_prices" type="checkbox" value="1"
+                                                   class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                                        </div>
+                                        <div class="ml-3 text-sm">
+                                            <label for="convert_inventory_prices" class="font-medium text-gray-800">Adjust inventory prices to match this save</label>
+                                            <p class="text-gray-500 mt-1">When ticked, all product prices in the POS are recalculated when you change the VAT mode, or when you change the VAT rate while <span class="whitespace-nowrap">VAT included</span> is selected. Leave unticked to only update VAT/receipt settings and keep your current prices.</p>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -823,6 +1199,154 @@ try {
                     </form>
                 </div>
                 
+                <!-- Inactivity Logout Section -->
+                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
+                    <h2 class="text-2xl font-bold mb-6">Inactivity Logout</h2>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
+                        <div class="flex">
+                            <div class="flex-shrink-0">
+                                <svg class="h-5 w-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="ml-3">
+                                <p class="text-sm text-blue-700">
+                                    When enabled, selected user roles are logged out automatically after a period of inactivity (when the cart is empty on POS). Choose which roles this applies to below.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <form action="" method="POST" class="space-y-4">
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="cashier_inactivity_enabled" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Enable inactivity logout
+                                </label>
+                                <p class="text-xs text-gray-500">Master switch for automatic logout by role.</p>
+                            </div>
+                            <div class="ml-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="cashier_inactivity_enabled" id="cashier_inactivity_enabled"
+                                           class="sr-only peer"
+                                           <?php echo $cashierInactivityEnabled ? 'checked' : ''; ?>>
+                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <p class="block text-sm font-medium text-gray-700 mb-3">Apply inactivity timer to</p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_admin" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleAdmin ? 'checked' : ''; ?>>
+                                    Admin
+                                </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_manager" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleManager ? 'checked' : ''; ?>>
+                                    Manager
+                                </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_cashier" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleCashier ? 'checked' : ''; ?>>
+                                    Cashier
+                                </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                                    <input type="checkbox" name="inactivity_role_waitress" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleWaitress ? 'checked' : ''; ?>>
+                                    Waitress
+                                </label>
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Idle timeout (seconds)</label>
+                            <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds"
+                                   value="<?php echo (int) $cashierIdleTimeoutSeconds; ?>" min="30" max="3600" step="1"
+                                   class="mt-1 block w-40 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
+                            <p class="mt-2 text-xs text-gray-500">Used only when inactivity logout is enabled. Allowed range: 30–3600 seconds. Default is 120.</p>
+                        </div>
+                        <div class="flex justify-end">
+                            <button type="submit"
+                                    name="update_cashier_inactivity"
+                                    value="1"
+                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                                Save Inactivity Settings
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Waitress Permissions Section -->
+                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
+                    <h2 class="text-2xl font-bold mb-6">Waitress Permissions</h2>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
+                        <p class="text-sm text-blue-700">
+                            Control what waitresses can do on the waitress <strong>View Tab</strong> screen. Tab payments are disabled by default; enable only if waitresses should collect cash or EFT on open tabs.
+                        </p>
+                    </div>
+                    <form action="" method="POST" class="space-y-4">
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="waitress_can_take_tab_payments" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Allow waitress tab payments
+                                </label>
+                                <p class="text-xs text-gray-500">When enabled, waitresses see the Pay button and can record cash, EFT, or mixed payments on open tabs.</p>
+                            </div>
+                            <div class="ml-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="waitress_can_take_tab_payments" id="waitress_can_take_tab_payments"
+                                           class="sr-only peer"
+                                           <?php echo $waitressCanTakeTabPayments ? 'checked' : ''; ?>>
+                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="flex justify-end">
+                            <button type="submit"
+                                    name="update_waitress_permissions"
+                                    value="1"
+                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                Save Waitress Permissions
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- POS Interface Section -->
+                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
+                    <h2 class="text-2xl font-bold mb-6">POS Interface</h2>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
+                        <p class="text-sm text-blue-700">
+                            Control on-screen touch keyboard behavior on desktop and tablet POS screens. When disabled, staff use the physical keyboard only.
+                        </p>
+                    </div>
+                    <form action="" method="POST" class="space-y-4">
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="touch_keyboard_enabled" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Enable touch keyboard
+                                </label>
+                                <p class="text-xs text-gray-500">Shows the on-screen keyboard panel for cash, payment, login, and tab fields on desktop/tablet POS screens.</p>
+                            </div>
+                            <div class="ml-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="touch_keyboard_enabled" id="touch_keyboard_enabled"
+                                           class="sr-only peer"
+                                           <?php echo $touchKeyboardEnabled ? 'checked' : ''; ?>>
+                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="flex justify-end">
+                            <button type="submit"
+                                    name="update_pos_interface"
+                                    value="1"
+                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                Save POS Interface Settings
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
                 <!-- Receipt Settings Section -->
                 <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
                     <h2 class="text-2xl font-bold mb-6">Receipt Settings</h2>
@@ -841,6 +1365,41 @@ try {
                                            <?php echo $defaultPrintReceipt ? 'checked' : ''; ?>
                                            onchange="this.form.submit()">
                                     <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gray-600"></div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="drawer_open_on_checkout" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Cash Drawer Open On
+                                </label>
+                                <p class="text-xs text-gray-500">Control when the cash drawer opens for cash transactions: immediately on checkout, or when you press OK to confirm.</p>
+                            </div>
+                            <div class="ml-4">
+                                <select name="drawer_open_on_checkout" id="drawer_open_on_checkout" 
+                                        class="px-3 py-2 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 text-sm"
+                                        onchange="this.form.submit()">
+                                    <option value="on_ok" <?php echo ($drawerOpenOnCheckout === 'on_ok') ? 'selected' : ''; ?>>On OK (Default)</option>
+                                    <option value="on_checkout" <?php echo ($drawerOpenOnCheckout === 'on_checkout') ? 'selected' : ''; ?>>On Checkout</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div class="flex-1">
+                                <label for="show_reverse_transaction" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Show "Reverse Transaction" Option
+                                </label>
+                                <p class="text-xs text-gray-500">When enabled, users can reverse the last transaction from the payment confirmation screen.</p>
+                            </div>
+                            <div class="ml-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="show_reverse_transaction" id="show_reverse_transaction" 
+                                           class="sr-only peer" 
+                                           <?php echo $showReverseTransaction ? 'checked' : ''; ?>
+                                           onchange="this.form.submit()">
+                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
                                 </label>
                             </div>
                         </div>

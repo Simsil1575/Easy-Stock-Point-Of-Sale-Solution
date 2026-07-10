@@ -19,6 +19,7 @@ if ($activationStatus == 0) {
 }
 
 $db = new PDO('sqlite:../pos.db');
+require_once __DIR__ . '/../inc/credit_sale_payment_status.php';
 $creditorId = $_GET['creditor_id'] ?? 0;
 
 // Handle "Pay All" functionality
@@ -101,8 +102,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sale = $saleDetails->fetch(PDO::FETCH_ASSOC);
         $db->beginTransaction();
         try {
-            $db->prepare("UPDATE credit_sales SET paid_amount = paid_amount + ?, payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'paid' ELSE 'partial' END WHERE id = ?")->execute([$paymentAmount, $paymentAmount, $saleId]);
-            $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)")->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $db->prepare('UPDATE credit_sales SET paid_amount = paid_amount + ? WHERE id = ?')->execute([$paymentAmount, $saleId]);
+            $db->prepare('INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)')->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $paymentStatus = resolve_credit_sale_payment_status($db, (int) $saleId);
+            $db->prepare('UPDATE credit_sales SET payment_status = ? WHERE id = ?')->execute([$paymentStatus, $saleId]);
             $db->commit();
         } catch (Exception $e) {
             $db->rollBack();
@@ -142,9 +145,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sale = $saleDetails->fetch(PDO::FETCH_ASSOC);
         $db->beginTransaction();
         try {
-            $db->prepare("UPDATE credit_sales SET paid_amount = paid_amount + ?, payment_status = CASE WHEN (paid_amount + ?) >= total_amount THEN 'eft' ELSE 'partial' END WHERE id = ?")->execute([$paymentAmount, $paymentAmount, $saleId]);
-            $db->prepare("INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)")->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
-            $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)")->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
+            $db->prepare('UPDATE credit_sales SET paid_amount = paid_amount + ? WHERE id = ?')->execute([$paymentAmount, $saleId]);
+            $db->prepare('INSERT INTO payments (sale_id, amount, payment_date, cashier_id) VALUES (?, ?, ?, ?)')->execute([$saleId, $paymentAmount, date('Y-m-d H:i:s'), $_SESSION['username'] ?? 'Unknown']);
+            $db->prepare('INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)')->execute([$saleId, $transactionRef, $walletProvider, $paymentAmount, $_SESSION['username'] ?? 'Unknown', date('Y-m-d H:i:s')]);
+            $paymentStatus = resolve_credit_sale_payment_status($db, (int) $saleId);
+            $db->prepare('UPDATE credit_sales SET payment_status = ? WHERE id = ?')->execute([$paymentStatus, $saleId]);
             $db->commit();
         } catch (Exception $e) {
             $db->rollBack();
@@ -639,8 +644,11 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                     Due Date <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">Items</th>
-                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(2)">
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(3, true)">
                                                     Total <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
+                                                </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(4)">
+                                                    Cashier <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">Progress</th>
                                                 <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Actions</th>
@@ -649,7 +657,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                         <tbody id="transactionsTableBody" class="divide-y divide-gray-200 dark:divide-gray-700">
                                             <?php if (empty($transactions)): ?>
                                                 <tr>
-                                                    <td colspan="6" class="px-6 py-12 text-center">
+                                                    <td colspan="7" class="px-6 py-12 text-center">
                                                         <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                                         <p class="text-gray-500 text-lg">No transactions found.</p>
                                                     </td>
@@ -679,6 +687,9 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                             2
                                                         ) ?>
                                                     </td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
+                                                        <?= !empty($transaction['cashier_id']) ? htmlspecialchars($transaction['cashier_id']) : '—' ?>
+                                                    </td>
                                                     <td class="px-6 py-4 whitespace-nowrap text-sm">
                                                         <span class="px-2 py-1 text-xs font-semibold rounded-full
                                                             <?php
@@ -686,6 +697,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                                     echo 'bg-green-100 text-green-800';
                                                                 } elseif ($transaction['payment_status'] === 'eft') {
                                                                     echo 'bg-blue-100 text-blue-800';
+                                                                } elseif ($transaction['payment_status'] === 'paid_mixed') {
+                                                                    echo 'bg-indigo-100 text-indigo-800';
                                                                 } elseif ($transaction['payment_status'] === 'partial') {
                                                                     echo 'bg-yellow-100 text-yellow-800';
                                                                 } else {
@@ -697,6 +710,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                                     echo 'Cash';
                                                                 } elseif ($transaction['payment_status'] === 'eft') {
                                                                     echo 'EFT';
+                                                                } elseif ($transaction['payment_status'] === 'paid_mixed') {
+                                                                    echo 'Cash + EFT';
                                                                 } elseif ($transaction['payment_status'] === 'partial') {
                                                                     echo 'Partial';
                                                                 } else {
@@ -706,7 +721,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                         </span>
                                                     </td>
                                                     <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium">
-                                                        <?php if ($transaction['payment_status'] !== 'paid' && $transaction['payment_status'] !== 'eft'): ?>
+                                                        <?php if (!in_array($transaction['payment_status'], ['paid', 'eft', 'paid_mixed'], true)): ?>
                                                             <div class="flex items-center justify-end gap-2">
                                                                 <button type="button" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-green-600 hover:text-green-800 disabled:opacity-50 disabled:pointer-events-none dark:text-green-500 dark:hover:text-green-400 cash-payment-btn" 
                                                                     data-sale-id="<?= $transaction['id'] ?>"
@@ -740,6 +755,9 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                                         </span>
                                                     </td>
                                                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-200">N$<?= number_format($payment['amount'], 2) ?></td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
+                                                        <?= !empty($payment['cashier_id']) ? htmlspecialchars($payment['cashier_id']) : '—' ?>
+                                                    </td>
                                                     <td class="px-6 py-4 whitespace-nowrap text-sm">
                                                         <span class="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
                                                             Partial Payment
@@ -790,6 +808,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                 <tr>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Date</th>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Amount</th>
+                                    <th class="text-left p-4 text-sm font-medium text-gray-500">Cashier</th>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Wallet Provider</th>
                                     <th class="text-left p-4 text-sm font-medium text-gray-500">Reference</th>
                                 </tr>
@@ -799,6 +818,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
                                 <tr class="border-t border-gray-100 hover:bg-gray-50">
                                     <td class="p-4 text-sm" data-label="Date"><?= date('d M Y H:i', strtotime($payment['payment_date'])) ?></td>
                                     <td class="p-4 text-sm font-medium text-teal-600" data-label="Amount">N$<?= number_format($payment['amount'], 2) ?></td>
+                                    <td class="p-4 text-sm" data-label="Cashier"><?= !empty($payment['cashier_id']) ? htmlspecialchars($payment['cashier_id']) : '—' ?></td>
                                     <td class="p-4 text-sm" data-label="Wallet Provider"><?= htmlspecialchars($payment['wallet_provider']) ?></td>
                                     <td class="p-4 text-sm" data-label="Reference"><?= htmlspecialchars($payment['transaction_ref']) ?></td>
                                 </tr>
@@ -851,6 +871,12 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
         vat_inclusive: <?= json_encode($businessInfo['vat_inclusive'] ?? 'exclusive') ?>,
         vat_rate: <?= json_encode(floatval($businessInfo['vat_rate'] ?? 15.0)) ?>
     };
+
+    $(document).ready(function() {
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    });
 
     // sendToPrinter function is now loaded from ../receipt.php?js=true
     // The function is defined in receipt.php and automatically handles Android printing
@@ -1290,6 +1316,141 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
         sidebar.classList.remove('open');
         overlay.classList.remove('active');
         hamburger.classList.remove('open');
+    }
+
+    // Table search, sort, and pagination
+    let txnSortColumn = -1;
+    let txnSortDirection = 1;
+    let txnCurrentPage = 1;
+    const txnRowsPerPage = 10;
+    let txnAllRows = [];
+    let txnFilteredRows = [];
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const tableBody = document.getElementById('transactionsTableBody');
+        if (!tableBody) return;
+
+        txnAllRows = Array.from(tableBody.querySelectorAll('tr.transaction-row'));
+        txnFilteredRows = [...txnAllRows];
+
+        const searchInput = document.getElementById('hs-table-with-pagination-search');
+        if (searchInput) {
+            searchInput.addEventListener('input', function() {
+                filterTransactionsTable(this.value);
+            });
+        }
+
+        renderTxnPagination();
+        showTxnPage(1);
+    });
+
+    function filterTransactionsTable(searchTerm) {
+        searchTerm = searchTerm.toLowerCase().trim();
+        txnFilteredRows = !searchTerm ? [...txnAllRows] : txnAllRows.filter(function(row) {
+            return Array.from(row.querySelectorAll('td')).some(function(cell, index) {
+                if (index === row.cells.length - 1) return false;
+                return cell.textContent.toLowerCase().includes(searchTerm);
+            });
+        });
+        updateTransactionsTable();
+        showTxnPage(1);
+    }
+
+    function sortTable(columnIndex, isNumeric) {
+        if (typeof isNumeric === 'undefined') isNumeric = false;
+        if (txnSortColumn === columnIndex) {
+            txnSortDirection *= -1;
+        } else {
+            txnSortColumn = columnIndex;
+            txnSortDirection = 1;
+        }
+
+        txnFilteredRows.sort(function(a, b) {
+            const aValue = (a.cells[columnIndex] ? a.cells[columnIndex].textContent : '').trim();
+            const bValue = (b.cells[columnIndex] ? b.cells[columnIndex].textContent : '').trim();
+            if (isNumeric) {
+                const aNum = parseFloat(aValue.replace(/[^0-9.-]+/g, '')) || 0;
+                const bNum = parseFloat(bValue.replace(/[^0-9.-]+/g, '')) || 0;
+                return (aNum - bNum) * txnSortDirection;
+            }
+            return aValue.localeCompare(bValue) * txnSortDirection;
+        });
+
+        updateTransactionsTable();
+        showTxnPage(1);
+    }
+
+    function updateTransactionsTable() {
+        const tableBody = document.getElementById('transactionsTableBody');
+        if (!tableBody) return;
+
+        while (tableBody.firstChild) {
+            tableBody.removeChild(tableBody.firstChild);
+        }
+
+        if (txnFilteredRows.length === 0) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td colspan="7" class="px-6 py-12 text-center"><p class="text-gray-500 text-lg">No matching transactions found.</p></td>';
+            tableBody.appendChild(tr);
+        } else {
+            txnFilteredRows.forEach(function(row) { tableBody.appendChild(row); });
+        }
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+        renderTxnPagination();
+    }
+
+    function showTxnPage(page) {
+        const tableBody = document.getElementById('transactionsTableBody');
+        if (!tableBody) return;
+
+        const rows = Array.from(tableBody.querySelectorAll('tr.transaction-row'));
+        const total = rows.length;
+        const maxPage = Math.ceil(total / txnRowsPerPage) || 1;
+        page = Math.max(1, Math.min(page, maxPage));
+        txnCurrentPage = page;
+
+        rows.forEach(function(row, i) {
+            const start = (page - 1) * txnRowsPerPage;
+            row.style.display = (i >= start && i < start + txnRowsPerPage) ? '' : 'none';
+        });
+
+        const fromEl = document.getElementById('showingFrom');
+        const toEl = document.getElementById('showingTo');
+        const totalEl = document.getElementById('totalRows');
+        if (fromEl) fromEl.textContent = total === 0 ? 0 : (page - 1) * txnRowsPerPage + 1;
+        if (toEl) toEl.textContent = Math.min(page * txnRowsPerPage, total);
+        if (totalEl) totalEl.textContent = txnFilteredRows.length;
+    }
+
+    function renderTxnPagination() {
+        const nav = document.getElementById('paginationNav');
+        if (!nav) return;
+
+        const total = txnFilteredRows.length;
+        const maxPage = Math.ceil(total / txnRowsPerPage) || 1;
+        nav.innerHTML = '';
+
+        function addBtn(label, targetPage, disabled) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = label;
+            btn.className = 'px-3 py-1 text-sm border border-gray-300 rounded-md' + (disabled ? ' opacity-50 cursor-not-allowed' : ' hover:bg-gray-50');
+            btn.disabled = disabled;
+            if (!disabled) btn.addEventListener('click', function() { showTxnPage(targetPage); });
+            nav.appendChild(btn);
+        }
+
+        addBtn('Prev', txnCurrentPage - 1, txnCurrentPage <= 1);
+        for (let p = 1; p <= maxPage && p <= 10; p++) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = String(p);
+            btn.className = 'px-3 py-1 text-sm border rounded-md ' + (p === txnCurrentPage ? 'bg-gray-600 text-white border-gray-600' : 'border-gray-300 hover:bg-gray-50');
+            btn.addEventListener('click', function() { showTxnPage(p); });
+            nav.appendChild(btn);
+        }
+        addBtn('Next', txnCurrentPage + 1, txnCurrentPage >= maxPage);
     }
     </script>
 </body>

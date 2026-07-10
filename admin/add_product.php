@@ -18,7 +18,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $name = $_POST['name'];
     $quantity = $_POST['quantity'];
     $price = $_POST['price'];
-    $buying_price = $_POST['buying_price'];
+    $buying_price_raw = isset($_POST['buying_price']) ? trim((string)$_POST['buying_price']) : '';
+    $buying_price = $buying_price_raw === '' ? null : (float)$buying_price_raw;
     $restock_level = $_POST['restock_level'];
     $capacity = $_POST['capacity'];
     $expiry_date = $_POST['expiry_date'];
@@ -66,7 +67,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':quantity', $quantity, SQLITE3_INTEGER);
     $stmt->bindValue(':price', $price, SQLITE3_FLOAT);
-    $stmt->bindValue(':buying_price', $buying_price, SQLITE3_FLOAT);
+    if ($buying_price === null) {
+        $stmt->bindValue(':buying_price', null, SQLITE3_NULL);
+    } else {
+        $stmt->bindValue(':buying_price', $buying_price, SQLITE3_FLOAT);
+    }
     $stmt->bindValue(':image_url', $image_url, SQLITE3_TEXT);
     $stmt->bindValue(':restock_level', $restock_level, SQLITE3_INTEGER);
     $stmt->bindValue(':capacity', $capacity, SQLITE3_TEXT);
@@ -287,7 +292,7 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
                                             <div class="flex items-center justify-center px-3 py-2 border border-gray-300 rounded-l-md bg-gray-50">
                                                 <span class="text-gray-500 sm:text-sm">N$</span>
                                             </div>
-                                            <input type="number" step="0.01" name="buying_price" id="buying_price" required min="0"
+                                            <input type="number" step="0.01" name="buying_price" id="buying_price"
                                                 placeholder="0.00"
                                                 class="block w-full px-3 py-2 border-l-0 border border-gray-300 rounded-r-md 
                                                 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
@@ -302,7 +307,7 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path>
                                                 </svg>
                                             </div>
-                                            <input type="number" name="quantity" id="quantity" required min="0"
+                                            <input type="number" name="quantity" id="quantity" required
                                                 placeholder="Enter stock quantity"
                                                 class="block w-full px-3 py-2 border-l-0 border border-gray-300 rounded-r-md 
                                                 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 

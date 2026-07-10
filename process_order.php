@@ -10,12 +10,25 @@ date_default_timezone_set('Africa/Harare');
 // Database connection
 $db = new PDO('sqlite:pos.db');
 require_once __DIR__ . '/recipe_stock_helper.php';
+configureSqlitePdo($db);
 
 // Get the raw POST data
 $json = file_get_contents('php://input');
 $data = json_decode($json, true);
 
 try {
+    foreach ([
+        "ALTER TABLE orders ADD COLUMN gratuity_amount REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN gratuity_percent_applied REAL",
+        "ALTER TABLE orders ADD COLUMN gratuity_included_in_total INTEGER NOT NULL DEFAULT 1",
+    ] as $ordersMigrateSql) {
+        try {
+            $db->exec($ordersMigrateSql);
+        } catch (PDOException $e) {
+            // Column exists
+        }
+    }
+
     // Start a transaction
     $db->beginTransaction();
 
@@ -32,13 +45,26 @@ try {
         $cashReceived = isset($data['cash_received']) ? floatval($data['cash_received']) : 0;
     }
     
+    $gratuityAmount = round(floatval($data['gratuity_amount'] ?? 0), 2);
+    if ($gratuityAmount < 0) {
+        $gratuityAmount = 0;
+    }
+    $gratuityPctApplied = null;
+    if (array_key_exists('gratuity_percent_applied', $data) && $data['gratuity_percent_applied'] !== null && $data['gratuity_percent_applied'] !== '') {
+        $gratuityPctApplied = round(floatval($data['gratuity_percent_applied']), 4);
+    }
+    $gratuityIncluded = isset($data['gratuity_included_in_total']) ? ((int) $data['gratuity_included_in_total'] ? 1 : 0) : 1;
+
     // Insert the order into the orders table with current Namibia time
-    $stmt = $db->prepare("INSERT INTO orders (total, cash_received, created_at, cashier_id) VALUES (:total, :cash_received, :created_at, :cashier_id)");
+    $stmt = $db->prepare("INSERT INTO orders (total, cash_received, created_at, cashier_id, gratuity_amount, gratuity_percent_applied, gratuity_included_in_total) VALUES (:total, :cash_received, :created_at, :cashier_id, :gratuity_amount, :gratuity_percent_applied, :gratuity_included_in_total)");
     $stmt->execute([
         ':total' => $data['total'],
         ':cash_received' => $cashReceived,
         ':created_at' => date('Y-m-d H:i:s'), // Current Namibia time
-        ':cashier_id' => $_SESSION['username'] ?? 'Unknown'
+        ':cashier_id' => $_SESSION['username'] ?? 'Unknown',
+        ':gratuity_amount' => $gratuityAmount,
+        ':gratuity_percent_applied' => $gratuityPctApplied,
+        ':gratuity_included_in_total' => $gratuityIncluded,
     ]);
 
     $orderId = $db->lastInsertId();
@@ -81,7 +107,7 @@ try {
         // Get buying_price and category for this product (store historical cost and check category)
         $buyingPrice = null;
         $productCategory = null;
-        if ($item['name'] !== 'EFT Income') {
+        if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && $item['name'] !== 'Cart Discount' && $item['name'] !== 'Gratuity') {
             $stmtGetProductInfo->execute([':product_name' => $item['name']]);
             $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
             $buyingPrice = $productInfo ? ($productInfo['buying_price'] ?? null) : null;
@@ -96,12 +122,12 @@ try {
             ':buying_price' => $buyingPrice
         ]);
 
-        // Skip inventory updates and daily stock summary for EFT income items and Food category
-        if ($item['name'] !== 'EFT Income') {
-            $usedRecipeStock = deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
-            // Only decrease quantity if category is not "Food"
+        // Skip inventory for non-stock lines; Food category handled inside this block
+        if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && $item['name'] !== 'Cart Discount' && $item['name'] !== 'Gratuity') {
+            deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
+            // Only decrease main product quantity if category is not "Food" (ingredients always deducted above when linked)
             $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-            if (!$isFood && !$usedRecipeStock) {
+            if (!$isFood) {
                 $stmtUpdateInventory->execute([
                     ':quantity' => $item['quantity'],
                     ':product_name' => $item['name']

@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/../ensure_user_role_constraint.php';
 
 session_start();
 
@@ -15,12 +16,21 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_once __DIR__ . '/../userdb_fingerprint_helpers.php';
+
     $db = new PDO('sqlite:../user.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    ensureUsersTableRoleIncludesWaitress($db);
+    userdb_ensure_fingerprint_columns($db);
 
     $username = isset($_POST['username']) ? trim($_POST['username']) : '';
     $password = isset($_POST['password']) ? (string)$_POST['password'] : '';
     $role = isset($_POST['role']) ? trim($_POST['role']) : '';
+    $allowedRoles = ['cashier', 'manager', 'admin', 'waitress'];
+    if ($role !== '' && !in_array($role, $allowedRoles, true)) {
+        header('Location: add_user.php?error=' . urlencode('Invalid role selected.'));
+        exit;
+    }
     $email = isset($_POST['email']) && $_POST['email'] !== '' ? trim($_POST['email']) : null;
 
     if ($username === '' || $password === '' || $role === '') {
@@ -40,13 +50,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Hash the password (kept md5 to remain compatible with existing logins)
     $password_hash = md5($password);
 
+    $efIdx = isset($_POST['enrolled_index_finger']) ? trim((string) $_POST['enrolled_index_finger']) : '';
+    $efMid = isset($_POST['enrolled_middle_finger']) ? trim((string) $_POST['enrolled_middle_finger']) : '';
+    if (($efIdx !== '' && $efMid === '') || ($efIdx === '' && $efMid !== '')) {
+        header('Location: add_user.php?error=' . urlencode('Fingerprint enrollment incomplete. Clear fingerprints or finish enrollment.'));
+        exit;
+    }
+
     try {
         // Insert new user
-        $stmt = $db->prepare("INSERT INTO users (username, password_hash, role, email) VALUES (:username, :password_hash, :role, :email)");
+        $stmt = $db->prepare(
+            'INSERT INTO users (username, password_hash, role, email, indexfinger, middlefinger)
+             VALUES (:username, :password_hash, :role, :email, :indexfinger, :middlefinger)'
+        );
         $stmt->bindValue(':username', $username, PDO::PARAM_STR);
         $stmt->bindValue(':password_hash', $password_hash, PDO::PARAM_STR);
         $stmt->bindValue(':role', $role, PDO::PARAM_STR);
         $stmt->bindValue(':email', $email, PDO::PARAM_STR);
+        if ($efIdx !== '' && $efMid !== '') {
+            $stmt->bindValue(':indexfinger', $efIdx, PDO::PARAM_STR);
+            $stmt->bindValue(':middlefinger', $efMid, PDO::PARAM_STR);
+        } else {
+            $stmt->bindValue(':indexfinger', null, PDO::PARAM_NULL);
+            $stmt->bindValue(':middlefinger', null, PDO::PARAM_NULL);
+        }
         $stmt->execute();
 
         header('Location: users?add=success');
@@ -143,6 +170,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
                                 </div>
                             </div>
+
+                                <div id="fpAddUserEnrollmentWrap" class="mt-10 border-t border-gray-200 pt-8 md:mt-0 md:border-t-0 md:pt-0 md:border-l md:border-gray-200 md:pl-6">
+                                    <h2 class="text-lg font-semibold text-gray-800 mb-2">
+                                        <i class="fas fa-fingerprint mr-2 text-teal-600"></i>Fingerprint login (optional)
+                                    </h2>
+                                    <p class="text-sm text-gray-600 mb-4">
+                                        Connect a DigitalPersona reader (same <code class="text-xs bg-gray-100 px-1 rounded">finger/scripts</code> Web SDK as the demo). Enrollment builds true FMD templates via <code class="text-xs bg-gray-100 px-1 rounded">dpfj.dll</code> and stores them in <code class="text-xs bg-gray-100 px-1 rounded">user.db</code>.
+                                        Capture index finger four times, then middle finger four times, then finish enrollment before submitting the form.
+                                    </p>
+                                    <p id="fpAddUserStatus" class="text-sm font-medium min-h-[1.25rem] text-gray-700 mb-4"></p>
+                                    <div class="flex flex-wrap items-end gap-3 mb-4">
+                                        <div class="flex-1 min-w-[200px]">
+                                            <label for="fpAddUserReaderSelect" class="block text-sm font-medium text-gray-700 mb-1">Reader</label>
+                                            <select id="fpAddUserReaderSelect"
+                                                class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm"></select>
+                                        </div>
+                                        <button type="button" id="fpAddUserRefreshReadersBtn"
+                                            class="inline-flex items-center px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                                            Refresh readers
+                                        </button>
+                                    </div>
+                                    <p class="text-sm font-medium text-gray-700 mb-2">Index finger (4 scans)</p>
+                                    <div id="fpAddUserIndexFingers" class="grid grid-cols-4 gap-2 max-w-md mb-6">
+                                        <?php for ($i = 1; $i <= 4; $i++): ?>
+                                        <div id="indexfingerFpAu<?php echo $i; ?>" class="flex justify-center p-2 rounded-lg border border-gray-100 bg-gray-50">
+                                            <span data-state="empty" class="inline-block h-10 w-10 rounded-full border-2 border-gray-300 bg-gray-50"></span>
+                                        </div>
+                                        <?php endfor; ?>
+                                    </div>
+                                    <p class="text-sm font-medium text-gray-700 mb-2">Middle finger (4 scans)</p>
+                                    <div id="fpAddUserMiddleFingers" class="grid grid-cols-4 gap-2 max-w-md mb-6">
+                                        <?php for ($i = 1; $i <= 4; $i++): ?>
+                                        <div id="middleFingerFpAu<?php echo $i; ?>" class="flex justify-center p-2 rounded-lg border border-gray-100 bg-gray-50">
+                                            <span data-state="empty" class="inline-block h-10 w-10 rounded-full border-2 border-gray-300 bg-gray-50"></span>
+                                        </div>
+                                        <?php endfor; ?>
+                                    </div>
+                                    <div class="flex flex-wrap gap-2 mb-4">
+                                        <button type="button" id="fpAddUserStartCaptureBtn"
+                                            class="inline-flex items-center px-4 py-2 rounded-md text-sm font-medium text-white bg-teal-600 hover:bg-teal-700">
+                                            Start capture
+                                        </button>
+                                        <button type="button" id="fpAddUserFinishEnrollBtn"
+                                            class="inline-flex items-center px-4 py-2 rounded-md text-sm font-medium text-white bg-teal-800 hover:bg-teal-900">
+                                            Finish enrollment
+                                        </button>
+                                        <button type="button" id="fpAddUserClearBtn"
+                                            class="inline-flex items-center px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                                            Clear fingerprints
+                                        </button>
+                                    </div>
+                                    <input type="hidden" name="enrolled_index_finger" id="enrolled_index_finger" value="">
+                                    <input type="hidden" name="enrolled_middle_finger" id="enrolled_middle_finger" value="">
+                                </div>
                         </div>
                         
                         <div class="flex justify-end space-x-4 mt-6">
@@ -158,5 +239,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         </div>
     </div>
+    <script src="../finger/scripts/es6-shim.js"></script>
+    <script src="../finger/scripts/websdk.client.bundle.min.js"></script>
+    <script src="../finger/scripts/fingerprint.sdk.min.js"></script>
+    <script src="../fingerprint_fp_raw.js?v=20260630"></script>
+    <script>
+        window.FP_ENROLL_API_URL = '../fingerprint_enroll_api.php';
+    </script>
+    <script src="../add_user_fingerprint.js?v=20260701"></script>
 </body>
 </html>

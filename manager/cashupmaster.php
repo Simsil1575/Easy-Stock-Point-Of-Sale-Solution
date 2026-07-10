@@ -380,21 +380,26 @@ bindCashierParam($cashBackQuery);
 $cashBackQuery->execute();
 $cashBackSystem = $cashBackQuery->fetchColumn();
 
-// 7. Tips - from cash_transactions where description contains 'Tips'
-$tipsQuery = $db->prepare("
-    SELECT COALESCE(SUM(amount), 0)
-    FROM cash_transactions
-    WHERE type = 'cash-out' 
-    AND (description LIKE '%Tips%' OR description LIKE '%tip%')
-    AND (" . getBusinessDayWhere('created_at') . ")" . getCashierFilter('cashier_id') . "
-");
-$tipsQuery->bindParam(':selectedDate', $selectedDate);
-$tipsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$tipsQuery->bindParam(':closingTime', $closingTime);
-$tipsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-bindCashierParam($tipsQuery);
-$tipsQuery->execute();
-$tipsSystem = $tipsQuery->fetchColumn();
+// 7. Tips — from tips table only (never cash-out / not expenses)
+$tipsSystem = 0;
+try {
+    if ($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='tips'")->fetchColumn()) {
+        $tipsQuery = $db->prepare("
+            SELECT COALESCE(SUM(amount), 0)
+            FROM tips
+            WHERE (" . getBusinessDayWhere('created_at') . ")" . getCashierFilter('cashier_id') . "
+        ");
+        $tipsQuery->bindParam(':selectedDate', $selectedDate);
+        $tipsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
+        $tipsQuery->bindParam(':closingTime', $closingTime);
+        $tipsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+        bindCashierParam($tipsQuery);
+        $tipsQuery->execute();
+        $tipsSystem = (float) $tipsQuery->fetchColumn();
+    }
+} catch (PDOException $e) {
+    $tipsSystem = 0;
+}
 
 // 8. Voids - from void_transactions
 $voidsQuery = $db->prepare("

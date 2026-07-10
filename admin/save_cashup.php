@@ -51,6 +51,8 @@ $overShort = floatval($input['over_short'] ?? 0);
 
 // Card & Credit section
 $cardSalesExpected = floatval($input['card_sales_expected'] ?? 0);
+$eftOnHand = floatval($input['eft_on_hand'] ?? 0);
+$eftOverShort = floatval($input['eft_over_short'] ?? 0);
 $unpaidCreditSales = floatval($input['unpaid_credit_sales'] ?? 0);
 $openTabsBalance = floatval($input['open_tabs_balance'] ?? 0);
 $unpaidTabs = floatval($input['unpaid_tabs'] ?? 0);
@@ -87,6 +89,8 @@ try {
         cash_on_hand,
         over_short,
         card_sales_expected,
+        eft_on_hand,
+        eft_over_short,
         unpaid_credit_sales,
         open_tabs_balance,
         unpaid_tabs,
@@ -111,6 +115,8 @@ try {
         :cash_on_hand,
         :over_short,
         :card_sales_expected,
+        :eft_on_hand,
+        :eft_over_short,
         :unpaid_credit_sales,
         :open_tabs_balance,
         :unpaid_tabs,
@@ -137,6 +143,8 @@ try {
     $stmt->bindParam(':cash_on_hand', $cashOnHand);
     $stmt->bindParam(':over_short', $overShort);
     $stmt->bindParam(':card_sales_expected', $cardSalesExpected);
+    $stmt->bindParam(':eft_on_hand', $eftOnHand);
+    $stmt->bindParam(':eft_over_short', $eftOverShort);
     $stmt->bindParam(':unpaid_credit_sales', $unpaidCreditSales);
     $stmt->bindParam(':open_tabs_balance', $openTabsBalance);
     $stmt->bindParam(':unpaid_tabs', $unpaidTabs);

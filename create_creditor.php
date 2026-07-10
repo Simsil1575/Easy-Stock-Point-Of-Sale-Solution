@@ -21,11 +21,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 try {
     $db = new PDO('sqlite:pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    require_once __DIR__ . '/credit_limit_helper.php';
     
     $data = json_decode(file_get_contents('php://input'), true);
     
     $name = trim($data['name'] ?? '');
     $phone = trim($data['phone'] ?? '');
+    $creditLimit = normalizeCreditLimit($data['credit_limit'] ?? 0);
     
     if (empty($name)) {
         echo json_encode(['success' => false, 'message' => 'Creditor name is required']);
@@ -41,24 +43,20 @@ try {
     }
     
     // Insert new creditor
-    $stmt = $db->prepare("INSERT INTO creditors (name, phone, active) VALUES (?, ?, 1)");
-    $stmt->execute([$name, $phone]);
+    $stmt = $db->prepare("INSERT INTO creditors (name, phone, credit_limit, active) VALUES (?, ?, ?, 1)");
+    $stmt->execute([$name, $phone, $creditLimit]);
     
-    $creditorId = $db->lastInsertId();
+    $creditorId = (int) $db->lastInsertId();
     
-    // Fetch the newly created creditor with balance
-    $newCreditor = $db->query("
-        SELECT 
-            c.id,
-            c.name,
-            c.phone,
-            c.active,
-            0 as outstanding_balance,
-            0 as total_transactions,
-            NULL as last_transaction_date
-        FROM creditors c
-        WHERE c.id = $creditorId
-    ")->fetch(PDO::FETCH_ASSOC);
+    $newCreditor = enrichCreditorWithCreditInfo($db, [
+        'id' => $creditorId,
+        'name' => $name,
+        'phone' => $phone,
+        'active' => 1,
+        'outstanding_balance' => 0,
+        'total_transactions' => 0,
+        'last_transaction_date' => null,
+    ]);
     
     echo json_encode(['success' => true, 'message' => 'Creditor created successfully', 'creditor' => $newCreditor]);
 } catch (Exception $e) {

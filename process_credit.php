@@ -7,6 +7,8 @@ date_default_timezone_set('Africa/Harare');
 
 $db = new PDO('sqlite:pos.db');
 require_once __DIR__ . '/recipe_stock_helper.php';
+require_once __DIR__ . '/credit_limit_helper.php';
+configureSqlitePdo($db);
 
 try {
     $db->beginTransaction();
@@ -29,6 +31,8 @@ try {
     if (!$creditor || $creditor['active'] != 1) {
         throw new Exception('Invalid or inactive creditor');
     }
+
+    assertCreditSaleWithinLimit($db, (int) $creditorId, (float) $total);
 
     // Create credit sale record with Namibia time
     $stmt = $db->prepare("INSERT INTO credit_sales (creditor_id, total_amount, due_date, created_at, cashier_id) 
@@ -85,12 +89,16 @@ try {
         $buyingPrice = $productInfo ? ($productInfo['buying_price'] ?? null) : null;
         $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
 
-        // Only decrease quantity if category is not "Food"
-        $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-        $usedRecipeStock = deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
-        if (!$isFood && !$usedRecipeStock) {
-            $updateStmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE name = ?");
-            $updateStmt->execute([$item['quantity'], $item['name']]);
+        $skipStock = ($item['name'] === 'Cart Discount' || $item['name'] === 'Gratuity');
+
+        if (!$skipStock) {
+            // Only decrease quantity if category is not "Food"
+            $isFood = strtolower(trim($productCategory ?? '')) === 'food';
+            deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
+            if (!$isFood) {
+                $updateStmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE name = ?");
+                $updateStmt->execute([$item['quantity'], $item['name']]);
+            }
         }
 
         // Record sale item
@@ -101,23 +109,25 @@ try {
             $item['price'] / $item['quantity'], // Store per-item price
             $buyingPrice // Store historical buying price
         ]);
-        
-        // Ensure daily stock summary exists for this product and date
-        $stmtEnsureDailySummary->execute([
-            $currentDate,
-            $item['name']
-        ]);
-        
-        // Update daily stock summary with sold quantity immediately (even for Food, for reporting purposes)
-        $stmtUpdateDailySummary->execute([
-            $currentDate, // date
-            $item['name'], // product name for product_id lookup
-            $currentDate, $item['name'], // opening_quantity lookup
-            $currentDate, $item['name'], // closing_quantity lookup  
-            $currentDate, $item['name'], // received_quantity lookup
-            $currentDate, $item['name'], $item['quantity'], // sold_quantity lookup and increment
-            $currentDate, $item['name']  // damaged_quantity lookup
-        ]);
+
+        if (!$skipStock) {
+            // Ensure daily stock summary exists for this product and date
+            $stmtEnsureDailySummary->execute([
+                $currentDate,
+                $item['name']
+            ]);
+
+            // Update daily stock summary with sold quantity immediately (even for Food, for reporting purposes)
+            $stmtUpdateDailySummary->execute([
+                $currentDate, // date
+                $item['name'], // product name for product_id lookup
+                $currentDate, $item['name'], // opening_quantity lookup
+                $currentDate, $item['name'], // closing_quantity lookup  
+                $currentDate, $item['name'], // received_quantity lookup
+                $currentDate, $item['name'], $item['quantity'], // sold_quantity lookup and increment
+                $currentDate, $item['name']  // damaged_quantity lookup
+            ]);
+        }
     }
 
     $db->commit();

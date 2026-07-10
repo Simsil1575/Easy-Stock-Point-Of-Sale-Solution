@@ -1,23 +1,23 @@
 <?php
-session_start();
+require_once __DIR__ . '/config.php';
 
-if (isset($_SESSION['user_id'])) {
+$username = $_SESSION['username'] ?? null;
+if (isset($_SESSION['user_id']) && $username !== null && $username !== '') {
     try {
-        $db = new PDO('sqlite:pos.db');
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        
-        // Record logout
-        $logStmt = $db->prepare("INSERT INTO user_log (user_id, action_type) VALUES (:username, 'login')");
-        $logStmt->execute([':username' => $user['username']]);
-    } catch(PDOException $e) {
+        $pos_db_file = realpath(__DIR__ . '/pos.db');
+        if ($pos_db_file !== false) {
+            $db = new PDO("sqlite:$pos_db_file");
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $logStmt = $db->prepare("INSERT INTO user_log (user_id, action_type) VALUES (:username, 'logout')");
+            $logStmt->execute([':username' => $username]);
+        }
+    } catch (PDOException $e) {
         error_log("Logout logging failed: " . $e->getMessage());
     }
 }
 
-// Clear session data
 session_unset();
 session_destroy();
 
-// Redirect to login
 header("Location: /");
 exit();

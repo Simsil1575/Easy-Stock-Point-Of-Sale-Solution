@@ -8,6 +8,8 @@ date_default_timezone_set('Africa/Harare');
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 require_once __DIR__ . '/recipe_stock_helper.php';
+configureSqlitePdo($db);
+require_once __DIR__ . '/tab_balance_helper.php';
 
 // Create tabs and tab_items tables if they don't exist
 try {
@@ -81,8 +83,10 @@ try {
 
     if (!$tab) {
         // Create new tab for this table - store username for consistent tracking
-        $createTabStmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, cashier_id) VALUES (?, 0, 0, ?)");
-        $createTabStmt->execute([$tableName, $cashierUsername]);
+        ensureTabGratuityColumns($db);
+        $defaultGratuityOn = tab_default_gratuity_enabled_on_create($db);
+        $createTabStmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, cashier_id, gratuity_enabled) VALUES (?, 0, 0, ?, ?)");
+        $createTabStmt->execute([$tableName, $cashierUsername, $defaultGratuityOn]);
         $tabId = $db->lastInsertId();
         
         // Fetch the newly created tab
@@ -107,7 +111,10 @@ try {
         WHERE ti.tab_id = ? 
           AND ti.product_name = ? 
           AND ti.price = ?
-          AND COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) < (ti.quantity * ti.price)
+          AND (
+              (ti.quantity * ti.price) < 0
+              OR COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) < (ti.quantity * ti.price)
+          )
         LIMIT 1
     ");
     $insertItemStmt = $db->prepare("INSERT INTO tab_items (tab_id, product_name, quantity, price, added_by) VALUES (?, ?, ?, ?, ?)");
@@ -157,24 +164,23 @@ try {
         }
         
         // Reduce product quantities (similar to process_order.php)
-        // Skip inventory updates for EFT income items and Food category
-        if ($item['name'] !== 'EFT Income') {
+        // Skip inventory updates for non-stock tab lines (EFT, lay-bye, prepayment credit) and Food category
+        if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && !is_tab_non_inventory_tab_line_name($item['name'])) {
             $stmtGetProductInfo->execute([$item['name']]);
             $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
             $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
-            $usedRecipeStock = deductRecipeStockByProductName($db, $item['name'], floatval($quantity));
+            deductRecipeStockByProductName($db, $item['name'], floatval($quantity));
             
-            // Only decrease quantity if category is not "Food"
+            // Only decrease main product quantity if category is not "Food" (ingredients always deducted above when linked)
             $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-            if (!$isFood && !$usedRecipeStock) {
+            if (!$isFood) {
                 $stmtUpdateInventory->execute([$quantity, $item['name']]);
             }
         }
     }
 
-    // Update tab balance
-    $updateBalanceStmt = $db->prepare("UPDATE tabs SET current_balance = current_balance + ? WHERE id = ?");
-    $updateBalanceStmt->execute([$total, $tabId]);
+    ensureTabPrepaidBalanceColumn($db);
+    recalculateTabBalance($db, $tabId);
 
     $db->commit();
     

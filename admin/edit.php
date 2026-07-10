@@ -12,39 +12,19 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     exit();
 }
 
-function ensureRecipeTablesSQLite(SQLite3 $db): void {
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS product_recipes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER NOT NULL UNIQUE,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (product_id) REFERENCES products(id)
-        )
-    ");
-
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS recipe_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recipe_id INTEGER NOT NULL,
-            ingredient_product_id INTEGER NOT NULL,
-            quantity_per_unit DECIMAL(10,4) NOT NULL DEFAULT 0,
-            FOREIGN KEY (recipe_id) REFERENCES product_recipes(id) ON DELETE CASCADE,
-            FOREIGN KEY (ingredient_product_id) REFERENCES products(id)
-        )
-    ");
-}
-
+require_once __DIR__ . '/../recipe_stock_helper.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $db = new SQLite3('../pos.db');
+    configureSqlite3($db);
     ensureRecipeTablesSQLite($db);
 
     $id = $_POST['id'];
     $name = $_POST['name'];
     $quantity = $_POST['quantity'];
     $price = $_POST['price'];
-    $buying_price = $_POST['buying_price'];
+    $buying_price_raw = isset($_POST['buying_price']) ? trim((string)$_POST['buying_price']) : '';
+    $buying_price = $buying_price_raw === '' ? null : (float)$buying_price_raw;
     $restock_level = $_POST['restock_level'];
     $capacity = $_POST['capacity'];
     $expiry_date = $_POST['expiry_date'];
@@ -120,7 +100,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':quantity', $quantity, SQLITE3_INTEGER);
     $stmt->bindValue(':price', $price, SQLITE3_FLOAT);
-    $stmt->bindValue(':buying_price', $buying_price, SQLITE3_FLOAT);
+    if ($buying_price === null) {
+        $stmt->bindValue(':buying_price', null, SQLITE3_NULL);
+    } else {
+        $stmt->bindValue(':buying_price', $buying_price, SQLITE3_FLOAT);
+    }
     $stmt->bindValue(':image_url', $image_url, SQLITE3_TEXT);
     $stmt->bindValue(':restock_level', $restock_level, SQLITE3_INTEGER);
     $stmt->bindValue(':capacity', $capacity, SQLITE3_TEXT);
@@ -147,6 +131,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmtInsert->bindValue(':old_quantity', $oldQuantity, SQLITE3_INTEGER);
         $stmtInsert->bindValue(':new_quantity', $newQuantity, SQLITE3_INTEGER);
         $stmtInsert->execute();
+
+        adjustRecipeStockByProductIdSQLite3($db, (int) $id, (float) $quantityChange);
     }
 
     // Save recipe rows for this product (ingredients + qty per unit)
@@ -198,6 +184,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Get product data for editing
 if (isset($_GET['id'])) {
     $db = new SQLite3('../pos.db');
+    configureSqlite3($db);
     ensureRecipeTablesSQLite($db);
     $id = $_GET['id'];
     
@@ -447,9 +434,9 @@ if (isset($_GET['id'])) {
                                             <div class="flex items-center justify-center px-3 py-2 border border-gray-300 rounded-l-md bg-gray-50">
                                                 <span class="text-gray-500 sm:text-sm">N$</span>
                                             </div>
-                                            <input type="number" step="0.01" name="buying_price" id="buying_price" required min="0"
+                                            <input type="number" step="0.01" name="buying_price" id="buying_price"
                                                 placeholder="0.00"
-                                                value="<?php echo $product['buying_price']; ?>"
+                                                value="<?php echo isset($product['buying_price']) && $product['buying_price'] !== null && $product['buying_price'] !== '' ? htmlspecialchars((string)$product['buying_price']) : ''; ?>"
                                                 class="block w-full px-3 py-2 border-l-0 border border-gray-300 rounded-r-md 
                                                 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
                                                 focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
@@ -463,7 +450,7 @@ if (isset($_GET['id'])) {
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path>
                                                 </svg>
                                             </div>
-                                            <input type="number" name="quantity" id="quantity" required min="0"
+                                            <input type="number" name="quantity" id="quantity" required
                                                 placeholder="Enter stock quantity"
                                                 value="<?php echo $product['quantity']; ?>"
                                                 class="block w-full px-3 py-2 border-l-0 border border-gray-300 rounded-r-md 
@@ -473,10 +460,10 @@ if (isset($_GET['id'])) {
                                     </div>
                                 </div>
 
-                                <!-- Product details row -->
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <!-- Product details -->
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                                     <div>
-                                        <label for="restock_level" class="block text-sm font-medium text-gray-700 mb-2">Restock Level</span></label>
+                                        <label for="restock_level" class="block text-sm font-medium text-gray-700 mb-2">Restock Level</label>
                                         <input type="number" name="restock_level" id="restock_level" min="0"
                                             placeholder="Minimum stock alert"
                                             value="<?php echo $product['restock_level']; ?>"
@@ -504,11 +491,11 @@ if (isset($_GET['id'])) {
                                     <div>
                                         <label for="barcode" class="block text-sm font-medium text-gray-700 mb-2">Barcode</label>
                                         <div class="flex items-center gap-2">
-                                        <input type="text" name="barcode" id="barcode" 
-                                            value="<?php echo htmlspecialchars($product['barcode']); ?>"
-                                            placeholder="Enter barcode"
-                                            class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm 
-                                            placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
+                                            <input type="text" name="barcode" id="barcode" 
+                                                value="<?php echo htmlspecialchars($product['barcode']); ?>"
+                                                placeholder="Enter barcode"
+                                                class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm 
+                                                placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
                                                 focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out"
                                                 oninput="updateBarcodeDisplay(this.value)">
                                             <?php if (!empty($product['barcode'])): ?>
@@ -517,10 +504,10 @@ if (isset($_GET['id'])) {
                                                     title="Copy barcode">
                                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h4a2 2 0 002-2M8 5a2 2 0 012-2h4a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path>
-                                </svg>
-                            </button>
+                                                    </svg>
+                                                </button>
                                             <?php endif; ?>
-                        </div>
+                                        </div>
                                         <?php if (!empty($product['barcode'])): ?>
                                             <div class="mt-2">
                                                 <div id="barcodeDisplay" class="w-full max-w-xs">
@@ -531,10 +518,6 @@ if (isset($_GET['id'])) {
                                             </div>
                                         <?php endif; ?>
                                     </div>
-                                </div>
-
-                                <!-- Category and Discount Section -->
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div>
                                         <label for="category" class="block text-sm font-medium text-gray-700 mb-2">Category</label>
                                         <input type="text" name="category" id="category" 
@@ -562,11 +545,7 @@ if (isset($_GET['id'])) {
                                             placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
                                             focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
                                     </div>
-                                </div>
-
-                                <!-- Discount Date Range -->
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div>
+                                    <div id="discountStartField" class="<?php echo (!isset($product['discount']) || floatval($product['discount']) <= 0) ? 'hidden' : ''; ?>">
                                         <label for="discount_start" class="block text-sm font-medium text-gray-700 mb-2">Discount Start Date</label>
                                         <input type="date" name="discount_start" id="discount_start"
                                             value="<?php echo $product['discount_start'] ? date('Y-m-d', strtotime($product['discount_start'])) : ''; ?>"
@@ -574,7 +553,7 @@ if (isset($_GET['id'])) {
                                             placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
                                             focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
                                     </div>
-                                    <div>
+                                    <div id="discountEndField" class="<?php echo (!isset($product['discount']) || floatval($product['discount']) <= 0) ? 'hidden' : ''; ?>">
                                         <label for="discount_end" class="block text-sm font-medium text-gray-700 mb-2">Discount End Date</label>
                                         <input type="date" name="discount_end" id="discount_end"
                                             value="<?php echo $product['discount_end'] ? date('Y-m-d', strtotime($product['discount_end'])) : ''; ?>"
@@ -628,7 +607,15 @@ if (isset($_GET['id'])) {
 
                             <!-- Right Column - Image Upload and Cropper -->
                             <div>
-                                <label for="image" class="block text-sm font-medium text-gray-700 mb-2">Product Image</label>
+                                <div class="flex items-center gap-2 mb-2">
+                                    <label for="image" class="block text-sm font-medium text-gray-700">Product Image</label>
+                                    <button type="button" id="googleSearchBtn" title="Search Google Images" aria-label="Search Google Images"
+                                        class="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition duration-150">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                        </svg>
+                                    </button>
+                                </div>
                                 <div id="drop-zone" class="border-2 border-dashed border-gray-300 rounded-lg p-6 cursor-pointer">
                                     <div class="flex items-center justify-center flex-col">
                                         <label class="flex items-center px-3 py-2 bg-white text-gray-400 
@@ -679,6 +666,13 @@ if (isset($_GET['id'])) {
         const previewImage = document.getElementById('preview-image');
         const croppedImageInput = document.getElementById('cropped-image');
         const form = document.querySelector('form');
+        const googleSearchBtn = document.getElementById('googleSearchBtn');
+        const productNameInput = document.getElementById('name');
+        const discountInput = document.getElementById('discount');
+        const discountStartField = document.getElementById('discountStartField');
+        const discountEndField = document.getElementById('discountEndField');
+        const discountStartInput = document.getElementById('discount_start');
+        const discountEndInput = document.getElementById('discount_end');
         let cropper = null;
         const ingredientOptions = <?= json_encode(array_values(array_map(function($ingredient) use ($product) {
             return [
@@ -689,9 +683,27 @@ if (isset($_GET['id'])) {
             ];
         }, $ingredientOptions)), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
 
-        // Initialize cropper if existing image is present
-        if (!previewContainer.classList.contains('hidden')) {
-            cropper = new Cropper(previewImage, {
+        function getGoogleImagesUrl(query) {
+            const params = new URLSearchParams({
+                q: query,
+                udm: '2'
+            });
+            return `https://www.google.com/search?${params.toString()}`;
+        }
+
+        function updateDiscountDateFields() {
+            const value = parseFloat(discountInput.value);
+            const hasDiscount = discountInput.value.trim() !== '' && !Number.isNaN(value) && value > 0;
+            discountStartField.classList.toggle('hidden', !hasDiscount);
+            discountEndField.classList.toggle('hidden', !hasDiscount);
+            if (!hasDiscount) {
+                discountStartInput.value = '';
+                discountEndInput.value = '';
+            }
+        }
+
+        function createCropperInstance() {
+            return new Cropper(previewImage, {
                 aspectRatio: 1 / 1,
                 viewMode: 0,
                 dragMode: 'move',
@@ -708,6 +720,11 @@ if (isset($_GET['id'])) {
             });
         }
 
+        // Initialize cropper if existing image is present
+        if (!previewContainer.classList.contains('hidden')) {
+            cropper = createCropperInstance();
+        }
+
         fileInput.addEventListener('change', function(e) {
             if(this.files && this.files[0]) {
                 fileChosen.textContent = this.files[0].name;
@@ -718,21 +735,7 @@ if (isset($_GET['id'])) {
                     if(cropper) {
                         cropper.destroy();
                     }
-                    cropper = new Cropper(previewImage, {
-                        aspectRatio: 1 / 1,
-                        viewMode: 0,
-                        dragMode: 'move',
-                        autoCropArea: 1.0,
-                        cropBoxMovable: true,
-                        cropBoxResizable: true,
-                        toggleDragModeOnDblclick: false,
-                        background: false,
-                        modal: false,
-                        zoomable: true,
-                        zoomOnTouch: true,
-                        zoomOnWheel: true,
-                        wheelZoomRatio: 0.1
-                    });
+                    cropper = createCropperInstance();
                 };
                 reader.readAsDataURL(this.files[0]);
             } else {
@@ -744,6 +747,17 @@ if (isset($_GET['id'])) {
                 }
             }
         });
+
+        googleSearchBtn.addEventListener('click', () => {
+            const query = (productNameInput?.value || '').trim();
+            if (!query) {
+                showToast('Enter a product name first.', 'error');
+                return;
+            }
+            window.open(getGoogleImagesUrl(query), '_blank', 'noopener,noreferrer');
+        });
+        discountInput.addEventListener('input', updateDiscountDateFields);
+        updateDiscountDateFields();
 
         form.addEventListener('submit', function(e) {
             if (cropper) {

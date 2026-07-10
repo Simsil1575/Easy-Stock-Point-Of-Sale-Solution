@@ -36,9 +36,10 @@ class ReceiptPrintService(private val context: Context, private val lifecycleOwn
                 val isCashUpReport = orderData.optBoolean("is_cashup_report", false)
                 val isBalanceReceipt = orderData.optBoolean("is_balance_receipt", false)
                 val isTabBalanceReceipt = orderData.optBoolean("is_tab_balance_receipt", false)
+                val isTabCopyReceipt = orderData.optBoolean("is_tab_copy_receipt", false)
                 val isPaymentReceipt = orderData.optBoolean("is_payment_receipt", false)
                 
-                val shouldPrint = printOnly || isCashUpReport || isBalanceReceipt || isTabBalanceReceipt || isPaymentReceipt
+                val shouldPrint = printOnly || isCashUpReport || isBalanceReceipt || isTabBalanceReceipt || isTabCopyReceipt || isPaymentReceipt
                 val openDrawerOnly = orderData.optBoolean("open_drawer_only", false)
                 
                 if (!shouldPrint && !openDrawerOnly) {
@@ -419,13 +420,37 @@ class ReceiptPrintService(private val context: Context, private val lifecycleOwn
             displaySubtotal = subtotal
             displayTotal = subtotal
             android.util.Log.d("ReceiptPrintService", "VAT Exclusive mode - VAT amount: $vatAmount (not shown on receipt)")
-        } else {
-            // VAT is inclusive - calculate breakdown
-            vatAmount = subtotal - (subtotal / (1 + (vatRate / 100)))
-            displaySubtotal = subtotal - vatAmount
+        } else if (vatInclusive == "none") {
+            vatAmount = 0.0
+            displaySubtotal = subtotal
             displayTotal = subtotal
-            android.util.Log.d("ReceiptPrintService", "VAT Inclusive mode - amount: $vatAmount, subtotal (ex VAT): $displaySubtotal, total: $displayTotal")
+            android.util.Log.d("ReceiptPrintService", "No VAT mode - no VAT lines")
+        } else if (vatInclusive == "inclusive") {
+            // Embedded VAT in inclusive prices (same formula as receipt.php)
+            val r = vatRate / 100.0
+            vatAmount = if (r > 0) subtotal - (subtotal / (1.0 + r)) else 0.0
+            if (vatAmount < 0) vatAmount = 0.0
+            displaySubtotal = subtotal
+            displayTotal = subtotal
+            android.util.Log.d("ReceiptPrintService", "VAT Inclusive - embedded VAT: $vatAmount")
+        } else {
+            vatAmount = subtotal * (vatRate / 100)
+            displaySubtotal = subtotal
+            displayTotal = subtotal
         }
+        
+        val rateLabelStr = run {
+            var s = String.format(java.util.Locale.US, "%.2f", vatRate)
+                .trimEnd { it == '0' }
+                .trimEnd { it == '.' }
+            if (s.isEmpty() || s == ".") "0" else s
+        }
+        val vatLineLabel = when (vatInclusive) {
+            "none" -> "VAT: 0% (no VAT):"
+            "inclusive" -> "VAT: $rateLabelStr% (incl.):"
+            else -> "VAT: $rateLabelStr% (excl.):"
+        }
+        val vatLineAmount = if (vatInclusive == "none") 0.0 else vatAmount
         
         // Items section
         if (orderData.has("items")) {
@@ -454,46 +479,30 @@ class ReceiptPrintService(private val context: Context, private val lifecycleOwn
                 }
             }
             
-            // Totals
+            // Totals — VAT line always shows (excl.) / (incl.) / (no VAT)
             sb.append("[L]\n")
-            // Determine if VAT should be shown (inclusive means VAT is included in prices, so show breakdown)
-            val shouldShowVAT = vatInclusive != "exclusive" && vatInclusive.isNotEmpty() && vatAmount > 0.0
             
             if (isPaymentReceipt) {
-                // Show VAT breakdown for payment receipts if VAT is inclusive
-                if (shouldShowVAT) {
-                    android.util.Log.d("ReceiptPrintService", "Adding VAT breakdown for payment receipt")
-                    val subtotalLabel = String.format("%-20s", "Subtotal (ex VAT):")
-                    val subtotalValue = String.format("%11s", "N$${String.format("%.2f", displaySubtotal)}")
-                    sb.append("[L]$subtotalLabel$subtotalValue\n")
-                    
-                    val vatLabel = String.format("%-20s", "VAT (${String.format("%.2f", vatRate)}%):")
-                    val vatValue = String.format("%11s", "N$${String.format("%.2f", vatAmount)}")
-                    sb.append("[L]$vatLabel$vatValue\n")
-                    sb.append("[L]${"-".repeat(32)}\n")
-                } else {
-                    android.util.Log.d("ReceiptPrintService", "VAT not shown for payment receipt - vatInclusive: '$vatInclusive', vatAmount: $vatAmount")
-                }
-                
+                val vatLineFull = vatLineLabel + String.format(
+                    java.util.Locale.US,
+                    " N$ %8.2f",
+                    vatLineAmount
+                )
+                val padVat = (32 - vatLineFull.length).coerceAtLeast(0)
+                sb.append("[L]" + (if (padVat > 0) " ".repeat(padVat) else "") + vatLineFull + "\n")
+                sb.append("[L]${"-".repeat(32)}\n")
                 val totalLabel = String.format("%-20s", "PAID AMOUNT:")
                 val totalValue = String.format("%11s", "N$${String.format("%.2f", displayTotal)}")
                 sb.append("[L]<b>$totalLabel$totalValue</b>\n")
             } else if (!isTabSale) {
-                // Show VAT breakdown for regular receipts if VAT is inclusive
-                if (shouldShowVAT) {
-                    android.util.Log.d("ReceiptPrintService", "Adding VAT breakdown for regular receipt")
-                    val subtotalLabel = String.format("%-20s", "Subtotal (ex VAT):")
-                    val subtotalValue = String.format("%11s", "N$${String.format("%.2f", displaySubtotal)}")
-                    sb.append("[L]$subtotalLabel$subtotalValue\n")
-                    
-                    val vatLabel = String.format("%-20s", "VAT (${String.format("%.2f", vatRate)}%):")
-                    val vatValue = String.format("%11s", "N$${String.format("%.2f", vatAmount)}")
-                    sb.append("[L]$vatLabel$vatValue\n")
-                    sb.append("[L]${"-".repeat(32)}\n")
-                } else {
-                    android.util.Log.d("ReceiptPrintService", "VAT not shown for regular receipt - vatInclusive: '$vatInclusive', vatAmount: $vatAmount")
-                }
-                
+                val vatLineFull = vatLineLabel + String.format(
+                    java.util.Locale.US,
+                    " N$ %8.2f",
+                    vatLineAmount
+                )
+                val padVat = (32 - vatLineFull.length).coerceAtLeast(0)
+                sb.append("[L]" + (if (padVat > 0) " ".repeat(padVat) else "") + vatLineFull + "\n")
+                sb.append("[L]${"-".repeat(32)}\n")
                 val totalLabel = String.format("%-20s", "TOTAL:")
                 val totalValue = String.format("%11s", "N$${String.format("%.2f", displayTotal)}")
                 sb.append("[L]<b>$totalLabel$totalValue</b>\n")
@@ -553,9 +562,11 @@ class ReceiptPrintService(private val context: Context, private val lifecycleOwn
                     }
                     sb.append("[L]${"-".repeat(32)}\n")
                     sb.append("[L]${String.format("%-20s%11s", "Total:", "N$${String.format("%.2f", displayTotal)}")}\n")
-                    if (cashAmount > displayTotal) {
-                        val change = maxOf(0.0, cashAmount - displayTotal)
-                        sb.append("[L]${String.format("%-20s%11s", "Change:", "N$${String.format("%.2f", change)}")}\n")
+                    val cashReceived = orderData.optDouble("cash_received", 0.0)
+                    val tenderedCash = if (cashAmount > 0) cashAmount else cashReceived
+                    val mixedChange = maxOf(0.0, tenderedCash + eftAmount - displayTotal)
+                    if (mixedChange > 0.004) {
+                        sb.append("[L]${String.format("%-20s%11s", "Change:", "N$${String.format("%.2f", mixedChange)}")}\n")
                     }
                 }
                 (isTabSale && !isPaymentReceipt) -> {

@@ -164,6 +164,11 @@ try {
             transform: scale(1);
         }
         
+        /* SweetAlert2 must stack above .modal-overlay (z-index 9999) */
+        .swal2-container {
+            z-index: 20000 !important;
+        }
+        
         /* Mobile hamburger menu styles */
         .hamburger {
             position: relative;
@@ -309,6 +314,17 @@ try {
                             </div>
                             <h3 class="font-semibold text-gray-800 mb-1">Tabs</h3>
                             <p class="text-sm text-gray-500">Open and manage customer tabs</p>
+                        </div>
+
+                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='laybye'">
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-violet-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-calendar-check text-violet-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded-full">Lay-bye</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Lay-byes</h3>
+                            <p class="text-sm text-gray-500">Plans, deposits, and payments</p>
                         </div>
                         
                         <!-- Credit Book -->
@@ -723,25 +739,27 @@ try {
                             >
                         </div>
                     </div>
-                    <p class="text-xs text-gray-500 mb-6">
-                        <i class="fas fa-info-circle"></i> Report includes sales, cash in till, expenses, cash back, tips, voids, refunds. For a full business day use Start 00:00 and End 23:59.
-                    </p>
-                    
-                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                        <div class="flex items-start gap-3">
-                            <i class="fas fa-receipt text-blue-600 text-lg mt-1"></i>
-                            <div>
-                                <h4 class="font-semibold text-blue-900 mb-1">Z-Report Will Include:</h4>
-                                <ul class="text-sm text-blue-800 space-y-1">
-                                    <li>• Total Sales (Cash & Card)</li>
-                                    <li>• Cash in Till</li>
-                                    <li>• Credit Sales & Returns</li>
-                                    <li>• Expenses & Cash Back</li>
-                                    <li>• Voids & Refunds</li>
-                                </ul>
-                            </div>
+                    <div class="mb-6">
+                        <label for="cashUpCashOnHand" class="block text-sm font-medium text-gray-700 mb-2">Cash on hand (physical count) <span class="text-red-600">*</span></label>
+                        <div class="relative">
+                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-medium">N$</span>
+                            <input
+                                type="number"
+                                id="cashUpCashOnHand"
+                                name="cash_on_hand"
+                                min="0"
+                                step="0.01"
+                                required
+                                class="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-base"
+                            >
                         </div>
+                        <p class="text-xs text-gray-500 mt-1.5">
+                            Count the cash in your drawer and enter the amount. This is required for the Z-report.
+                        </p>
                     </div>
+                   
+                    
+                
                     
                     <div class="flex gap-3">
                         <button 
@@ -1103,6 +1121,8 @@ try {
             document.getElementById('cashUpStartTime').value = '00:00';
             document.getElementById('cashUpEndDate').value = today;
             document.getElementById('cashUpEndTime').value = '23:59';
+            const coh = document.getElementById('cashUpCashOnHand');
+            if (coh) coh.value = '';
             document.getElementById('cashUpModal').classList.add('active');
         }
         
@@ -1130,6 +1150,20 @@ try {
                 return;
             }
             
+            const cohEl = document.getElementById('cashUpCashOnHand');
+            const cashOnHandRaw = cohEl ? String(cohEl.value).trim() : '';
+            if (cashOnHandRaw === '') {
+                Swal.fire({ icon: 'warning', title: 'Required', text: 'Please enter your cash on hand (physical count).' });
+                return;
+            }
+            const parsedCoh = parseFloat(cashOnHandRaw.replace(',', '.'));
+            if (Number.isNaN(parsedCoh) || parsedCoh < 0) {
+                Swal.fire({ icon: 'warning', title: 'Invalid amount', text: 'Enter a valid cash on hand amount (0 or more).' });
+                return;
+            }
+            
+            closeCashUpModal();
+            
             // Show loading
             Swal.fire({
                 title: 'Generating Z-Report...',
@@ -1151,7 +1185,8 @@ try {
                         start_time: startTime.length === 5 ? startTime : startTime.substring(0, 5),
                         end_date: endDate,
                         end_time: endTime.length === 5 ? endTime : endTime.substring(0, 5),
-                        cashier_id: 'all'
+                        cashier_id: <?php echo json_encode($_SESSION['username'] ?? '', JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
+                        include_expected_amounts: true
                     })
                 });
                 
@@ -1167,51 +1202,67 @@ try {
                 }
                 
                 // Prepare cash-up report for printing (use receipt.php formatting)
+                const staffName = cashUpData.cashier_name || <?php echo json_encode($_SESSION['username'] ?? 'Cashier', JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+                const tillSystem = Number(cashUpData.cash_in_till) || 0;
+                const cashOnHandValue = parseFloat(cashOnHandRaw.replace(',', '.'));
+                const cashSalesExpectedNum = Number(cashUpData.cash_sales_expected) || 0;
+                const overShortDisplay = cashOnHandValue - cashSalesExpectedNum;
+                
                 const zReportData = {
                     is_cashup_report: true,
                     print_only: true,
                     date: endDate,
                     date_range: startDate + ' ' + (startTime.length === 5 ? startTime : startTime.substring(0, 5)) + ' — ' + endDate + ' ' + (endTime.length === 5 ? endTime : endTime.substring(0, 5)),
-                    cashier_username: '<?php echo htmlspecialchars($_SESSION['username'] ?? 'Cashier'); ?>',
-                    cashier_name: '<?php echo htmlspecialchars($_SESSION['username'] ?? 'Cashier'); ?>',
+                    cashier_username: <?php echo json_encode($_SESSION['username'] ?? 'Cashier', JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
+                    cashier_name: staffName,
+                    filter_cashier_name: staffName,
+                    staff_name: staffName,
+                    is_individual_cashout: true,
                     
-                    // Sales Summary (use total_cash_sales / card_sales_expected for revenue; fallback to cash_sales_expected)
-                    cash_sales: cashUpData.total_cash_sales ?? cashUpData.cash_sales_expected ?? 0,
-                    eft_sales: cashUpData.card_sales_expected || 0,
-                    total_income: (cashUpData.total_cash_sales ?? cashUpData.cash_sales_expected ?? 0) + (cashUpData.card_sales_expected || 0),
+                    cash_sales_expected: cashSalesExpectedNum,
+                    cash_in_till: tillSystem,
+                    cash_on_hand: cashOnHandValue,
+                    card_sales_expected: Number(cashUpData.card_sales_expected) || 0,
+                    eft_on_hand: Number(cashUpData.card_sales_expected) || 0,
+                    eft_over_short: 0,
                     
-                    // Cash In Till
-                    expected_cash: cashUpData.cash_in_till || 0,
+                    cash_sales: Number(cashUpData.total_cash_sales) || 0,
+                    total_cash_sales: Number(cashUpData.total_cash_sales) || 0,
+                    eft_sales: Number(cashUpData.card_sales_expected) || 0,
+                    total_eft_sales: Number(cashUpData.card_sales_expected) || 0,
+                    total_income: (Number(cashUpData.total_cash_sales) || 0) + (Number(cashUpData.card_sales_expected) || 0),
                     
-                    // Credit & Tabs
-                    credit_unpaid: cashUpData.unpaid_credit_sales || 0,
-                    credit_returns: cashUpData.credit_returns || 0,
-                    open_tabs: cashUpData.open_tabs_balance || 0,
+                    expected_cash: Number(cashUpData.cash_in_till) || 0,
+                    unpaid_credit_sales: Number(cashUpData.unpaid_credit_sales) || 0,
+                    credit_unpaid: Number(cashUpData.unpaid_credit_sales) || 0,
+                    open_tabs_balance: Number(cashUpData.open_tabs_balance) || 0,
+                    open_tabs: Number(cashUpData.open_tabs_balance) || 0,
+                    unpaid_tabs: Number(cashUpData.unpaid_tabs) || 0,
+                    credit_returns: Number(cashUpData.credit_returns) || 0,
                     
-                    // Cash Transactions
-                    cash_in: cashUpData.cash_in || 0,
-                    cash_out: cashUpData.cash_out || 0,
-                    total_expense: cashUpData.expenses || 0,
+                    cash_in: Number(cashUpData.cash_in) || 0,
+                    cash_out: Number(cashUpData.cash_out) || 0,
+                    expenses: Number(cashUpData.expenses) || 0,
+                    total_expense: Number(cashUpData.expenses) || 0,
+                    cash_back: Number(cashUpData.cash_back_system) || 0,
+                    cash_back_system: Number(cashUpData.cash_back_system) || 0,
+                    cash_back_beerhouse: Number(cashUpData.cash_back_beerhouse) || 0,
+                    cash_back_hubbly: Number(cashUpData.cash_back_hubbly) || 0,
+                    cash_back_customer: Number(cashUpData.cash_back_customer) || 0,
+                    tips: Number(cashUpData.tips_system) || 0,
+                    tips_system: Number(cashUpData.tips_system) || 0,
                     
-                    // Cash Back & Tips
-                    cash_back_system: cashUpData.cash_back_system || 0,
-                    cash_back_beerhouse: cashUpData.cash_back_beerhouse || 0,
-                    cash_back_hubbly: cashUpData.cash_back_hubbly || 0,
-                    cash_back_customer: cashUpData.cash_back_customer || 0,
-                    tips_system: cashUpData.tips_system || 0,
+                    hansa_cash: Number(cashUpData.hansa_cash) || 0,
+                    hansa_eft: Number(cashUpData.hansa_eft) || 0,
+                    hansa_units: Number(cashUpData.hansa_units) || 0,
                     
-                    // Hansa Payments
-                    hansa_cash: cashUpData.hansa_cash || 0,
-                    hansa_eft: cashUpData.hansa_eft || 0,
+                    voids: Number(cashUpData.voids) || 0,
+                    voids_count: parseInt(cashUpData.voids_count, 10) || 0,
+                    refunds: Number(cashUpData.refunds) || 0,
+                    refunds_count: parseInt(cashUpData.refunds_count, 10) || 0,
+                    damages: Number(cashUpData.damages) || 0,
+                    total_items_sold: Number(cashUpData.total_items_sold) || 0,
                     
-                    // Other
-                    voids: cashUpData.voids || 0,
-                    voids_count: cashUpData.voids_count || 0,
-                    refunds: cashUpData.refunds || 0,
-                    refunds_count: cashUpData.refunds_count || 0,
-                    damages: cashUpData.damages || 0,
-                    
-                    // Timestamp
                     generated_at: new Date().toLocaleString('en-ZA', { 
                         timeZone: 'Africa/Harare',
                         year: 'numeric',
@@ -1249,15 +1300,15 @@ try {
                                 <p class="mb-2"><strong>Total Sales:</strong> N$ ${zReportData.total_income.toFixed(2)}</p>
                                 <p class="mb-2"><strong>Cash:</strong> N$ ${zReportData.cash_sales.toFixed(2)}</p>
                                 <p class="mb-2"><strong>Card:</strong> N$ ${zReportData.eft_sales.toFixed(2)}</p>
-                                <p class="mb-2"><strong>Cash in Till:</strong> N$ ${zReportData.expected_cash.toFixed(2)}</p>
+                                <p class="mb-2"><strong>Cash in Till (system):</strong> N$ ${tillSystem.toFixed(2)}</p>
+                                <p class="mb-2"><strong>Cash on Hand:</strong> N$ ${cashOnHandValue.toFixed(2)}</p>
+                                <p class="mb-2"><strong>Over / Short:</strong> N$ ${overShortDisplay.toFixed(2)}</p>
                             </div>
                             <p class="mt-4 text-sm text-gray-600">Z-Report has been printed</p>
                         `,
                         confirmButtonText: 'OK',
                         timer: 5000
                     });
-                    
-                    closeCashUpModal();
                 }
                 
             } catch (error) {

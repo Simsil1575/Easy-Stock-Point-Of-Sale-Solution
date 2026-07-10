@@ -176,7 +176,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                                         <i class="fas fa-times cursor-pointer" onclick="document.getElementById('errorAlert').style.display='none'"></i>
                                     </div>
                                 <?php endif; ?>
-                                <form class="space-y-6" method="POST" action="<?php echo htmlspecialchars(strtok($_SERVER["REQUEST_URI"], '?')); ?>">
+                                <form class="space-y-6" method="POST" action="<?php echo htmlspecialchars(strtok($_SERVER["REQUEST_URI"], '?')); ?>" autocomplete="off">
                                     <div>
                                         <label for="username" class="block text-sm/6 font-medium text-black">Username</label>
                                         <div class="mt-2 relative">
@@ -191,7 +191,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                                             <label for="password" class="block text-sm/6 font-medium text-black">Password</label>
                                         </div>
                                         <div class="mt-2 relative">
-                                            <input type="password" id="password" name="password" required autocomplete="current-password"
+                                            <input type="password" id="password" name="password" required autocomplete="off"
                                                    class="block w-full rounded-lg bg-gray-200 px-10 py-2 text-base text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200 sm:text-sm/6">
                                             <i class="fas fa-lock absolute left-3 top-2.5 text-gray-400"></i>
                                         </div>

@@ -1,3 +1,17 @@
 # Keep the products folder in the repo but do not upload its contents
 products/*
 !products/.gitkeep
+
+# Client / site-specific folders — keep local only
+sunremo/
+alex/
+dylanmini/
+kundis/
+
+# Local tooling / debug
+.cursor/
+debug-*.log
+
+# Archives
+*.rar
+*.zip

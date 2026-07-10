@@ -174,13 +174,16 @@ if (!is_numeric($cashAvailableInTill)) {
     $cashAvailableInTill = 0;
 }
 
+// Snapshot of system expected cash before any cash-up adjustment (for receipt after count)
+$expectedCashAtCashup = floatval($cashAvailableInTill);
+
 // Get the total cash ever received through the system
 $totalSystemCash = $totalCashIn + $totalCashSales + $totalCreditPayments;
 
-// Record cash discrepancy if actual cash amount is provided
-if (isset($_POST['actual_cash_in_till']) && isset($_POST['cash_difference'])) {
+// Record cash discrepancy if actual cash amount is provided (difference computed server-side)
+if (isset($_POST['actual_cash_in_till'])) {
     $actualAmount = floatval($_POST['actual_cash_in_till']);
-    $difference = floatval($_POST['cash_difference']);
+    $difference = $actualAmount - $expectedCashAtCashup;
     
     if ($difference != 0) {
         try {
@@ -315,6 +318,19 @@ $response = [
     'total_expense' => $total_expense,
     'net_amount' => $net_amount
 ];
+
+// After cashier entered actual count: expose system expected on receipt only
+if (isset($_POST['actual_cash_in_till'])) {
+    $response['expected_cash_at_cashup'] = $expectedCashAtCashup;
+    $response['cash_difference'] = floatval($_POST['actual_cash_in_till']) - $expectedCashAtCashup;
+}
+
+// During cash-up entry only: do not expose expected till amount (theft deterrent)
+$cashUpHideExpected = !empty($_POST['cash_up_hide_expected']) && !isset($_POST['actual_cash_in_till']);
+if ($cashUpHideExpected) {
+    unset($response['cashAvailableInTill'], $response['cashOnHand']);
+    $response['expected_cash_hidden'] = true;
+}
 
 // Return the data as JSON
 header('Content-Type: application/json');

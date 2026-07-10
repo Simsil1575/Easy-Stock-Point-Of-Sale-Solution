@@ -13,6 +13,20 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Include secure activation helper
 require_once '../activation_helper.php';
+require_once __DIR__ . '/../pos_reset_helper.php';
+
+$settingsSection = isset($_GET['s']) && is_string($_GET['s']) ? preg_replace('/[^a-z]/', '', $_GET['s']) : '';
+$settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system'];
+if (!in_array($settingsSection, $settingsSectionAllowed, true)) {
+    $settingsSection = '';
+}
+$settingsSectionTitles = [
+    'display' => 'POS display & printing',
+    'account' => 'Account & links',
+    'activation' => 'Software activation',
+    'cashout' => 'Month-end cashout',
+    'system' => 'System management',
+];
 ?>
 
 
@@ -46,6 +60,15 @@ require_once '../activation_helper.php';
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
+        }
+
+        .settings-menu-card {
+            transition: all 0.3s ease;
+        }
+        .settings-menu-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            background: white !important;
         }
         
         /* Mobile hamburger menu styles */
@@ -279,20 +302,120 @@ require_once '../activation_helper.php';
             
             <div class="container mx-auto p-6">
                 <!-- Header Row: Title + Controls -->
-                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
-                    <!-- Mobile Controls Row -->
-                    <div class="flex items-center gap-3">
-                        <!-- Mobile Hamburger Menu Button -->
-                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
+                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex flex-wrap items-center justify-between gap-3 -mx-6 px-6 shadow-sm">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <?php if ($settingsSection !== ''): ?>
+                        <a href="settings" class="inline-flex shrink-0 items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400" title="Back to settings overview">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                            Back
+                        </a>
+                        <?php endif; ?>
+                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 shrink-0" onclick="toggleSidebar()">
                             <span></span>
                             <span></span>
                             <span></span>
                         </div>
-                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0">Settings</h1>
+                        <div class="min-w-0">
+                            <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0 truncate">Settings</h1>
+                            <?php if ($settingsSection !== '' && isset($settingsSectionTitles[$settingsSection])): ?>
+                            <p class="text-sm text-gray-600 truncate"><?php echo htmlspecialchars($settingsSectionTitles[$settingsSection], ENT_QUOTES, 'UTF-8'); ?></p>
+                            <?php elseif ($settingsSection === ''): ?>
+                            <p class="text-sm text-gray-600 hidden sm:block">Choose a category below</p>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
 
-                <?php
+                <?php if ($settingsSection === ''): ?>
+                <div class="mb-8">
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <a href="settings?s=display" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-slate-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-desktop text-slate-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded-full">POS</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-slate-900">Display &amp; printing</h3>
+                                <p class="text-sm text-gray-500">Stock visibility, QZ Tray, kitchen printer</p>
+                            </a>
+                            <a href="settings?s=account" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-user-shield text-teal-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">Admin</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-teal-900">Account &amp; profile</h3>
+                                <p class="text-sm text-gray-500">Admin username, email, and password</p>
+                            </a>
+                            <a href="business_settings" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-store text-indigo-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Business</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-indigo-900">Business info</h3>
+                                <p class="text-sm text-gray-500">Name, VAT, receipts, cashier permissions</p>
+                            </a>
+                            <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-clipboard-list text-blue-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Audit</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-blue-900">Activity logs</h3>
+                                <p class="text-sm text-gray-500">POS and user activity history</p>
+                            </a>
+                            <a href="add_user" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-cyan-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-user-plus text-cyan-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-cyan-100 text-cyan-700 px-2 py-1 rounded-full">Staff</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-cyan-900">Add users</h3>
+                                <p class="text-sm text-gray-500">Create cashier, manager, or waitress logins</p>
+                            </a>
+                            <a href="settings?s=activation" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-amber-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-key text-amber-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">License</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-amber-900">Software activation</h3>
+                                <p class="text-sm text-gray-500">Enter key and view license status</p>
+                            </a>
+                            <a href="settings?s=cashout" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-file-invoice-dollar text-emerald-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Month-end</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-emerald-900">Month-end cashout</h3>
+                                <p class="text-sm text-gray-500">Report download and transaction cleanup</p>
+                            </a>
+                            <a href="settings?s=system" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-rose-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-database text-rose-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-rose-100 text-rose-700 px-2 py-1 rounded-full">Data</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-rose-900">System management</h3>
+                                <p class="text-sm text-gray-500">Reset data, export, barcodes</p>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($settingsSection === 'display'):
                 try {
                     $posDb = new PDO('sqlite:../pos.db');
                     // Add column if it doesn't exist
@@ -311,8 +434,35 @@ require_once '../activation_helper.php';
                     } catch (PDOException $e) {
                         // Column already exists, continue
                     }
+                    try {
+                        $posDb->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_ip TEXT");
+                    } catch (PDOException $e) {
+                    }
+                    try {
+                        $posDb->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_port INTEGER NOT NULL DEFAULT 9100");
+                    } catch (PDOException $e) {
+                    }
+                    try {
+                        $posDb->exec("ALTER TABLE product_settings ADD COLUMN cashier_idle_timeout_seconds INTEGER NOT NULL DEFAULT 120");
+                    } catch (PDOException $e) {
+                    }
+                    try {
+                        $posDb->exec("ALTER TABLE product_settings ADD COLUMN receipt_paper_width_mm INTEGER NOT NULL DEFAULT 58");
+                    } catch (PDOException $e) {
+                    }
+                    foreach ([
+                        "ALTER TABLE product_settings ADD COLUMN gratuity_percent REAL NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN gratuity_default_enabled INTEGER NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN credit_interest_enabled INTEGER NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN credit_interest_rate REAL NOT NULL DEFAULT 18",
+                    ] as $gSql) {
+                        try {
+                            $posDb->exec($gSql);
+                        } catch (PDOException $e) {
+                        }
+                    }
 
-                    $stmt = $posDb->query("SELECT hide_available_quantity, skip_stock_checks, use_qz_tray FROM product_settings LIMIT 1");
+                    $stmt = $posDb->query("SELECT hide_available_quantity, skip_stock_checks, use_qz_tray, kitchen_printer_ip, kitchen_printer_port, cashier_idle_timeout_seconds, receipt_paper_width_mm, gratuity_percent, gratuity_default_enabled, credit_interest_enabled, credit_interest_rate FROM product_settings LIMIT 1");
                     $setting = $stmt->fetch(PDO::FETCH_ASSOC);
                     $hide_available_quantity = $setting['hide_available_quantity'] ?? 0;
                     $hide_available_quantity_checked = $hide_available_quantity ? 'checked' : '';
@@ -320,6 +470,40 @@ require_once '../activation_helper.php';
                     $skip_stock_checks_checked = $skip_stock_checks ? 'checked' : '';
                     $use_qz_tray = $setting['use_qz_tray'] ?? 0;
                     $use_qz_tray_checked = $use_qz_tray ? 'checked' : '';
+                    $kitchen_printer_ip_val = htmlspecialchars($setting['kitchen_printer_ip'] ?? '', ENT_QUOTES, 'UTF-8');
+                    $kitchen_printer_port_val = (int)($setting['kitchen_printer_port'] ?? 9100);
+                    if ($kitchen_printer_port_val <= 0 || $kitchen_printer_port_val > 65535) {
+                        $kitchen_printer_port_val = 9100;
+                    }
+                    $cashier_idle_timeout_seconds_val = (int) ($setting['cashier_idle_timeout_seconds'] ?? 120);
+                    if ($cashier_idle_timeout_seconds_val < 30) {
+                        $cashier_idle_timeout_seconds_val = 30;
+                    }
+                    if ($cashier_idle_timeout_seconds_val > 3600) {
+                        $cashier_idle_timeout_seconds_val = 3600;
+                    }
+                    $receipt_paper_width_mm_val = (int)($setting['receipt_paper_width_mm'] ?? 58);
+                    if ($receipt_paper_width_mm_val !== 80) {
+                        $receipt_paper_width_mm_val = 58;
+                    }
+                    $gratuity_percent_val = isset($setting['gratuity_percent']) ? round(floatval($setting['gratuity_percent']), 2) : 0;
+                    if ($gratuity_percent_val < 0) {
+                        $gratuity_percent_val = 0;
+                    }
+                    if ($gratuity_percent_val > 100) {
+                        $gratuity_percent_val = 100;
+                    }
+                    $gratuity_default_enabled = (int) ($setting['gratuity_default_enabled'] ?? 1);
+                    $gratuity_default_enabled_checked = $gratuity_default_enabled ? 'checked' : '';
+                    $credit_interest_enabled = !isset($setting['credit_interest_enabled']) || (int) $setting['credit_interest_enabled'] === 1;
+                    $credit_interest_enabled_checked = $credit_interest_enabled ? 'checked' : '';
+                    $credit_interest_rate_val = isset($setting['credit_interest_rate']) ? round(floatval($setting['credit_interest_rate']), 2) : 18.0;
+                    if ($credit_interest_rate_val < 0) {
+                        $credit_interest_rate_val = 0;
+                    }
+                    if ($credit_interest_rate_val > 100) {
+                        $credit_interest_rate_val = 100;
+                    }
                 } catch (PDOException $e) {
                     $hide_available_quantity = 0;
                     $hide_available_quantity_checked = '';
@@ -327,6 +511,12 @@ require_once '../activation_helper.php';
                     $skip_stock_checks_checked = '';
                     $use_qz_tray = 0;
                     $use_qz_tray_checked = '';
+                    $kitchen_printer_ip_val = '';
+                    $kitchen_printer_port_val = 9100;
+                    $cashier_idle_timeout_seconds_val = 120;
+                    $receipt_paper_width_mm_val = 58;
+                    $credit_interest_enabled_checked = 'checked';
+                    $credit_interest_rate_val = 18.0;
                     error_log("Database error: " . $e->getMessage());
                 }
                 ?>
@@ -361,6 +551,57 @@ require_once '../activation_helper.php';
                             <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, checkout will not block sales for insufficient or zero stock. Use only if you manage stock elsewhere or allow overselling.</p>
                         </div>
                     </div>
+                    <div class="mt-8 pt-6 border-t border-gray-200">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Gratuity (POS)</h3>
+                        <p class="text-sm text-gray-600 mb-4">On View Tab, staff can turn gratuity on for a tab. The configured percentage is added to the tab balance (not as a product line) and prints on copy and balance receipts when enabled.</p>
+                        <div class="flex flex-wrap items-end gap-4 max-w-xl mb-4">
+                            <div>
+                                <label for="gratuity_percent_admin" class="block text-sm font-medium text-gray-700 mb-1">Gratuity %</label>
+                                <input type="number" id="gratuity_percent_admin" min="0" max="100" step="0.5" value="<?php echo htmlspecialchars((string) $gratuity_percent_val, ENT_QUOTES, 'UTF-8'); ?>" class="block w-36 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            </div>
+                            <button type="button" id="saveGratuityPercentBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save %</button>
+                        </div>
+                        <div class="flex items-center space-x-3 mb-4">
+                            <div class="flex items-center h-5">
+                                <input type="checkbox" id="gratuity_default_enabled" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $gratuity_default_enabled_checked; ?>>
+                            </div>
+                            <div class="ml-2 text-sm">
+                                <label for="gratuity_default_enabled" class="font-medium text-gray-700 cursor-pointer">Default: gratuity ON when a new tab is opened</label>
+                                <p class="text-xs text-gray-500 mt-1 ml-0">Clears when the cart is cleared; cashier can still switch off.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-8 pt-6 border-t border-gray-200">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Credit payment interest</h3>
+                        <p class="text-sm text-gray-600 mb-4">When enabled, paying off credit balances adds an interest charge on each payment (shown on receipts and credit transactions). Turn off to collect payments without interest.</p>
+                        <div class="flex items-center space-x-3 mb-4">
+                            <div class="flex items-center h-5">
+                                <input type="checkbox" id="credit_interest_enabled" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $credit_interest_enabled_checked; ?>>
+                            </div>
+                            <div class="ml-2 text-sm">
+                                <label for="credit_interest_enabled" class="font-medium text-gray-700 cursor-pointer">Apply interest on credit payments</label>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-end gap-4 max-w-xl mb-4" id="creditInterestRateRow">
+                            <div>
+                                <label for="credit_interest_rate_admin" class="block text-sm font-medium text-gray-700 mb-1">Interest rate (%)</label>
+                                <input type="number" id="credit_interest_rate_admin" min="0" max="100" step="0.5" value="<?php echo htmlspecialchars((string) $credit_interest_rate_val, ENT_QUOTES, 'UTF-8'); ?>" class="block w-36 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            </div>
+                            <button type="button" id="saveCreditInterestRateBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save rate</button>
+                        </div>
+                    </div>
+                    <div class="mt-8 pt-6 border-t border-gray-200">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Cashier idle logout</h3>
+                        <p class="text-sm text-gray-600 mb-4">After this many seconds with no activity on the POS (cashier home), the session logs out automatically when the cart is empty. Mouse movement only counts after the pointer stops briefly.</p>
+                        <div class="flex flex-wrap items-end gap-4 max-w-xl">
+                            <div>
+                                <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Timeout (seconds)</label>
+                                <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds" value="<?php echo (int) $cashier_idle_timeout_seconds_val; ?>" min="30" max="3600" step="1" class="block w-40 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            </div>
+                            <button type="button" id="saveCashierIdleTimeoutBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save</button>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Allowed range: 30–3600 seconds (30 minutes max). Default 120.</p>
+                    </div>
                     <div class="flex items-center space-x-3 mb-4 mt-6">
                         <div class="flex items-center h-5">
                             <input type="checkbox" name="use_qz_tray" id="use_qz_tray" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $use_qz_tray_checked; ?>>
@@ -374,6 +615,35 @@ require_once '../activation_helper.php';
                             </label>
                             <p class="text-xs text-gray-500 mt-1 ml-7">When enabled (desktop/web), receipts will be printed via QZ Tray using <code>qzreceipt.php</code> instead of direct ESC/POS printing via <code>receipt.php</code>. Android will still use <code>receipt.php</code>.</p>
                         </div>
+                    </div>
+                    <div class="mt-8 pt-6 border-t border-gray-200">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Receipt paper width</h3>
+                        <p class="text-sm text-gray-600 mb-4">Set the customer receipt layout width. 58mm is default and optimized for narrow thermal rolls; 80mm uses wider columns.</p>
+                        <div class="flex flex-wrap items-end gap-4 max-w-xl">
+                            <div>
+                                <label for="receipt_paper_width_mm" class="block text-sm font-medium text-gray-700 mb-1">Paper width</label>
+                                <select id="receipt_paper_width_mm" name="receipt_paper_width_mm" class="block w-40 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                                    <option value="58" <?php echo ((int)$receipt_paper_width_mm_val === 58) ? 'selected' : ''; ?>>58 mm</option>
+                                    <option value="80" <?php echo ((int)$receipt_paper_width_mm_val === 80) ? 'selected' : ''; ?>>80 mm</option>
+                                </select>
+                            </div>
+                            <button type="button" id="saveReceiptPaperWidthBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save width</button>
+                        </div>
+                    </div>
+                    <div class="mt-8 pt-6 border-t border-gray-200">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Kitchen printer (Add to tab)</h3>
+                        <p class="text-sm text-gray-600 mb-4">When cashiers choose &quot;Send to kitchen&quot; on tab orders, the server sends the same kitchen ticket to this ESC/POS printer over TCP (raw port, usually 9100). The PC running PHP must reach this IP on your LAN.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-xl">
+                            <div>
+                                <label for="kitchen_printer_ip" class="block text-sm font-medium text-gray-700 mb-1">Kitchen printer IP</label>
+                                <input type="text" id="kitchen_printer_ip" name="kitchen_printer_ip" value="<?php echo $kitchen_printer_ip_val; ?>" placeholder="e.g. 192.168.1.50" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            </div>
+                            <div>
+                                <label for="kitchen_printer_port" class="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                                <input type="number" id="kitchen_printer_port" name="kitchen_printer_port" value="<?php echo (int)$kitchen_printer_port_val; ?>" min="1" max="65535" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            </div>
+                        </div>
+                        <button type="button" id="saveKitchenPrinterBtn" class="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save kitchen printer</button>
                     </div>
                 </div>
                 <script>
@@ -429,6 +699,107 @@ require_once '../activation_helper.php';
                             });
                         });
 
+                        document.getElementById('saveGratuityPercentBtn').addEventListener('click', function() {
+                            let gp = parseFloat(document.getElementById('gratuity_percent_admin').value);
+                            if (isNaN(gp)) gp = 0;
+                            if (gp < 0) gp = 0;
+                            if (gp > 100) gp = 100;
+                            document.getElementById('gratuity_percent_admin').value = String(gp);
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ gratuity_percent: gp })
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                if (data.success) showAlert('success', 'Success', 'Gratuity % saved');
+                                else showAlert('error', 'Error', data.error || 'Failed to save');
+                            })
+                            .catch(function() { showAlert('error', 'Error', 'Failed to save'); });
+                        });
+
+                        const gratDefEn = document.getElementById('gratuity_default_enabled');
+                        gratDefEn.addEventListener('change', function() {
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ gratuity_default_enabled: this.checked ? 1 : 0 })
+                            }).then(function(r) { return r.json(); }).then(function(data) {
+                                if (!data.success) { gratDefEn.checked = !gratDefEn.checked; showAlert('error', 'Error', 'Failed to update'); }
+                                else showAlert('success', 'Success', 'Setting updated');
+                            }).catch(function() { gratDefEn.checked = !gratDefEn.checked; showAlert('error', 'Error', 'Failed'); });
+                        });
+
+                        const creditInterestEnabled = document.getElementById('credit_interest_enabled');
+                        const creditInterestRateRow = document.getElementById('creditInterestRateRow');
+                        function syncCreditInterestRateRow() {
+                            if (creditInterestRateRow) {
+                                creditInterestRateRow.style.opacity = creditInterestEnabled.checked ? '1' : '0.5';
+                            }
+                        }
+                        syncCreditInterestRateRow();
+                        creditInterestEnabled.addEventListener('change', function() {
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ credit_interest_enabled: this.checked ? 1 : 0 })
+                            }).then(function(r) { return r.json(); }).then(function(data) {
+                                if (!data.success) {
+                                    creditInterestEnabled.checked = !creditInterestEnabled.checked;
+                                    showAlert('error', 'Error', 'Failed to update');
+                                } else {
+                                    syncCreditInterestRateRow();
+                                    showAlert('success', 'Success', 'Credit interest setting updated');
+                                }
+                            }).catch(function() {
+                                creditInterestEnabled.checked = !creditInterestEnabled.checked;
+                                showAlert('error', 'Error', 'Failed');
+                            });
+                        });
+
+                        document.getElementById('saveCreditInterestRateBtn').addEventListener('click', function() {
+                            let rate = parseFloat(document.getElementById('credit_interest_rate_admin').value);
+                            if (isNaN(rate)) rate = 0;
+                            if (rate < 0) rate = 0;
+                            if (rate > 100) rate = 100;
+                            document.getElementById('credit_interest_rate_admin').value = String(rate);
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ credit_interest_rate: rate })
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                if (data.success) showAlert('success', 'Success', 'Credit interest rate saved');
+                                else showAlert('error', 'Error', data.error || 'Failed to save');
+                            })
+                            .catch(function() { showAlert('error', 'Error', 'Failed to save'); });
+                        });
+
+                        document.getElementById('saveCashierIdleTimeoutBtn').addEventListener('click', function() {
+                            let sec = parseInt(document.getElementById('cashier_idle_timeout_seconds').value, 10);
+                            if (isNaN(sec)) sec = 120;
+                            if (sec < 30) sec = 30;
+                            if (sec > 3600) sec = 3600;
+                            document.getElementById('cashier_idle_timeout_seconds').value = String(sec);
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ cashier_idle_timeout_seconds: sec })
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                if (data.success) {
+                                    showAlert('success', 'Success', 'Cashier idle timeout saved');
+                                } else {
+                                    showAlert('error', 'Error', data.error || 'Failed to save');
+                                }
+                            })
+                            .catch(function() {
+                                showAlert('error', 'Error', 'Failed to save');
+                            });
+                        });
+
                         const useQzTrayCheckbox = document.getElementById('use_qz_tray');
                         useQzTrayCheckbox.checked = <?php echo $use_qz_tray ? 1 : 0; ?>;
                         useQzTrayCheckbox.addEventListener('change', function() {
@@ -454,13 +825,56 @@ require_once '../activation_helper.php';
                                 useQzTrayCheckbox.checked = !useQzTrayCheckbox.checked;
                             });
                         });
+
+                        document.getElementById('saveReceiptPaperWidthBtn').addEventListener('click', function() {
+                            const paperWidth = parseInt(document.getElementById('receipt_paper_width_mm').value, 10) === 80 ? 80 : 58;
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ receipt_paper_width_mm: paperWidth })
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                if (data.success) {
+                                    showAlert('success', 'Success', 'Receipt paper width saved');
+                                } else {
+                                    showAlert('error', 'Error', data.error || 'Failed to save width');
+                                }
+                            })
+                            .catch(function() {
+                                showAlert('error', 'Error', 'Failed to save width');
+                            });
+                        });
+
+                        document.getElementById('saveKitchenPrinterBtn').addEventListener('click', function() {
+                            const ip = document.getElementById('kitchen_printer_ip').value.trim();
+                            const port = parseInt(document.getElementById('kitchen_printer_port').value, 10) || 9100;
+                            fetch('../update_display_setting.php', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ kitchen_printer_ip: ip, kitchen_printer_port: port })
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                if (data.success) {
+                                    showAlert('success', 'Success', 'Kitchen printer saved');
+                                } else {
+                                    showAlert('error', 'Error', data.error || 'Failed to save');
+                                }
+                            })
+                            .catch(function() {
+                                showAlert('error', 'Error', 'Failed to save kitchen printer');
+                            });
+                        });
                     });
                 </script>
+                <?php endif; ?>
 
+                <?php if ($settingsSection === 'account'): ?>
                 <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
                         <h2 class="text-2xl font-bold mb-6">Update Account Details</h2>
                         
-                        <form action="" method="POST" class="space-y-6">
+                        <form action="" method="POST" class="space-y-6" autocomplete="off">
                             <?php
                             try {
                                 $pdo = new PDO('sqlite:../user.db');
@@ -515,7 +929,7 @@ require_once '../activation_helper.php';
                                                 <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                                             </svg>
                                         </div>
-                                        <input type="password" name="current_password" id="current_password" required
+                                        <input type="password" name="current_password" id="current_password" required autocomplete="off"
                                             class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
@@ -528,13 +942,13 @@ require_once '../activation_helper.php';
                                                 <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                                             </svg>
                                         </div>
-                                        <input type="password" name="new_password" id="new_password" 
+                                        <input type="password" name="new_password" id="new_password" autocomplete="off"
                                             class="block w-full pl-10 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="flex gap-8">
+                            <div class="mt-2">
                                 <button type="submit" name="update_account" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-gray-600 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
                                         <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
@@ -542,31 +956,67 @@ require_once '../activation_helper.php';
                                     </svg>
                                     Update
                                 </button>
-                                <a href="users" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path>
-                                    </svg>
-                                    Manage Users
-                                </a>
-                                <a href="logs" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                    </svg>
-                                    View Logs
-                                </a>
+                            </div>
 
-                                <a href="damaged_goods" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                    </svg>
-                                    Damaged Stock
-                                </a>
-                                <a href="business_settings" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
-                                    </svg>
-                                  info
-                                </a>
+                            <div class="mt-8 pt-6 border-t border-gray-200">
+                                <h3 class="text-sm font-semibold text-gray-800 mb-3">Quick links</h3>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                    <a href="business_settings" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center shrink-0">
+                                                <i class="fas fa-store text-indigo-600"></i>
+                                            </div>
+                                            <div class="min-w-0">
+                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-indigo-900">Business info</span>
+                                                <span class="text-xs text-gray-500">VAT, receipts, permissions</span>
+                                            </div>
+                                        </div>
+                                    </a>
+                                    <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center shrink-0">
+                                                <i class="fas fa-clipboard-list text-blue-600"></i>
+                                            </div>
+                                            <div class="min-w-0">
+                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-blue-900">Activity logs</span>
+                                                <span class="text-xs text-gray-500">Audit trail</span>
+                                            </div>
+                                        </div>
+                                    </a>
+                                    <a href="add_user" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center shrink-0">
+                                                <i class="fas fa-user-plus text-cyan-600"></i>
+                                            </div>
+                                            <div class="min-w-0">
+                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-cyan-900">Add users</span>
+                                                <span class="text-xs text-gray-500">New staff login</span>
+                                            </div>
+                                        </div>
+                                    </a>
+                                    <a href="users" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
+                                                <i class="fas fa-users text-teal-600"></i>
+                                            </div>
+                                            <div class="min-w-0">
+                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-teal-900">Manage users</span>
+                                                <span class="text-xs text-gray-500">List and edit accounts</span>
+                                            </div>
+                                        </div>
+                                    </a>
+                                    <a href="damaged_goods" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center shrink-0">
+                                                <i class="fas fa-box-open text-orange-600"></i>
+                                            </div>
+                                            <div class="min-w-0">
+                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-orange-900">Damaged stock</span>
+                                                <span class="text-xs text-gray-500">Write-offs</span>
+                                            </div>
+                                        </div>
+                                    </a>
+                                </div>
                             </div>
                         </form>
                         <?php
@@ -624,7 +1074,9 @@ require_once '../activation_helper.php';
                         }
                         ?>
                     </div>
+                <?php endif; ?>
 
+                <?php if ($settingsSection === 'activation'): ?>
                 <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
                     <h2 class="text-2xl font-bold mb-6">Software Activation</h2>
                     <form action="" method="POST" class="space-y-4">
@@ -664,7 +1116,7 @@ require_once '../activation_helper.php';
                         
                         if ($result['success']) {
                             echo "<script>
-                                showAlert('success', 'Success', '" . addslashes($result['message']) . "');
+                                showAlert('success', 'Success', '" . addslashes($result['message']) . "', 'settings');
                             </script>";
                         } else {
                             echo "<script>
@@ -727,7 +1179,9 @@ require_once '../activation_helper.php';
                     }
                     ?>
                 </div>
+                <?php endif; ?>
 
+                <?php if ($settingsSection === 'cashout'): ?>
                 <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
                     <h2 class="text-xl font-semibold mb-2">Month-End Cashout</h2>
                     <p class="text-gray-600 mb-4">Perform end-of-month cashout operation. This will automatically generate a monthly report and then clear all transactions while preserving any unpaid credit balances.</p>
@@ -754,7 +1208,7 @@ require_once '../activation_helper.php';
                     <script>
                         document.getElementById('perform_cashout_btn').addEventListener('click', function() {
                             if (this.hasAttribute('disabled')) {
-                                showAlert('warning', 'Activation Required', 'You need to activate the software to use the cashout feature. Please enter your activation key above.');
+                                showAlert('warning', 'Activation Required', 'You need to activate the software to use cashout. Open <strong>Settings → Software activation</strong> and enter your key.');
                                 return;
                             }
                             
@@ -768,6 +1222,9 @@ require_once '../activation_helper.php';
                         });
                     </script>
                 </div>
+                <?php endif; ?>
+
+                <?php if ($settingsSection === 'system'): ?>
                 <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
                     <h2 class="text-xl font-semibold mb-4">System Management</h2>
                     <div class="flex space-x-2"> <!-- Small gap between buttons -->
@@ -805,7 +1262,15 @@ require_once '../activation_helper.php';
                             </svg>
                             Export Transactions
                         </button>
+
+                        <button type="button" id="export_product_images_btn" class="bg-indigo-500 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
+                            <svg class="w-5 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                            </svg>
+                            Export Product Images
+                        </button>
                     </div>
+                    <p class="text-sm text-gray-500 mt-4">Product images are copied to the <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">product_image_exports</code> folder using each product name, for example <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">castle_lite_750ml.png</code>. Products without a custom image are skipped.
 
                     <!-- Export Transactions Modal -->
                     <div id="export_modal" class="fixed inset-0 flex items-center justify-center z-50 hidden">
@@ -843,6 +1308,7 @@ require_once '../activation_helper.php';
                     <form id="reset_quantities_form" method="POST" action="" style="display: none;">
                         <input type="hidden" name="reset_quantities" value="1">
                     </form>
+                    <form id="export_product_images_form" method="POST" action="export_product_images.php" style="display: none;"></form>
 
                     <script>
                         document.getElementById('delete_all_btn').addEventListener('click', function() {
@@ -883,8 +1349,40 @@ require_once '../activation_helper.php';
                         document.getElementById('export_cancel').addEventListener('click', function() {
                             document.getElementById('export_modal').classList.add('hidden');
                         });
+
+                        document.getElementById('export_product_images_btn').addEventListener('click', function() {
+                            showConfirm(
+                                'Export Product Images',
+                                'Copy all product images to the <strong>product_image_exports</strong> folder using each product name (for example, castle_lite_750ml.png)? Existing files with the same name will be overwritten.',
+                                function() {
+                                    document.getElementById('export_product_images_form').submit();
+                                }
+                            );
+                        });
+
+                        const imageExportStatus = new URLSearchParams(window.location.search).get('images_export');
+                        if (imageExportStatus === 'success') {
+                            const params = new URLSearchParams(window.location.search);
+                            const exported = params.get('exported') || '0';
+                            const skipped = params.get('skipped') || '0';
+                            const failed = params.get('failed') || '0';
+                            const folder = params.get('folder') || 'product_image_exports';
+                            showAlert(
+                                'success',
+                                'Images Exported',
+                                `Exported ${exported} image(s) to <strong>${folder}</strong>. Skipped ${skipped} product(s) without a custom image.` +
+                                (parseInt(failed, 10) > 0 ? `<br><br>${failed} image(s) could not be copied.` : ''),
+                                'settings?s=system'
+                            );
+                        } else if (imageExportStatus === 'error') {
+                            const params = new URLSearchParams(window.location.search);
+                            const message = params.get('message') || 'Product image export failed.';
+                            showAlert('error', 'Export Failed', message, 'settings?s=system');
+                        }
                     </script>
                 </div>
+                <?php endif; ?>
+
             </div>
 
             <?php
@@ -896,47 +1394,16 @@ require_once '../activation_helper.php';
                     // Enable foreign key support for SQLite
                     $db->exec('PRAGMA foreign_keys = OFF');
                     
-                    // Delete all records from all transaction and log tables
-                    $db->exec("DELETE FROM orders");
-                    $db->exec("DELETE FROM order_items");
-                    
-                    // Add credit-related table deletions
-                    $db->exec("DELETE FROM credit_sale_items");
-                    $db->exec("DELETE FROM credit_sales");
-                    $db->exec("DELETE FROM payments");
-                    $db->exec("DELETE FROM payment_logs");
-                    $db->exec("DELETE FROM cash_transactions"); 
-                    $db->exec("DELETE FROM credit_book");
-                    $db->exec("DELETE FROM credit_returns");
-                    $db->exec("DELETE FROM stock_changes");
-                    $db->exec("DELETE FROM damaged_goods");
-                    $db->exec("DELETE FROM creditors");
-                    $db->exec("DELETE FROM eft_payments");
-                    $db->exec("DELETE FROM mixed_payments");
-                    $db->exec("DELETE FROM opening_stock");
-                    $db->exec("DELETE FROM closing_stock");
-                    $db->exec("DELETE FROM daily_stock_summary");
-                    $db->exec("DELETE FROM cash_up_summary");
-                    $db->exec("DELETE FROM user_log");
-                    
-                    // Delete tab-related tables
-                    $db->exec("DELETE FROM tab_item_payments");
-                    $db->exec("DELETE FROM tab_items");
-                    $db->exec("DELETE FROM tab_payments");
-                    $db->exec("DELETE FROM tabs");
-                    
-                    // Delete refund and void transaction tables
-                    $db->exec("DELETE FROM refund_items");
-                    $db->exec("DELETE FROM refunds");
-                    $db->exec("DELETE FROM void_transactions");
+                    // All transactional tables from pos.db.sql (not products / product_settings / users)
+                    posDbDeleteAllFromTables($db, posDbTransactionTables());
+                    posDbResetSqliteSequences($db, posDbTransactionTables());
 
-                    
                     // Re-enable foreign key support
                     $db->exec('PRAGMA foreign_keys = ON');
                     
                     // Show success message with modal
                     echo "<script>
-                        showAlert('success', 'Success', 'All records have been deleted successfully.');
+                        showAlert('success', 'Success', 'All records have been deleted successfully.', 'settings');
                     </script>";
                     
                 } catch(PDOException $e) {
@@ -963,7 +1430,7 @@ require_once '../activation_helper.php';
                     
                     // Show success message with modal
                     echo "<script>
-                        showAlert('success', 'Success', 'All products have been deleted successfully.');
+                        showAlert('success', 'Success', 'All products have been deleted successfully.', 'settings');
                     </script>";
                     
                 } catch(PDOException $e) {
@@ -984,7 +1451,7 @@ require_once '../activation_helper.php';
                     
                     // Show success message with modal
                     echo "<script>
-                        showAlert('success', 'Success', 'All product quantities have been reset to zero.');
+                        showAlert('success', 'Success', 'All product quantities have been reset to zero.', 'settings');
                     </script>";
                     
                 } catch(PDOException $e) {
@@ -1177,36 +1644,8 @@ require_once '../activation_helper.php';
                         $preserveCreditorsSql = "DELETE FROM creditors WHERE id NOT IN ({$placeholders})";
                         $preserveCreditorStmt = $db->prepare($preserveCreditorsSql);
                         
-                        // Clear all tables in a batch for efficiency
-                        $db->exec("DELETE FROM orders");
-                        $db->exec("DELETE FROM order_items");
-                        $db->exec("DELETE FROM credit_sale_items");
-                        $db->exec("DELETE FROM credit_sales");
-                        $db->exec("DELETE FROM payments");
-                        $db->exec("DELETE FROM payment_logs");
-                        $db->exec("DELETE FROM cash_transactions"); 
-                        $db->exec("DELETE FROM credit_book");
-                        $db->exec("DELETE FROM credit_returns");
-                        $db->exec("DELETE FROM stock_changes");
-                        $db->exec("DELETE FROM damaged_goods");
-                        $db->exec("DELETE FROM eft_payments");
-                        $db->exec("DELETE FROM mixed_payments");
-                        $db->exec("DELETE FROM opening_stock");
-                        $db->exec("DELETE FROM closing_stock");
-                        $db->exec("DELETE FROM daily_stock_summary");
-                        $db->exec("DELETE FROM cash_up_summary");
-                        $db->exec("DELETE FROM user_log");
-                        
-                        // Delete tab-related tables
-                        $db->exec("DELETE FROM tab_item_payments");
-                        $db->exec("DELETE FROM tab_items");
-                        $db->exec("DELETE FROM tab_payments");
-                        $db->exec("DELETE FROM tabs");
-                        
-                        // Delete refund and void transaction tables
-                        $db->exec("DELETE FROM refund_items");
-                        $db->exec("DELETE FROM refunds");
-                        $db->exec("DELETE FROM void_transactions");
+                        // Clear all pos.db.sql transaction tables except creditors (trimmed next)
+                        posDbDeleteAllFromTables($db, posDbTransactionTablesWithoutCreditors());
                         
                         // Execute preserve creditors statement
                         $preserveCreditorStmt->execute($unpaidCreditorIds);
@@ -1243,21 +1682,14 @@ require_once '../activation_helper.php';
                                 $item['price']
                             ]);
                         }
+
+                        posDbResetSqliteSequences($db, posDbTransactionTables());
+                        posDbResequenceAfterExplicitInserts($db, 'credit_sales');
+                        posDbResequenceAfterExplicitInserts($db, 'credit_sale_items');
+                        posDbResequenceAfterExplicitInserts($db, 'creditors');
                     } else {
-                        // If no unpaid creditors, delete all records in one go
-                        $tables = [
-                            "orders", "order_items", "credit_sale_items", "credit_sales", 
-                            "payments", "payment_logs", "cash_transactions", "credit_book", 
-                            "credit_returns", "stock_changes", "damaged_goods", "creditors", 
-                            "eft_payments", "mixed_payments", "opening_stock", "closing_stock", 
-                            "daily_stock_summary", "cash_up_summary", "user_log",
-                            "tab_item_payments", "tab_items", "tab_payments", "tabs",
-                            "refund_items", "refunds", "void_transactions"
-                        ];
-                        
-                        foreach ($tables as $table) {
-                            $db->exec("DELETE FROM {$table}");
-                        }
+                        posDbDeleteAllFromTables($db, posDbTransactionTables());
+                        posDbResetSqliteSequences($db, posDbTransactionTables());
                     }
                     
                     // Commit the transaction
@@ -1278,7 +1710,7 @@ require_once '../activation_helper.php';
                         
                         // Ensure the alert shows up immediately
                         setTimeout(function() {
-                            showAlert('success', 'Cashout Complete', 'Cashout completed successfully! All records have been deleted except for unpaid creditor transactions.');
+                            showAlert('success', 'Cashout Complete', 'Cashout completed successfully! All records have been deleted except for unpaid creditor transactions.', 'settings');
                         }, 100);
                     </script>";
                     

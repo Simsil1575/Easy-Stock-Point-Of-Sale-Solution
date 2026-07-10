@@ -11,6 +11,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username'])) {
 
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/credit_limit_helper.php';
 
 $input = json_decode(file_get_contents('php://input'), true);
 if (!$input || !isset($input['creditor_id']) || !isset($input['amount']) || !isset($input['date'])) {
@@ -43,11 +44,13 @@ try {
         exit();
     }
 
+    $db->beginTransaction();
+
+    assertCreditSaleWithinLimit($db, $creditorId, $amount);
+
     // created_at on the selected date at 10:00
     $createdAt = $saleDate . ' 10:00:00';
     $cashierId = $_SESSION['username'] ?? 'Unknown';
-
-    $db->beginTransaction();
 
     $stmt = $db->prepare("INSERT INTO credit_sales (creditor_id, total_amount, due_date, created_at, cashier_id) VALUES (?, ?, ?, ?, ?)");
     $stmt->execute([$creditorId, $amount, $dueDate, $createdAt, $cashierId]);

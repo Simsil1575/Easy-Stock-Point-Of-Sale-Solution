@@ -12,7 +12,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 }
 
 // Check activation status
-$pdo = new PDO('sqlite:active.db'); // Re-establish the database connection
+$pdo = new PDO('sqlite:' . __DIR__ . '/active.db');
 $activationStatus = $pdo->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();
 if ($activationStatus == 0) {
     header('Location: settings');
@@ -23,12 +23,59 @@ if ($activationStatus == 0) {
 
 <?php
 // New SQLite connection
-$db = new PDO('sqlite:pos.db');
+$db = new PDO('sqlite:' . __DIR__ . '/pos.db');
+require_once __DIR__ . '/credit_limit_helper.php';
 
 
 
 // Handle POST requests for adding/updating/deleting credit records
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['mass_delete_ids']) && is_array($_POST['mass_delete_ids'])) {
+        $ids = array_map('intval', $_POST['mass_delete_ids']);
+        $ids = array_values(array_unique(array_filter($ids, function ($id) {
+            return $id > 0;
+        })));
+        $deleted = 0;
+        $skipped = 0;
+        foreach ($ids as $id) {
+            $stmt = $db->prepare("
+                SELECT COALESCE(SUM(total_amount - paid_amount), 0) AS balance 
+                FROM credit_sales 
+                WHERE creditor_id = ?
+            ");
+            $stmt->execute([$id]);
+            $balance = (float) $stmt->fetchColumn();
+            if ($balance > 0) {
+                $skipped++;
+                continue;
+            }
+            $stmt = $db->prepare("DELETE FROM creditors WHERE id = ?");
+            $stmt->execute([$id]);
+            $deleted++;
+        }
+        if ($deleted > 0 && $skipped > 0) {
+            $_SESSION['success'] = $deleted === 1
+                ? "1 creditor deleted. {$skipped} skipped (outstanding balance)."
+                : "{$deleted} creditors deleted. {$skipped} skipped (outstanding balance).";
+        } elseif ($deleted > 0) {
+            $_SESSION['success'] = $deleted === 1 ? '1 creditor deleted.' : "{$deleted} creditors deleted.";
+        } elseif ($skipped > 0) {
+            $_SESSION['error'] = 'No creditors deleted — selected accounts still have an outstanding balance.';
+        } else {
+            $_SESSION['error'] = 'No creditors selected.';
+        }
+        $dateParam = '';
+        if (isset($_POST['filter_date'])) {
+            $fd = trim((string) $_POST['filter_date']);
+            if (strtolower($fd) === 'all') {
+                $dateParam = '?date=all';
+            } elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $fd)) {
+                $dateParam = '?date=' . rawurlencode($fd);
+            }
+        }
+        header('Location: credit-book' . $dateParam);
+        exit();
+    }
     if (isset($_POST['delete_id'])) {
         // Check creditor balance first
         $stmt = $db->prepare("
@@ -55,16 +102,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Handle add/edit
         $name = $_POST['name'];
         $phone = $_POST['phone'];
+        $creditLimit = normalizeCreditLimit($_POST['credit_limit'] ?? 0);
         $active = 1;
 
         if (empty($_POST['id'])) {
             // Add new creditor
-            $stmt = $db->prepare("INSERT INTO creditors (name, phone, active) VALUES (?, ?, ?)");
-            $stmt->execute([$name, $phone, $active]);
+            $stmt = $db->prepare("INSERT INTO creditors (name, phone, credit_limit, active) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$name, $phone, $creditLimit, $active]);
         } else {
             // Update creditor
-            $stmt = $db->prepare("UPDATE creditors SET name = ?, phone = ?, active = ? WHERE id = ?");
-            $stmt->execute([$name, $phone, $active, $_POST['id']]);
+            $stmt = $db->prepare("UPDATE creditors SET name = ?, phone = ?, credit_limit = ?, active = ? WHERE id = ?");
+            $stmt->execute([$name, $phone, $creditLimit, $active, $_POST['id']]);
         }
         $dateParam = '';
         if (isset($_POST['date'])) {
@@ -79,16 +127,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Date filter: 'all' = all days, else specific date (default today)
+// Date filter: 'all' = all days (default); optional specific date via picker or "Today"
 $dateParam = isset($_GET['date']) ? trim($_GET['date']) : '';
-if (strtolower($dateParam) === 'all') {
+if ($dateParam === '' || strtolower($dateParam) === 'all') {
     $filterDate = 'all';
 } elseif (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateParam)) {
     $filterDate = $dateParam;
 } else {
-    $filterDate = date('Y-m-d');
+    $filterDate = 'all';
 }
 $isAllDays = ($filterDate === 'all');
+$todayYmd = date('Y-m-d');
+$isTodayView = !$isAllDays && $filterDate === $todayYmd;
 
 // Fetch credit sales totals: by date or all time
 if ($isAllDays) {
@@ -130,8 +180,65 @@ foreach ($creditSales as $sale) {
     $salesByCreditor[$sale['creditor_id']] = $sale;
 }
 
-// Show all creditors (new accounts appear immediately; balance/status use sales on selected date)
-$creditors = $db->query("SELECT * FROM creditors ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+// Global balance per creditor (used for delete eligibility; independent of date filter)
+$globalBalanceByCreditor = [];
+$globalBalStmt = $db->query("
+    SELECT creditor_id, COALESCE(SUM(total_amount - paid_amount), 0) AS balance
+    FROM credit_sales
+    GROUP BY creditor_id
+");
+foreach ($globalBalStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    $globalBalanceByCreditor[(int) $row['creditor_id']] = (float) $row['balance'];
+}
+
+// Latest cashier per creditor (respects date filter when set)
+$latestCashierByCreditor = [];
+if ($isAllDays) {
+    $latestCashierStmt = $db->query("
+        SELECT cs.creditor_id, cs.cashier_id
+        FROM credit_sales cs
+        INNER JOIN (
+            SELECT creditor_id, MAX(created_at) AS max_created
+            FROM credit_sales
+            GROUP BY creditor_id
+        ) latest ON cs.creditor_id = latest.creditor_id AND cs.created_at = latest.max_created
+        GROUP BY cs.creditor_id
+    ");
+} else {
+    $latestCashierStmt = $db->prepare("
+        SELECT cs.creditor_id, cs.cashier_id
+        FROM credit_sales cs
+        INNER JOIN (
+            SELECT creditor_id, MAX(created_at) AS max_created
+            FROM credit_sales
+            WHERE DATE(created_at) = ?
+            GROUP BY creditor_id
+        ) latest ON cs.creditor_id = latest.creditor_id AND cs.created_at = latest.max_created
+        GROUP BY cs.creditor_id
+    ");
+    $latestCashierStmt->execute([$filterDate]);
+}
+foreach ($latestCashierStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    $latestCashierByCreditor[(int) $row['creditor_id']] = $row['cashier_id'];
+}
+
+// List creditors: all days = every registered account; for a specific date = only accounts with credit sales that day
+if ($isAllDays) {
+    $creditors = $db->query("SELECT * FROM creditors ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    $idsOnDate = array_keys($salesByCreditor);
+    $idsOnDate = array_values(array_filter(array_map('intval', $idsOnDate), function ($id) {
+        return $id > 0;
+    }));
+    if (empty($idsOnDate)) {
+        $creditors = [];
+    } else {
+        $placeholders = implode(',', array_fill(0, count($idsOnDate), '?'));
+        $stmt = $db->prepare("SELECT * FROM creditors WHERE id IN ($placeholders) ORDER BY name");
+        $stmt->execute($idsOnDate);
+        $creditors = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+}
 
 // Fetch upcoming due credit sales (within 7 days)
 $dueSoonStmt = $db->prepare("
@@ -210,11 +317,35 @@ if (isset($_GET['edit'])) {
             text-overflow: ellipsis;
         }
         /* Ensure action buttons are properly aligned */
-        table tbody td:last-child {
+        table.creditors-table tbody td[data-label="Actions"] {
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        table.creditors-table th,
+        table.creditors-table td {
+            padding: 6px 8px;
+            font-size: 0.8125rem;
+        }
+        table.creditors-table .creditor-actions-btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+        }
+        .content {
+            min-width: 0;
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+        .creditors-card {
+            max-width: 100%;
+            overflow: hidden;
+        }
+        .creditors-table-wrap {
+            overflow-x: auto;
+            max-width: 100%;
+            -webkit-overflow-scrolling: touch;
         }
         /* Style for the no-data row */
         table tbody tr td[colspan] {
@@ -544,6 +675,13 @@ if (isset($_GET['edit'])) {
                 display: none; /* Hide label for Quick Actions column */
             }
             
+            table tbody td[data-label="Select"] {
+                justify-content: center;
+            }
+            table tbody td[data-label="Select"]::before {
+                display: none;
+            }
+            
             /* Remove hover effect on mobile cards */
             table tbody tr:hover {
                 background: white;
@@ -669,7 +807,7 @@ if (isset($_GET['edit'])) {
 
     <div class="flex">
         <?php include 'sidebar.php'; ?>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="flex-1 content lg:ml-0 ml-0 min-w-0">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
@@ -702,9 +840,7 @@ if (isset($_GET['edit'])) {
                             <a href="credit-book?date=all" class="inline-flex items-center px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-sm font-medium transition-colors <?= $isAllDays ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' ?>">
                                 All days
                             </a>
-                            <?php if ($isAllDays): ?>
-                            <a href="credit-book?date=<?= date('Y-m-d') ?>" class="inline-flex items-center px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors">Today</a>
-                            <?php endif; ?>
+                            <a href="credit-book?date=<?= htmlspecialchars($todayYmd) ?>" class="inline-flex items-center px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-sm font-medium transition-colors <?= $isTodayView ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' ?>" title="Filter to today only">Today</a>
                         </div>
                         <button type="button" onclick="openCreditorModal(true)" id="openCreditorModalBtn" class="header-create-btn inline-flex items-center px-3 py-2 sm:px-4 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors text-sm font-medium flex-shrink-0">
                             <i class="fas fa-user-plus sm:mr-2"></i><span class="btn-text">Create Account</span>
@@ -851,6 +987,14 @@ if (isset($_GET['edit'])) {
                                         value="<?= $editCreditor ? htmlspecialchars($editCreditor['phone'] ?? '') : '' ?>"
                                         placeholder="0814534236">
                                 </div>
+                                <div class="space-y-2">
+                                    <label class="block text-sm font-semibold text-gray-700">Credit Limit (N$)</label>
+                                    <input type="number" name="credit_limit" min="0" step="0.01"
+                                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-gray-500 focus:ring-2 focus:ring-gray-200 transition duration-200"
+                                        value="<?= $editCreditor ? htmlspecialchars(number_format((float)($editCreditor['credit_limit'] ?? 0), 2, '.', '')) : '0.00' ?>"
+                                        placeholder="0.00">
+                                    <p class="text-xs text-gray-500">Set to 0 for unlimited credit</p>
+                                </div>
                             </div>
                             <div class="flex justify-between items-center pt-4 border-t border-gray-100">
                                 <?php if ($editCreditor): ?>
@@ -874,7 +1018,7 @@ if (isset($_GET['edit'])) {
                 </div>
                 
                 <!-- Creditors List -->
-                <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div class="bg-white rounded-lg shadow-md overflow-hidden creditors-card">
                     <div class="px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-300 flex flex-col sm:flex-row sm:flex-wrap sm:justify-between sm:items-center gap-3">
                         <h3 class="text-base sm:text-lg font-semibold text-gray-700 flex items-center">
                             <i class="fas fa-users mr-2 text-gray-600"></i>Registered Creditors
@@ -890,13 +1034,23 @@ if (isset($_GET['edit'])) {
                             <input type="text" id="searchInput" onkeyup="filterCreditors()" placeholder="Search creditors..." 
                                    class="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-400 focus:outline-none focus:border-gray-400 shadow-sm transition duration-200 bg-white placeholder-gray-300">
                             </div>
+                            <button type="button" id="massDeleteBtn" onclick="massDeleteSelectedCreditors()" disabled
+                                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-red-200 bg-white text-red-600 text-sm font-medium shadow-sm hover:bg-red-50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                                title="Delete selected accounts (zero balance only)">
+                                <i class="fas fa-trash-alt"></i>
+                                <span class="hidden sm:inline">Delete selected</span>
+                            </button>
                         </div>
                     </div>
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
+                    <div class="overflow-x-auto creditors-table-wrap">
+                        <table class="min-w-full divide-y divide-gray-200 creditors-table">
                             <thead class="bg-gray-50">
                                 <tr>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(0, true)">
+                                    <th scope="col" class="px-3 py-3 w-12 text-center" title="Select paid-up accounts (zero balance) for bulk delete">
+                                        <input type="checkbox" id="selectAllPaidCreditors" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                                            aria-label="Select all deletable accounts" onchange="toggleSelectAllPaidCreditors(this.checked)">
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(1, true)">
                                         <div class="flex items-center">
                                             <span>ID</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -904,7 +1058,7 @@ if (isset($_GET['edit'])) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(1)">
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(2)">
                                         <div class="flex items-center">
                                             <span>Name</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -912,7 +1066,7 @@ if (isset($_GET['edit'])) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(2)">
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(3)">
                                         <div class="flex items-center">
                                             <span>Contact</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -920,7 +1074,15 @@ if (isset($_GET['edit'])) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(3)">
+                                    <th class="hidden xl:table-cell px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(4)">
+                                        <div class="flex items-center">
+                                            <span>Cashier</span>
+                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                            </svg>
+                                        </div>
+                                    </th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(5)">
                                         <div class="flex items-center">
                                             <span>Status</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -928,7 +1090,15 @@ if (isset($_GET['edit'])) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(4, true)">
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortCreditorsTable(6, true)">
+                                        <div class="flex items-center">
+                                            <span>Credit</span>
+                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                            </svg>
+                                        </div>
+                                    </th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer numeric" onclick="sortCreditorsTable(7, true)">
                                         <div class="flex items-center">
                                             <i class="fas fa-balance-scale mr-1"></i>
                                             <span>Balance</span>
@@ -937,21 +1107,36 @@ if (isset($_GET['edit'])) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        
-                                    </th>
-                                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-48">
                                         Actions
                                     </th>
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200">
-                                <?php foreach ($creditors as $creditor): 
+                                <?php
+                                foreach ($creditors as $creditor):
                                     // Get creditor's balance from creditSales data
                                     $saleData = $salesByCreditor[$creditor['id']] ?? null;
                                     $creditorBalance = $saleData ? ($saleData['total_amount'] - $saleData['paid_amount']) : 0;
+                                    $globalBal = $globalBalanceByCreditor[$creditor['id']] ?? 0;
+                                    $canBulkDelete = $globalBal <= 0;
+                                    $creditInfo = getCreditorCreditInfo($db, (int) $creditor['id']);
+                                    $creditLimit = $creditInfo['credit_limit'];
+                                    $availableCredit = $creditInfo['available_credit'];
+                                    $isOverLimit = $creditInfo['is_limit_enforced'] && $globalBal > $creditLimit + 0.005;
+                                    $availableClass = !$creditInfo['is_limit_enforced'] ? 'text-gray-500' : ($availableCredit <= 0.005 ? 'text-red-600 font-semibold' : ($availableCredit < $creditLimit * 0.2 ? 'text-orange-500 font-medium' : 'text-teal-600 font-medium'));
                                 ?>
                                 <tr class="hover:bg-gray-50 transition-colors creditor-row cursor-pointer" data-creditor-id="<?= htmlspecialchars($creditor['id']) ?>" data-href="credit-transactions.php?creditor_id=<?= (int)$creditor['id'] ?>&date=<?= urlencode($filterDate) ?>" onclick="handleCreditorRowClick(event, this)">
+                                    <td class="px-3 py-2 whitespace-nowrap text-center align-middle" data-label="Select" onclick="event.stopPropagation()">
+                                        <?php if ($canBulkDelete): ?>
+                                        <input type="checkbox" name="creditor_delete_cb" value="<?= (int) $creditor['id'] ?>"
+                                            class="creditor-delete-cb rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                                            aria-label="Select <?= htmlspecialchars($creditor['name']) ?> for delete"
+                                            onchange="updateMassDeleteToolbarState()">
+                                        <?php else: ?>
+                                        <span class="inline-flex w-5 h-5 items-center justify-center text-gray-300" title="Clear balance before delete">—</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900" data-label="ID">
                                         <?= htmlspecialchars($creditor['id']) ?>
                                     </td>
@@ -961,55 +1146,56 @@ if (isset($_GET['edit'])) {
                                     <td class="px-6 py-2 whitespace-nowrap text-sm text-gray-500" data-label="Contact">
                                         <?= !empty($creditor['phone']) ? htmlspecialchars($creditor['phone']) : 'N/A' ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm" data-label="Status">
-                                        <span class="px-3 py-1 text-xs font-medium rounded-full border transition-colors
+                                    <td class="hidden xl:table-cell px-3 py-2 whitespace-nowrap text-sm text-gray-500" data-label="Cashier">
+                                        <?= !empty($latestCashierByCreditor[$creditor['id']]) ? htmlspecialchars($latestCashierByCreditor[$creditor['id']]) : '—' ?>
+                                    </td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm" data-label="Status">
+                                        <span class="px-2 py-0.5 text-xs font-medium rounded-full border transition-colors
                                             <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'bg-gray-100 text-gray-800 border-gray-200 hover:bg-gray-200' : 
                                                ($creditorBalance > 0 ? 'bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200' : 
                                                'bg-teal-100 text-teal-800 border-teal-200 hover:bg-teal-200') ?>">
                                             <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'New' : ($creditorBalance > 0 ? 'Unpaid' : 'Paid') ?>
                                         </span>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm 
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm <?= $isOverLimit ? 'text-red-600 font-semibold' : 'text-gray-700' ?>" data-label="Credit">
+                                        <?php if (!$creditInfo['is_limit_enforced']): ?>
+                                            Unlimited
+                                        <?php else: ?>
+                                            <span class="block">N$<?= number_format((float) $availableCredit, 2) ?> avail</span>
+                                            <span class="block text-xs text-gray-500">of N$<?= number_format($creditLimit, 2) ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm 
                                         <?= ($saleData['total_transactions'] ?? 0) === 0 ? 'text-gray-500 font-medium' : ($creditorBalance > 0 ? 'text-teal-500 font-medium' : 'text-teal-600 font-medium') ?>" data-label="Balance">
                                         N$<?= number_format($creditorBalance, 2) ?>
                                     </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Quick Actions" onclick="event.stopPropagation()">
+                                    <td class="px-3 py-2 whitespace-nowrap text-sm text-center" data-label="Actions" onclick="event.stopPropagation()">
+                                        <div class="flex items-center justify-center gap-1 flex-wrap">
                                         <?php if (isset($salesByCreditor[$creditor['id']]) && ($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount']) > 0): ?>
-                                        <div class="flex gap-2 justify-center">
                                             <button onclick="event.stopPropagation(); printCreditorBalance(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
-                                                class="inline-flex items-center px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors font-medium text-sm">
-                                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                class="creditor-actions-btn inline-flex items-center px-2 py-1 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors font-medium" title="Print">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
                                                 </svg>
-                                                Print
                                             </button>
                                             <a href="javascript:void(0);" 
                                                onclick="event.stopPropagation(); confirmPayAll(<?= $creditor['id'] ?>, '<?= htmlspecialchars($creditor['name']) ?>', <?= number_format($salesByCreditor[$creditor['id']]['total_amount'] - $salesByCreditor[$creditor['id']]['paid_amount'], 2, '.', '') ?>)"
-                                               class="inline-flex items-center px-3 py-1.5 rounded-md bg-teal-100 text-teal-700 hover:bg-teal-100 transition-colors font-medium text-sm">
-                                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                               class="creditor-actions-btn inline-flex items-center px-2 py-1 rounded-md bg-teal-100 text-teal-700 hover:bg-teal-200 transition-colors font-medium" title="Pay">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
                                                 </svg>
-                                                Pay
                                             </a>
-                                        </div>
                                         <?php endif; ?>
-                                    </td>
-                                    <td class="px-6 py-2 whitespace-nowrap text-sm text-center" data-label="Actions" onclick="event.stopPropagation()">
-                                        <div class="flex items-center justify-center gap-2">
                                             <a href="credit-transactions.php?creditor_id=<?= $creditor['id'] ?>&date=<?= urlencode($filterDate) ?>" 
-                                               class="inline-flex items-center justify-center px-3 py-1.5 text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200 text-sm font-medium"
-                                               title="View Transactions">
-                                                <i class="ti ti-file-invoice mr-1"></i> View
+                                               class="creditor-actions-btn inline-flex items-center justify-center px-2 py-1 text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors border border-gray-200" title="View">
+                                                <i class="ti ti-file-invoice"></i>
                                             </a>
-
                                             <a href="credit-book.php?<?= $filterDate ? 'date=' . urlencode($filterDate) . '&' : '' ?>edit=<?= $creditor['id'] ?>" 
-                                               class="inline-flex items-center justify-center px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200 text-sm font-medium"
-                                               title="Edit Creditor">
+                                               class="creditor-actions-btn inline-flex items-center justify-center px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors border border-gray-200" title="Edit">
                                                 <i class="fas fa-edit"></i>
                                             </a>
                                             <button onclick="deleteCreditor(<?= $creditor['id'] ?>)" 
-                                               class="inline-flex items-center justify-center px-3 py-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300 shadow-sm border border-red-200 text-sm font-medium"
-                                               title="Delete Creditor">
+                                               class="creditor-actions-btn inline-flex items-center justify-center px-2 py-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors border border-red-200" title="Delete">
                                                 <i class="fas fa-trash-alt"></i>
                                             </button>
                                         </div>
@@ -1018,7 +1204,7 @@ if (isset($_GET['edit'])) {
                                 <?php endforeach; ?>
                                 <?php if (count($creditors) === 0): ?>
                                 <tr>
-                                    <td colspan="7" class="px-6 py-2 whitespace-nowrap text-center text-sm text-gray-500">
+                                    <td colspan="9" class="px-6 py-2 whitespace-nowrap text-center text-sm text-gray-500">
                                         No creditors found
                                     </td>
                                 </tr>
@@ -1154,15 +1340,21 @@ if (isset($_GET['edit'])) {
             filterTable(this.value);
         });
         
-        // Add event listeners for sorting
+        // Add event listeners for sorting (skip checkbox col and Actions)
         const headers = document.querySelectorAll('thead th');
         headers.forEach((header, index) => {
-            if (index < headers.length - 1) { // Skip actions column
-                header.addEventListener('click', () => {
-                    sortTable(index, header.classList.contains('numeric'));
-                });
-            }
+            if (index === 0 || index >= headers.length - 1) return;
+            header.addEventListener('click', () => {
+                sortTable(index, header.classList.contains('numeric'));
+            });
         });
+        updateMassDeleteToolbarState();
+
+        // #region agent log
+        const __layoutTable = document.querySelector('.creditors-table');
+        const __layoutCard = document.querySelector('.creditors-card');
+        fetch('http://127.0.0.1:7918/ingest/543ece8e-e9a4-4ceb-9f09-b26f1ebce51b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1e2df9'},body:JSON.stringify({sessionId:'1e2df9',runId:'layout-fix',hypothesisId:'layout',location:'credit-book.php:DOMContentLoaded',message:'creditors table layout metrics',data:{viewportWidth:window.innerWidth,tableScrollWidth:__layoutTable?__layoutTable.scrollWidth:null,cardClientWidth:__layoutCard?__layoutCard.clientWidth:null,bodyScrollWidth:document.body.scrollWidth,hasHorizontalOverflow:document.body.scrollWidth>window.innerWidth},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
     });
 
     function addPaginationControls() {
@@ -1257,7 +1449,7 @@ if (isset($_GET['edit'])) {
             filteredRows = allRows.filter(row => {
                 const cells = row.querySelectorAll('td');
                 return Array.from(cells).some((cell, index) => {
-                    if (index === cells.length - 1) return false; // Skip actions column
+                    if (index === 0 || index === cells.length - 1) return false; // Skip checkbox & actions
                     const cellText = cell.textContent.toLowerCase().trim();
                     return cellText.includes(searchTerm);
                 });
@@ -1267,6 +1459,11 @@ if (isset($_GET['edit'])) {
         // Update the table
         updateTable();
         showPage(1);
+        updateMassDeleteToolbarState();
+    }
+
+    function sortCreditorsTable(columnIndex, isNumeric) {
+        sortTable(columnIndex, isNumeric);
     }
 
     function sortTable(columnIndex, isNumeric) {
@@ -1292,6 +1489,7 @@ if (isset($_GET['edit'])) {
         
         updateTable();
         showPage(1);
+        updateMassDeleteToolbarState();
     }
 
     function updateTable() {
@@ -1307,7 +1505,7 @@ if (isset($_GET['edit'])) {
             // Show "no data" row
             const newNoDataRow = document.createElement('tr');
             const noDataCell = document.createElement('td');
-            noDataCell.setAttribute('colspan', '7'); // Make sure this matches your table's column count
+            noDataCell.setAttribute('colspan', '9');
             noDataCell.className = 'px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500';
             noDataCell.textContent = 'No matching creditors found';
             newNoDataRow.appendChild(noDataCell);
@@ -1340,6 +1538,66 @@ if (isset($_GET['edit'])) {
         
         currentPage = page;
         updatePaginationControls(page, maxPage);
+        updateMassDeleteToolbarState();
+    }
+
+    function getDeletableCreditorCheckboxes() {
+        return Array.from(document.querySelectorAll('tbody .creditor-delete-cb'));
+    }
+
+    function updateMassDeleteToolbarState() {
+        const boxes = getDeletableCreditorCheckboxes();
+        const checked = boxes.filter(function (cb) { return cb.checked; });
+        const btn = document.getElementById('massDeleteBtn');
+        const selectAll = document.getElementById('selectAllPaidCreditors');
+        if (btn) btn.disabled = checked.length === 0;
+        if (selectAll && boxes.length) {
+            selectAll.checked = checked.length === boxes.length;
+            selectAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+        } else if (selectAll) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        }
+    }
+
+    function toggleSelectAllPaidCreditors(checked) {
+        getDeletableCreditorCheckboxes().forEach(function (cb) { cb.checked = checked; });
+        updateMassDeleteToolbarState();
+    }
+
+    function massDeleteSelectedCreditors() {
+        const boxes = document.querySelectorAll('.creditor-delete-cb:checked');
+        if (boxes.length === 0) {
+            Swal.fire({ title: 'Nothing selected', text: 'Select one or more paid-up accounts using the checkboxes.', icon: 'info' });
+            return;
+        }
+        Swal.fire({
+            title: 'Delete selected accounts?',
+            text: boxes.length + ' creditor(s) with zero outstanding balance will be removed permanently.',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#dc2626',
+            cancelButtonColor: '#6b7280',
+            confirmButtonText: 'Yes, delete them'
+        }).then(function (result) {
+            if (!result.isConfirmed) return;
+            const form = document.createElement('form');
+            form.method = 'POST';
+            boxes.forEach(function (cb) {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'mass_delete_ids[]';
+                input.value = cb.value;
+                form.appendChild(input);
+            });
+            const fd = document.createElement('input');
+            fd.type = 'hidden';
+            fd.name = 'filter_date';
+            fd.value = typeof currentFilterDate !== 'undefined' ? currentFilterDate : '';
+            form.appendChild(fd);
+            document.body.appendChild(form);
+            form.submit();
+        });
     }
 
     function updatePaginationControls(currentPage, maxPage) {
@@ -1359,6 +1617,11 @@ if (isset($_GET['edit'])) {
         if (nextPage) nextPage.disabled = currentPage >= maxPage;
         if (firstPage) firstPage.disabled = currentPage === 1;
         if (lastPage) lastPage.disabled = currentPage >= maxPage;
+    }
+
+    function filterCreditors() {
+        var el = document.getElementById('searchInput');
+        if (el) filterTable(el.value);
     }
 
     function deleteCreditor(id) {

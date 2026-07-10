@@ -78,7 +78,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     </div>
                 <?php endif; ?>
 
-                <form class="space-y-6" method="POST">
+                <form class="space-y-6" method="POST" autocomplete="off">
                     <div>
                         <label for="username" class="block text-sm font-medium text-black">Username</label>
                         <div class="mt-2 relative">
@@ -91,7 +91,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     <div>
                         <label for="new_password" class="block text-sm font-medium text-black">New Password</label>
                         <div class="mt-2 relative">
-                            <input type="password" id="new_password" name="new_password" required
+                            <input type="password" id="new_password" name="new_password" required autocomplete="off"
                                    class="block w-full rounded-lg bg-gray-200 px-10 py-2 text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200">
                             <i class="fas fa-lock absolute left-3 top-2.5 text-gray-400"></i>
                         </div>
@@ -100,7 +100,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     <div>
                         <label for="confirm_password" class="block text-sm font-medium text-black">Confirm Password</label>
                         <div class="mt-2 relative">
-                            <input type="password" id="confirm_password" name="confirm_password" required
+                            <input type="password" id="confirm_password" name="confirm_password" required autocomplete="off"
                                    class="block w-full rounded-lg bg-gray-200 px-10 py-2 text-black outline outline-1 -outline-offset-1 outline-gray-300 placeholder:text-gray-400 focus:outline-2 focus:-outline-offset-2 focus:outline-gray-300 transition duration-200">
                             <i class="fas fa-lock absolute left-3 top-2.5 text-gray-400"></i>
                         </div>

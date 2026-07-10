@@ -36,6 +36,8 @@ $db = new PDO('sqlite:pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
+require_once __DIR__ . '/ensure_laybye_schema.php';
+ensureLaybyeSchema($db);
 
 // Ensure tab tips column exists (ignore if already added)
 try {
@@ -392,26 +394,37 @@ $ordersQuery = $db->prepare("
         FROM tab_payments tp
         JOIN tabs t ON tp.tab_id = t.id
         GROUP BY tp.order_id, t.tab_name
+    ), order_laybye AS (
+        SELECT lp.order_id, lp.laybye_id, lp.payment_kind AS laybye_payment_kind,
+               la.reference AS laybye_reference, cr.name AS laybye_creditor_name
+        FROM laybye_payments lp
+        INNER JOIN laybye_accounts la ON la.id = lp.laybye_id
+        LEFT JOIN creditors cr ON cr.id = la.creditor_id
     ), order_splits AS (
         SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
                MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
                MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
-               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips
+               oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips,
+               MAX(olb.laybye_id) AS laybye_id, MAX(olb.laybye_reference) AS laybye_reference,
+               MAX(olb.laybye_payment_kind) AS laybye_payment_kind, MAX(olb.laybye_creditor_name) AS laybye_creditor_name
         FROM orders o
         LEFT JOIN order_sums os ON os.order_id = o.id
         LEFT JOIN order_products op ON op.order_id = o.id
         LEFT JOIN order_tab_info oti ON oti.order_id = o.id
+        LEFT JOIN order_laybye olb ON olb.order_id = o.id
         WHERE (
             (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
             (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
         )
         GROUP BY o.id
     )
-    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name
     FROM order_splits
     WHERE cash_amount > 0
     UNION ALL
-    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id
+    SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name
     FROM order_splits
     WHERE eft_amount > 0
     ORDER BY created_at DESC
@@ -476,7 +489,13 @@ $creditQuery = $db->prepare("
         payment_date,
         amount as paid_amount,
         total_amount,
-        cashier_id
+        cashier_id,
+        NULL as tab_name,
+        NULL as tab_cashier_id,
+        NULL as laybye_id,
+        NULL as laybye_reference,
+        NULL as laybye_payment_kind,
+        NULL as laybye_creditor_name
     FROM payment_details
     ORDER BY COALESCE(payment_date, created_at) DESC
 ");
@@ -925,7 +944,12 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                 align-items: flex-start;
             }
             
-            /* Print button styling on mobile - positioned in top right */
+            /* Print / void buttons on mobile - positioned in top right */
+            table tbody td[data-label="Print"] .print-void-actions {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.25rem;
+            }
             table tbody td[data-label="Print"] button {
                 width: auto;
                 height: 2rem;
@@ -1129,7 +1153,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                             <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
                                 <!-- calendar icon -->
                                 <svg class="w-4 h-4 lg:w-5 lg:h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                                    <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 0 0 -2H6z" clip-rule="evenodd"/>
+                                    <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd"/>
                                 </svg>
                             </div>
                             <select id="date" name="date" onchange="updateReport();" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs lg:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-8 lg:pl-10 pr-8 lg:pr-10 p-2 lg:p-2.5 shadow-sm transition-colors cursor-pointer">
@@ -1384,15 +1408,52 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <?php if ($row['provider_name']): ?>
                                 <span class="text-xs text-purple-500 font-medium">via <?= htmlspecialchars($row['provider_name']) ?></span>
                                 <?php endif; ?>
+                                <?php if (!empty($row['laybye_reference'])): ?>
+                                <span class="block text-xs text-amber-800 font-medium mt-0.5">Lay-bye <?= htmlspecialchars($row['laybye_reference']) ?><?= !empty($row['laybye_payment_kind']) ? ' · ' . htmlspecialchars($row['laybye_payment_kind']) : '' ?><?= !empty($row['laybye_creditor_name']) ? ' — ' . htmlspecialchars($row['laybye_creditor_name']) : '' ?></span>
+                                <?php endif; ?>
                             </td>
                             <td class="py-1 px-2 text-center" data-label="Print">
-                                <button onclick="reprintReceipt('<?= $row['id'] ?>', '<?= $row['sale_type'] ?>', '<?= $row['payment_status'] ?>')" 
+                                <?php
+                                $voidDelType = null;
+                                if ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft')) {
+                                    $voidDelType = 'credit';
+                                } elseif ($row['sale_type'] === 'cash') {
+                                    $voidDelType = 'sales';
+                                } elseif ($row['sale_type'] === 'eft') {
+                                    $voidDelType = !empty($row['creditor_name']) ? 'credit' : 'sales';
+                                } elseif ($row['sale_type'] === 'paid') {
+                                    $voidDelType = 'credit';
+                                } elseif ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'unpaid' || $row['payment_status'] === 'partial')) {
+                                    $voidDelType = 'credit';
+                                }
+                                ?>
+                                <div class="print-void-actions inline-flex items-center justify-center gap-1">
+                                <button type="button" onclick="reprintReceipt('<?= $row['id'] ?>', '<?= $row['sale_type'] ?>', '<?= $row['payment_status'] ?>')" 
                                         class="inline-flex items-center justify-center w-8 h-8 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200" 
                                         title="Reprint Receipt">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
                                     </svg>
                                 </button>
+                                <?php if (!empty($row['laybye_id'])): ?>
+                                <button type="button" onclick="reprintLaybyeBalance(<?= (int) $row['laybye_id'] ?>)" 
+                                        class="inline-flex items-center justify-center w-8 h-8 text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-amber-300 shadow-sm border border-amber-200" 
+                                        title="Print balance / statement">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                </button>
+                                <?php endif; ?>
+                                <?php if ($voidDelType !== null): ?>
+                                <button type="button" onclick="deleteRecord('<?= htmlspecialchars($voidDelType, ENT_QUOTES) ?>', '<?= htmlspecialchars((string) $row['id'], ENT_QUOTES) ?>')" 
+                                        class="inline-flex items-center justify-center w-8 h-8 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300 shadow-sm border border-red-200" 
+                                        title="Void transaction">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                    </svg>
+                                </button>
+                                <?php endif; ?>
+                                </div>
                             </td>
                             <td class="py-1 px-2 text-sm text-gray-500" data-label="Date">
                                 <?php
@@ -1693,7 +1754,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                 console.log('[sendToPrinter] Items in input:', receiptData.items ? receiptData.items.length : 'missing');
                 
                 // Ensure print_only flag is set for regular receipts
-                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_payment_receipt) {
+                if (!receiptData.print_only && !receiptData.is_cashup_report && !receiptData.is_balance_receipt && !receiptData.is_tab_balance_receipt && !receiptData.is_laybye_balance_receipt && !receiptData.is_payment_receipt) {
                     receiptData.print_only = true;
                 }
                 
@@ -1761,7 +1822,9 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
         // Assuming the search bar filters multiple tables or just the main 'All Transactions' table
         filterTable('search', 'salesTableBody');
         filterTable('search', 'topProductsTableBody'); // If search should also filter products
-        filterTable('search', 'dailyBreakdownTableBody'); // If search should also filter daily breakdown
+        if (document.getElementById('dailyBreakdownTableBody')) {
+            filterTable('search', 'dailyBreakdownTableBody');
+        }
     }
 
     // --- Generic Pagination and Sorting ---
@@ -2027,19 +2090,59 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
     }
 
 
+    // --- Manager PIN modal (void / delete sales or credit) ---
+    function openManagerPinModal(onPin) {
+        const overlay = document.createElement('div');
+        overlay.id = 'manager-void-pin-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;z-index:99999;background:rgba(0,0,0,0.5);padding:1rem;box-sizing:border-box;overflow:auto;';
+        overlay.innerHTML = `
+            <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full" style="margin:auto;max-height:min(90vh,100%);overflow:auto">
+                <h3 class="text-lg font-semibold text-gray-900 mb-1">Manager PIN</h3>
+                <p class="text-sm text-gray-600 mb-4">Enter the manager PIN to void this transaction.</p>
+                <input type="password" id="manager-void-pin-input" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-gray-500 focus:border-gray-500 mb-4" autocomplete="off" inputmode="numeric" placeholder="PIN">
+                <div class="flex justify-end gap-2">
+                    <button type="button" id="manager-void-pin-cancel" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
+                    <button type="button" id="manager-void-pin-ok" class="px-4 py-2 rounded-md text-white bg-gray-800 hover:bg-gray-900">Void</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('#manager-void-pin-input');
+        const close = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+        overlay.querySelector('#manager-void-pin-cancel').onclick = close;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('#manager-void-pin-ok').onclick = () => {
+            const pin = input.value || '';
+            close();
+            onPin(pin);
+        };
+        setTimeout(() => input.focus(), 0);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                overlay.querySelector('#manager-void-pin-ok').click();
+            }
+        });
+    }
+
     // --- Delete Functions ---
     function deleteRecord(type, id) {
-        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+        const needsPin = (type === 'sales' || type === 'credit');
+        const runDelete = (managerPin) => {
+            let body = `type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`;
+            if (needsPin) {
+                body += `&manager_pin=${encodeURIComponent(managerPin)}`;
+            }
             fetch('delete_record.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `type=${type}&id=${id}`
+                body: body
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
                     showNotification('Success', 'Record deleted successfully.', 'success');
-                    // Reload the page after deletion
                     location.reload();
                 } else {
                     showNotification('Error', 'Error deleting record: ' + (data.message || 'Unknown error'), 'error');
@@ -2049,6 +2152,13 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                 console.error('Error:', error);
                 showNotification('Error', 'An error occurred while deleting the record.', 'error');
             });
+        };
+        if (needsPin) {
+            openManagerPinModal((pin) => runDelete(pin));
+            return;
+        }
+        showConfirmationModal('Are you sure you want to delete this record?', 'This action cannot be undone.', () => {
+            runDelete();
         });
     }
 
@@ -2336,24 +2446,41 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
         });
     }
 
-    // --- Initial Setup ---
-    document.addEventListener('DOMContentLoaded', function() {
-        // Initialize pagination and sorting for tables present on initial load
-        initializeSalesPaginationAndSorting();
-        initializeDailyBreakdownPaginationAndSorting();
-        initializeTopProductsPaginationAndSorting();
-
-        // Add listener to the date select (already done in HTML via onchange, but ensure updateReport is globally available)
-        // The 'onchange' in HTML should now work as updateReport is defined above.
-        const dateSelect = document.getElementById('date');
-        if (dateSelect) {
-             // Optional: Remove HTML onchange and add listener here if preferred
-             // dateSelect.onchange = null; // Remove inline handler
-             // dateSelect.addEventListener('change', updateReport);
-        } else {
-            console.error("Date select element ('date') not found.");
-        }
-    });
+    function reprintLaybyeBalance(laybyeId) {
+        showNotification('Processing', 'Preparing lay-bye statement...', 'info');
+        fetch('reprint_laybye_balance.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ laybye_id: String(laybyeId) })
+        })
+        .then(async (response) => {
+            const text = await response.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (e) { /* non-JSON */ }
+            if (!response.ok) {
+                const message = (data && data.message) ? data.message : (text || 'Server error');
+                throw new Error(message);
+            }
+            if (!data || !data.success) {
+                throw new Error((data && data.message) ? data.message : 'Unknown error');
+            }
+            if (data.receipt_data) {
+                return sendToPrinter(data.receipt_data);
+            }
+            return Promise.resolve({ success: true, message: 'Printed' });
+        })
+        .then(result => {
+            if (result && result.success) {
+                showNotification('Success', 'Lay-bye statement sent to printer.', 'success');
+            } else {
+                throw new Error(result?.message || 'Printing failed');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showNotification('Error', 'Lay-bye statement: ' + (error.message || 'Unknown error'), 'error');
+        });
+    }
 
     function updateDownloadLink() {
         var date = document.getElementById('date').value;

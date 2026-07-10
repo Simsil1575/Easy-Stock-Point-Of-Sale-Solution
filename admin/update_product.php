@@ -22,7 +22,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     try {
+        require_once __DIR__ . '/../recipe_stock_helper.php';
         $db = new SQLite3('../pos.db');
+        configureSqlite3($db);
         
         if (!$db) {
             ob_clean();
@@ -39,6 +41,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         
         $dataType = $dataTypes[$data['column']] ?? SQLITE3_TEXT;
+
+        $db->exec('BEGIN IMMEDIATE');
     
         // Track stock changes for quantity updates
         if ($data['column'] === 'quantity') {
@@ -107,18 +111,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $summaryStmt->bindValue(14, $data['id'], SQLITE3_INTEGER);
                     $summaryStmt->execute();
                 }
+
+                adjustRecipeStockByProductIdSQLite3($db, (int) $data['id'], (float) $quantityChange);
             }
         }
     
         // Prepare the update statement
         $stmt = $db->prepare("UPDATE products SET {$data['column']} = :value WHERE id = :id");
-        $stmt->bindValue(':value', $data['value'], $dataType);
+        if ($data['column'] === 'buying_price') {
+            $raw = $data['value'];
+            if ($raw === null || (is_string($raw) && trim($raw) === '')) {
+                $stmt->bindValue(':value', null, SQLITE3_NULL);
+            } elseif (is_numeric($raw)) {
+                $stmt->bindValue(':value', (float)$raw, SQLITE3_FLOAT);
+            } else {
+                ob_clean();
+                echo json_encode(['success' => false, 'error' => 'Invalid cost / buying price']);
+                exit;
+            }
+        } else {
+            $stmt->bindValue(':value', $data['value'], $dataType);
+        }
         $stmt->bindValue(':id', $data['id'], SQLITE3_INTEGER);
         
         if ($stmt->execute()) {
+            $db->exec('COMMIT');
             ob_clean();
             echo json_encode(['success' => true]);
         } else {
+            $db->exec('ROLLBACK');
             ob_clean();
             echo json_encode(['success' => false, 'error' => 'Database update failed']);
         }
@@ -126,6 +147,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $db->close();
         
     } catch (Exception $e) {
+        if (isset($db) && $db instanceof SQLite3) {
+            @$db->exec('ROLLBACK');
+        }
         ob_clean();
         echo json_encode(['success' => false, 'error' => 'Database error: ' . $e->getMessage()]);
     }

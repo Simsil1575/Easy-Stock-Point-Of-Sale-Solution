@@ -16,12 +16,27 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_ip TEXT");
+} catch (PDOException $e) {
+}
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN kitchen_printer_port INTEGER NOT NULL DEFAULT 9100");
+} catch (PDOException $e) {
+}
+
 // Fetch the show_all_products setting
-$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity FROM product_settings LIMIT 1");
+$settingStmt = $db->query("SELECT show_all_products, default_print_receipt, hide_available_quantity, kitchen_printer_ip, kitchen_printer_port FROM product_settings LIMIT 1");
 $setting = $settingStmt->fetch(PDO::FETCH_ASSOC);
 $show_all_products = $setting['show_all_products'] ?? 0; // Default to 0 if not set
 $default_print_receipt = $setting['default_print_receipt'] ?? 0; // Default to 0 if not set
 $hide_available_quantity = $setting['hide_available_quantity'] ?? 0; // Default to 0 if not set
+$kitchen_printer_ip = trim((string)($setting['kitchen_printer_ip'] ?? ''));
+$kitchen_printer_port = isset($setting['kitchen_printer_port']) ? (int)$setting['kitchen_printer_port'] : 9100;
+if ($kitchen_printer_port <= 0 || $kitchen_printer_port > 65535) {
+    $kitchen_printer_port = 9100;
+}
+$kitchen_printer_configured = $kitchen_printer_ip !== '' ? 1 : 0;
 
 // Fetch products from the database
 $query = '
@@ -83,7 +98,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
     <script src="../src/chart.js"></script>
     <script src="../lucide.js"></script>
     <!-- Load sendToPrinter function from receipt.php -->
-    <script src="receipt.php?js=true"></script>
+    <script src="../receipt.php?js=true"></script>
     <meta name="google" content="notranslate">
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
@@ -1850,8 +1865,16 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                     vat_rate: receiptData.vat_rate || businessInfo.vat_rate
                 });
                 
+                if (dataWithBusiness.print_to_kitchen_printer === true) {
+                    return fetch('../receipt.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(dataWithBusiness)
+                    }).then(function(r) { return r.json(); });
+                }
+                
                 // Use fetch to receipt.php - the interceptor will catch this
-                return fetch('receipt.php', {
+                return fetch('../receipt.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(dataWithBusiness)
@@ -1880,6 +1903,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
         // Settings from PHP
         const hideAvailableQuantity = <?php echo $hide_available_quantity; ?>;
         const defaultPrintReceipt = <?php echo $default_print_receipt; ?>;
+        const kitchenPrinterConfigured = <?php echo (int)$kitchen_printer_configured; ?>;
 
         let cart = [];
 
@@ -2328,6 +2352,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                 // First fetch expected cash amount from fetch_report_data.php
                 const formData = new FormData();
                 formData.append('date', selectedDate);
+                formData.append('cash_up_hide_expected', '1');
                 
                 fetch('../../fetch_report_data.php', {
                     method: 'POST',
@@ -2346,16 +2371,11 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         return;
                     }
                     
-                    const expectedAmount = parseFloat(data.cashAvailableInTill || 0);
-                    
                     Swal.fire({
                         title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">Cash Up - ' + selectedDate + '</h1>',
                         html: `
                             <div class="space-y-4">
-                                <div class="w-full flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-gray-700">Expected Cash in Till:</span>
-                                    <span class="text-lg font-bold text-teal-700">N$${expectedAmount.toFixed(2)}</span>
-                                </div>
+                                <p class="text-sm text-gray-600 text-left">Enter the cash you counted. System expected cash is shown on the printed report after you submit.</p>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-2">Actual Cash in Till:</label>
                                     <input type="number" 
@@ -2386,19 +2406,15 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 Swal.showValidationMessage('Please enter a valid cash amount');
                                 return false;
                             }
-                            return { actualAmount, expectedAmount };
+                            return { actualAmount };
                         }
                     }).then((result) => {
                         if (result.isConfirmed) {
                             const actualAmount = result.value.actualAmount;
-                            const expectedAmount = result.value.expectedAmount;
-                            const difference = actualAmount - expectedAmount;
                             
-                            // Fetch full cash up data
                             const cashupFormData = new FormData();
                             cashupFormData.append('date', selectedDate);
                             cashupFormData.append('actual_cash_in_till', actualAmount);
-                            cashupFormData.append('cash_difference', difference);
                         
                         fetch('../../fetch_report_data.php', {
                             method: 'POST',
@@ -2416,6 +2432,9 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 });
                                 return;
                             }
+                            
+                            const expectedAmount = parseFloat(cashupData.expected_cash_at_cashup || 0);
+                            const difference = typeof cashupData.cash_difference === 'number' ? cashupData.cash_difference : (actualAmount - expectedAmount);
                             
                             // Open cash drawer before generating report
                             openCashDrawer();
@@ -2435,7 +2454,7 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                                 unpaid_credit: cashupData.unpaidCredit || 0,
                                 cash_on_hand: cashupData.cashOnHand || 0,
                                 cash_available_in_till: cashupData.cashAvailableInTill || 0,
-                                expected_cash: expectedAmount, // Add expected cash amount
+                                expected_cash: expectedAmount,
                                 actual_cash_in_till: actualAmount,
                                 cash_difference: difference,
                                 total_cash_in: cashupData.totalCashIn || 0,
@@ -4127,8 +4146,8 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         <a href='#' onclick='return reverseTransaction(event)' style='color: #a1a1a1; text-decoration: none; font-weight: 500; font-size: 1.05em; margin-right: 18px;'>
                             <i class='fas fa-undo' style='margin-right: 6px;'></i> Reverse transaction
                         </a>
-                        <input type='checkbox' id='printReceiptCheckbox' style='transform: scale(1.2); margin-right: 8px; vertical-align: middle;' ${defaultPrintReceipt ? 'checked' : ''}>
-                        <label for='printReceiptCheckbox' style='font-size: 1.05em; vertical-align: middle; cursor:pointer;'>Print with receipt</label>
+                        <input type='checkbox' id='sendToKitchenCheckbox' style='transform: scale(1.2); margin-right: 8px; vertical-align: middle;' ${defaultPrintReceipt ? 'checked' : ''} ${kitchenPrinterConfigured ? '' : 'disabled'}>
+                        <label for='sendToKitchenCheckbox' style='font-size: 1.05em; vertical-align: middle; cursor:pointer;'>Send to kitchen</label>
                     </div>
                 `,
                 allowOutsideClick: false,
@@ -4136,15 +4155,14 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
             }).then(ok => {
                 if (!ok.isConfirmed) return;
                 
-                // Capture checkbox state before dialog closes - try multiple methods for reliability
                 let checkbox = null;
                 try {
-                    checkbox = Swal.getContainer()?.querySelector('#printReceiptCheckbox');
+                    checkbox = Swal.getContainer()?.querySelector('#sendToKitchenCheckbox');
                 } catch(e) {
-                    checkbox = document.querySelector('.swal2-container #printReceiptCheckbox') || 
-                              document.querySelector('#printReceiptCheckbox');
+                    checkbox = document.querySelector('.swal2-container #sendToKitchenCheckbox') || 
+                              document.querySelector('#sendToKitchenCheckbox');
                 }
-                const printReceipt = checkbox ? checkbox.checked : false;
+                const sendToKitchen = (checkbox ? checkbox.checked : false) && kitchenPrinterConfigured;
                 
                 // Process the tab sale using process_tab.php
                 fetch('../process_tab.php', {
@@ -4167,24 +4185,19 @@ while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
                         saleData.table_name = tableName;
                         cashSound.play();
                         
-                        // Always print kitchen ticket automatically (without payment receipt flag)
-                        const kitchenTicketData = {
-                            ...saleData,
-                            print_only: true
-                        };
-                        // Explicitly ensure is_payment_receipt is not set for kitchen ticket
-                        delete kitchenTicketData.is_payment_receipt;
-                        
-                        sendToPrinter(kitchenTicketData).catch(printError => console.error('Kitchen ticket printing error:', printError));
-                        
-                        // Print customer receipt ONLY if checkbox is checked
-                        if (printReceipt) {
-                            const receiptData = {
+                        if (sendToKitchen) {
+                            const kitchenTicketData = {
                                 ...saleData,
                                 print_only: true,
-                                is_payment_receipt: true
+                                print_to_kitchen_printer: true
                             };
-                            sendToPrinter(receiptData).catch(printError => console.error('Receipt printing error:', printError));
+                            delete kitchenTicketData.is_payment_receipt;
+                            sendToPrinter(kitchenTicketData).then(function(pr) {
+                                if (pr && pr.success === false) {
+                                    console.error('Kitchen print:', pr.message);
+                                    Swal.fire({ icon: 'warning', title: 'Kitchen print', text: pr.message || 'Could not print to kitchen printer.', timer: 2500, showConfirmButton: false });
+                                }
+                            }).catch(printError => console.error('Kitchen ticket printing error:', printError));
                         }
                         
                         clearCart();

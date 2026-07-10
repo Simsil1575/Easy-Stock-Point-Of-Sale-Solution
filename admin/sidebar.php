@@ -440,18 +440,19 @@
                     <span class="text-lg text-gray-700">Home</span>
                 </a>
             </li>
-
-            <li>
-                <a href="credit-tabs" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-tabs">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="2" y="5" width="20" height="14" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
-                        <rect x="2" y="9" width="20" height="2" fill="currentColor"/>
-                        <rect x="16" y="15" width="4" height="2" rx="1" fill="currentColor"/>
+     <li>
+                <a href="admin-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="admin-center">
+                    <svg class="w-7 h-7 mr-4" fill="none" stroke="currentColor" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="7" y="7" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="27" y="7" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="7" y="27" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
+                        <rect x="27" y="27" width="14" height="14" rx="5" stroke="currentColor" stroke-width="3" fill="none"/>
                     </svg>
-                    <span class="text-lg text-gray-700">Tabs</span>
+                    <span class="text-lg text-gray-700">Menu</span>
                 </a>
             </li>
 
+       
             <li>
                 <a href="sales" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="sales">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -493,24 +494,7 @@
                 </a>
             </li>
 
-            <li>
-                <a href="credit-book" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-book">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v5h.293l6 6V4H6v14h6V10h.293l6 6V4z"></path>
-                    </svg>
-                    <span class="text-lg text-gray-700">Credit Book</span>
-                </a>
-            </li>
-
-            <li>
-                <a href="cash" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cash">
-                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    <span class="text-lg text-gray-700">Cash In/Out</span>
-                </a>
-            </li>
-
+       
       
             <li>
  
@@ -562,26 +546,55 @@
         const query = window.location.search;
         const currentPage = path.substring(path.lastIndexOf('/') + 1);
         
+        // Admin-center subpages: Menu stays active when on any of these
+        const isAdminSubpage = (
+            currentPage === 'credit-tabs' || currentPage.startsWith('credit-tabs') ||
+            currentPage === 'laybye.php' || currentPage.startsWith('laybye') ||
+            currentPage.startsWith('view-laybye') ||
+            currentPage === 'credit-book' || currentPage.startsWith('credit-book') ||
+            currentPage.startsWith('credit-transactions') ||
+            currentPage.startsWith('view-tab') ||
+            currentPage === 'cash' || currentPage === 'cash.php' ||
+            currentPage === 'cash-up' || currentPage.startsWith('cash-up') ||
+            currentPage.startsWith('damaged_goods') ||
+            currentPage.startsWith('create_creditor') ||
+            currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders')
+        );
+        
         // Remove active class from all links
         const links = document.querySelectorAll('.nav-link');
         links.forEach(link => {
             link.classList.remove('bg-gray-300');
             
-            // Check if current page matches link or is inventory related
-            if (link.getAttribute('data-href') === currentPage || 
+            const href = link.getAttribute('data-href');
+            
+            // When on a Admin subpage, only highlight Menu (Admin-center)
+            if (isAdminSubpage) {
+                if (href === 'admin-center') {
+                    link.classList.add('bg-gray-300');
+                }
+            } else if (href === currentPage || 
                 currentPage === '' || 
                 currentPage === 'index.php' || 
-                (currentPage === 'home' && link.getAttribute('data-href') === './') ||
-                (link.getAttribute('data-href') === 'inventory' && 
+                (currentPage === 'home' && href === './') ||
+                (href === 'inventory' && 
                     (currentPage === 'inventory' || 
                      currentPage === 'add_product' || 
+                     currentPage === 'bulk_edit_images' ||
+                     currentPage === 'bulk_edit_images.php' ||
                      currentPage === 'receiving' ||
+                     currentPage === 'receiving.php' ||
+                     currentPage.startsWith('receiving') ||
                      currentPage === 'edit' || 
                      currentPage === 'stock_tracking' || 
+                     currentPage === 'stock_tracking.php' ||
+                     currentPage.startsWith('stock_tracking') ||
                      currentPage === 'stock_taking' || 
+                     currentPage === 'stock_taking.php' ||
+                     currentPage.startsWith('stock_taking') ||
                      currentPage === 'edit.php' || 
                      query.includes('edit.php?id='))) ||
-                (link.getAttribute('data-href') === 'settings' && 
+                (href === 'settings' && 
                     (currentPage === 'users' || 
                     currentPage === 'add_user' || 
                     currentPage === 'damaged_goods' || 
@@ -592,27 +605,22 @@
                      query.includes('delete=success') ||
                      query.includes('add=success') ||
                      query.includes('update=success'))) ||
-                (link.getAttribute('data-href') === 'credit-book' && 
-                    (currentPage.startsWith('credit-transactions.php') || 
-                     currentPage.startsWith('credit-book.php'))) ||
-                (link.getAttribute('data-href') === 'credit-tabs' && 
+                (href === 'credit-tabs' && 
                     (currentPage.startsWith('view-tab.php') || 
                      currentPage.startsWith('credit-tabs'))) ||
-                (link.getAttribute('data-href') === 'reports' && 
+                (href === 'reports' && 
                     (currentPage === 'reports' || 
                      currentPage === 'weekly_sales' || 
                      currentPage === 'weekly_sales.php' ||
                      currentPage === 'generate_weekly_report' ||
                      currentPage === 'generate_weekly_report.php')) ||
-                (link.getAttribute('data-href') === 'reports-center' && 
+                (href === 'reports-center' && 
                     (currentPage === 'reports-center' || 
                      currentPage === 'reports-center.php' ||
                      currentPage === 'generate_report_pdf' ||
                      currentPage === 'generate_report_pdf.php')) ||
-                (link.getAttribute('data-href') === 'cash-up' && 
-                    (currentPage === 'cash-up' || 
-                     currentPage === 'cash-up.php' ||
-                     currentPage === 'view-cashup.php'))) {
+                (href === 'admin-center' && 
+                    (/^admin-center(\.php)?$/i.test(currentPage)))) {
                 link.classList.add('bg-gray-300');
             }
         });
@@ -633,9 +641,9 @@
         const overlay = document.getElementById('mobileOverlay');
         const hamburger = document.querySelector('.hamburger');
         
-        sidebar.classList.toggle('open');
-        overlay.classList.toggle('active');
-        hamburger.classList.toggle('open');
+        sidebar?.classList.toggle('open');
+        overlay?.classList.toggle('active');
+        hamburger?.classList.toggle('open');
     }
     
     function closeSidebar() {
@@ -643,9 +651,9 @@
         const overlay = document.getElementById('mobileOverlay');
         const hamburger = document.querySelector('.hamburger');
         
-        sidebar.classList.remove('open');
-        overlay.classList.remove('active');
-        hamburger.classList.remove('open');
+        sidebar?.classList.remove('open');
+        overlay?.classList.remove('active');
+        hamburger?.classList.remove('open');
     }
     
     // Close sidebar with animation before navigating (mobile)
@@ -791,5 +799,7 @@
         });
     }
 </script>
+
+<?php include __DIR__ . '/../inactivity_bootstrap.php'; ?>
 
 <script src="3.4.16"></script>

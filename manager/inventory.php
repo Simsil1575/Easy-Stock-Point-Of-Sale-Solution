@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/../ensure_laybye_schema.php';
 
 session_start();
 
@@ -18,11 +19,12 @@ $db = new PDO('sqlite:../pos.db');
 // Set the default timezone to Namibian time
 date_default_timezone_set('Africa/Harare');
 
-// Fetch products from the database
+// Fetch products from the database (exclude synthetic lay-bye payment product)
 $stmt = $db->query('
     SELECT p.*, COALESCE(SUM(oi.quantity), 0) as total_sold
     FROM products p
     LEFT JOIN order_items oi ON p.name = oi.product_name
+    WHERE ' . laybyePaymentProductWhereExclude('p.name') . '
     GROUP BY p.id
     ORDER BY total_sold DESC
 ');
@@ -32,7 +34,7 @@ $lowStock = [];
 $outOfStock = [];
 
 // Fetch unique categories
-$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
+$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND " . laybyePaymentProductWhereExclude('name') . " ORDER BY category");
 $categories = [];
 while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
     $categories[] = $cat['category'];
@@ -823,7 +825,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
                             <?php
                             $db = new SQLite3('../pos.db');
-                            $results = $db->query("SELECT * FROM products");
+                            $results = $db->query("SELECT * FROM products WHERE " . laybyePaymentProductWhereExclude('name'));
                             while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
                                 echo "<tr class='hover:bg-gray-50 transition-colors' data-category=\"" . htmlspecialchars($row['category'] ?? '', ENT_QUOTES, 'UTF-8') . "\">";
                                 echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium text-black-900 truncate' title='{$row['name']}'>{$row['name']}</td>";
@@ -1410,8 +1412,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 if (cell.cellIndex === 1) { // quantity column
                     if (newValue === '' || newValue === null) {
                         newValue = '0';
-                    } else if (!/^\d+$/.test(newValue)) {
-                        // If not a valid integer, revert to original value
+                    } else if (!/^-?\d+$/.test(newValue)) {
+                        // If not a valid integer (allows negative stock), revert to original value
                         cell.textContent = originalValue;
                         return;
                     }
