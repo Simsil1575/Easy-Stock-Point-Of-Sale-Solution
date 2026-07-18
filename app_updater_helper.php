@@ -13,6 +13,7 @@ define('APP_UPDATER_DEFAULT_OWNER', 'Simsil1575');
 define('APP_UPDATER_DEFAULT_REPO', 'Easy-Stock-Point-Of-Sale-Solution');
 define('APP_UPDATER_DEFAULT_BRANCH', 'main');
 define('APP_UPDATER_INCREMENTAL_MAX_FILES', 250);
+define('APP_UPDATER_DOWNLOAD_CONCURRENCY', 16);
 
 /**
  * Absolute path to the project root (htdocs).
@@ -121,6 +122,32 @@ function appUpdaterIsProtectedPath(string $relativePath): bool
         return true;
     }
 
+    return false;
+}
+
+/**
+ * Heavy dependency trees — skip during updates (keeps installs fast).
+ */
+function appUpdaterIsBulkySkipPath(string $relativePath): bool
+{
+    $normalized = strtolower(str_replace('\\', '/', ltrim($relativePath, '/')));
+    $prefixes = [
+        'vendor/',
+        'node_modules/',
+        'receipt-interceptor/node_modules/',
+        'escpos-php-development/',
+        'fpdf/doc/',
+        'fpdf/tutorial/',
+    ];
+    foreach ($prefixes as $prefix) {
+        $trim = rtrim($prefix, '/');
+        if ($normalized === $trim || strpos($normalized, $prefix) === 0) {
+            return true;
+        }
+    }
+    if (strpos($normalized, '/node_modules/') !== false || strpos($normalized, 'node_modules/') === 0) {
+        return true;
+    }
     return false;
 }
 
@@ -249,7 +276,7 @@ function appUpdaterResolveCommitSha(string $ref, array $settings): ?string
 }
 
 /**
- * URL-encode each path segment for the Contents API.
+ * URL-encode each path segment for the Contents API / raw URLs.
  */
 function appUpdaterEncodeRepoPath(string $path): string
 {
@@ -262,28 +289,149 @@ function appUpdaterEncodeRepoPath(string $path): string
 }
 
 /**
- * Download a single file at a given ref (raw bytes).
+ * Prefer raw.githubusercontent.com (fast CDN); Contents API as fallback.
+ */
+function appUpdaterRawFileUrl(string $relativePath, string $ref, array $settings): string
+{
+    $owner = rawurlencode((string) $settings['github_owner']);
+    $repo = rawurlencode((string) $settings['github_repo']);
+    return 'https://raw.githubusercontent.com/' . $owner . '/' . $repo . '/'
+        . rawurlencode($ref) . '/' . appUpdaterEncodeRepoPath($relativePath);
+}
+
+function appUpdaterContentsApiUrl(string $relativePath, string $ref, array $settings): string
+{
+    $owner = rawurlencode((string) $settings['github_owner']);
+    $repo = rawurlencode((string) $settings['github_repo']);
+    return "https://api.github.com/repos/{$owner}/{$repo}/contents/"
+        . appUpdaterEncodeRepoPath($relativePath) . '?ref=' . rawurlencode($ref);
+}
+
+/**
+ * Parallel HTTP GETs via curl_multi (falls back to sequential without cURL).
+ *
+ * @param array<string,array{url:string,headers?:string[]}> $requests keyed by id
+ * @return array<string,array{ok:bool,status:int,body:string,error:?string}>
+ */
+function appUpdaterHttpGetMany(array $requests, int $timeout = 90, int $concurrency = APP_UPDATER_DOWNLOAD_CONCURRENCY): array
+{
+    $results = [];
+    if ($requests === []) {
+        return $results;
+    }
+
+    if (!function_exists('curl_multi_init')) {
+        foreach ($requests as $id => $req) {
+            $results[$id] = appUpdaterHttpGet(
+                (string) $req['url'],
+                isset($req['headers']) && is_array($req['headers']) ? $req['headers'] : [],
+                $timeout
+            );
+        }
+        return $results;
+    }
+
+    $concurrency = max(1, min(32, $concurrency));
+    $queue = $requests;
+    $mh = curl_multi_init();
+    $handles = [];
+
+    $addHandle = static function (string $id, array $req) use ($mh, &$handles, $timeout): void {
+        $headers = appUpdaterMergeHeaders([
+            'User-Agent: EasyStock-POS-Updater',
+            'Accept: */*',
+        ], isset($req['headers']) && is_array($req['headers']) ? $req['headers'] : []);
+        $ch = curl_init((string) $req['url']);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_CONNECTTIMEOUT => 20,
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_ENCODING => '',
+        ]);
+        $handles[(int) $ch] = ['id' => $id, 'ch' => $ch];
+        curl_multi_add_handle($mh, $ch);
+    };
+
+    // Prime the pool
+    while (count($handles) < $concurrency && $queue !== []) {
+        $id = array_key_first($queue);
+        $req = $queue[$id];
+        unset($queue[$id]);
+        $addHandle((string) $id, $req);
+    }
+
+    do {
+        do {
+            $status = curl_multi_exec($mh, $running);
+        } while ($status === CURLM_CALL_MULTI_PERFORM);
+
+        while ($info = curl_multi_info_read($mh)) {
+            $ch = $info['handle'];
+            $key = (int) $ch;
+            $meta = $handles[$key] ?? null;
+            if ($meta === null) {
+                curl_multi_remove_handle($mh, $ch);
+                curl_close($ch);
+                continue;
+            }
+            $id = $meta['id'];
+            $body = curl_multi_getcontent($ch);
+            $httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err = curl_error($ch);
+            $ok = $body !== false && $httpStatus >= 200 && $httpStatus < 300;
+            $results[$id] = [
+                'ok' => $ok,
+                'status' => $httpStatus,
+                'body' => is_string($body) ? $body : '',
+                'error' => $ok ? null : ($err !== '' ? $err : ('HTTP ' . $httpStatus)),
+            ];
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+            unset($handles[$key]);
+
+            if ($queue !== []) {
+                $nextId = array_key_first($queue);
+                $nextReq = $queue[$nextId];
+                unset($queue[$nextId]);
+                $addHandle((string) $nextId, $nextReq);
+            }
+        }
+
+        if ($running > 0 || $handles !== []) {
+            curl_multi_select($mh, 1.0);
+        }
+    } while ($handles !== [] || $queue !== []);
+
+    curl_multi_close($mh);
+    return $results;
+}
+
+/**
+ * Download a single file at a given ref (raw bytes). Prefer CDN raw URL.
  *
  * @return array{ok:bool,body:?string,error:?string}
  */
 function appUpdaterFetchFileAtRef(string $relativePath, string $ref, array $settings): array
 {
-    $owner = rawurlencode((string) $settings['github_owner']);
-    $repo = rawurlencode((string) $settings['github_repo']);
-    $encodedPath = appUpdaterEncodeRepoPath($relativePath);
-    $url = "https://api.github.com/repos/{$owner}/{$repo}/contents/{$encodedPath}?ref=" . rawurlencode($ref);
-    $headers = appUpdaterMergeHeaders(
-        appUpdaterAuthHeaders($settings),
-        ['Accept: application/vnd.github.raw']
-    );
-    $res = appUpdaterHttpGet($url, $headers, 120);
+    $auth = appUpdaterAuthHeaders($settings);
+    $rawUrl = appUpdaterRawFileUrl($relativePath, $ref, $settings);
+    $res = appUpdaterHttpGet($rawUrl, $auth, 90);
     if ($res['ok']) {
         return ['ok' => true, 'body' => $res['body'], 'error' => null];
     }
 
-    // Fallback: JSON contents response (base64) or download_url for large files
-    $jsonHeaders = appUpdaterAuthHeaders($settings);
-    $jsonRes = appUpdaterHttpGet($url, $jsonHeaders, 120);
+    $url = appUpdaterContentsApiUrl($relativePath, $ref, $settings);
+    $headers = appUpdaterMergeHeaders($auth, ['Accept: application/vnd.github.raw']);
+    $rawApi = appUpdaterHttpGet($url, $headers, 90);
+    if ($rawApi['ok']) {
+        return ['ok' => true, 'body' => $rawApi['body'], 'error' => null];
+    }
+
+    $jsonRes = appUpdaterHttpGet($url, $auth, 90);
     if (!$jsonRes['ok']) {
         return ['ok' => false, 'body' => null, 'error' => $res['error'] ?: ('Could not download ' . $relativePath)];
     }
@@ -292,7 +440,7 @@ function appUpdaterFetchFileAtRef(string $relativePath, string $ref, array $sett
         return ['ok' => false, 'body' => null, 'error' => 'Invalid contents response for ' . $relativePath];
     }
     if (!empty($data['download_url']) && is_string($data['download_url'])) {
-        $dl = appUpdaterHttpGet($data['download_url'], appUpdaterAuthHeaders($settings), 180);
+        $dl = appUpdaterHttpGet($data['download_url'], $auth, 120);
         if ($dl['ok']) {
             return ['ok' => true, 'body' => $dl['body'], 'error' => null];
         }
@@ -304,6 +452,69 @@ function appUpdaterFetchFileAtRef(string $relativePath, string $ref, array $sett
         }
     }
     return ['ok' => false, 'body' => null, 'error' => 'Could not read file content for ' . $relativePath];
+}
+
+/**
+ * Download many files at a ref in parallel (raw CDN, then Contents API retry for failures).
+ *
+ * @param string[] $relativePaths
+ * @return array<string,array{ok:bool,body:?string,error:?string}> keyed by path
+ */
+function appUpdaterFetchFilesAtRef(array $relativePaths, string $ref, array $settings): array
+{
+    $out = [];
+    $relativePaths = array_values(array_unique(array_filter(array_map(static function ($p) {
+        return str_replace('\\', '/', ltrim((string) $p, '/'));
+    }, $relativePaths))));
+
+    if ($relativePaths === []) {
+        return $out;
+    }
+
+    $auth = appUpdaterAuthHeaders($settings);
+    $requests = [];
+    foreach ($relativePaths as $path) {
+        $requests[$path] = [
+            'url' => appUpdaterRawFileUrl($path, $ref, $settings),
+            'headers' => $auth,
+        ];
+    }
+
+    $rawResults = appUpdaterHttpGetMany($requests, 90, APP_UPDATER_DOWNLOAD_CONCURRENCY);
+    $retry = [];
+    foreach ($relativePaths as $path) {
+        $res = $rawResults[$path] ?? null;
+        if ($res && !empty($res['ok']) && is_string($res['body'])) {
+            $out[$path] = ['ok' => true, 'body' => $res['body'], 'error' => null];
+        } else {
+            $retry[] = $path;
+        }
+    }
+
+    if ($retry === []) {
+        return $out;
+    }
+
+    // Parallel Contents API raw retry for failures (private repos / CDN misses)
+    $apiRequests = [];
+    foreach ($retry as $path) {
+        $apiRequests[$path] = [
+            'url' => appUpdaterContentsApiUrl($path, $ref, $settings),
+            'headers' => appUpdaterMergeHeaders($auth, ['Accept: application/vnd.github.raw']),
+        ];
+    }
+    $apiResults = appUpdaterHttpGetMany($apiRequests, 90, APP_UPDATER_DOWNLOAD_CONCURRENCY);
+    foreach ($retry as $path) {
+        $res = $apiResults[$path] ?? null;
+        if ($res && !empty($res['ok']) && is_string($res['body'])) {
+            $out[$path] = ['ok' => true, 'body' => $res['body'], 'error' => null];
+            continue;
+        }
+        // Last resort: single-file helper (JSON/base64/download_url)
+        $out[$path] = appUpdaterFetchFileAtRef($path, $ref, $settings);
+    }
+
+    return $out;
 }
 
 /**
@@ -339,7 +550,7 @@ function appUpdaterDeleteInstallFile(string $relativePath): bool
 }
 
 /**
- * Apply only files that changed between two commits.
+ * Apply only files that changed between two commits (parallel downloads).
  *
  * @return array{ok:bool,fallback:bool,error:?string,mode?:string,copied?:int,deleted?:int,skipped?:int,failed?:int,errors?:string[]}
  */
@@ -379,6 +590,7 @@ function appUpdaterApplyIncremental(string $baseSha, string $headSha, array $set
     $skipped = 0;
     $failed = 0;
     $errors = [];
+    $toDownload = [];
 
     foreach ($files as $file) {
         if (!is_array($file)) {
@@ -412,23 +624,30 @@ function appUpdaterApplyIncremental(string $baseSha, string $headSha, array $set
             continue;
         }
 
-        if (appUpdaterIsProtectedPath($filename)) {
+        if (appUpdaterIsProtectedPath($filename) || appUpdaterIsBulkySkipPath($filename)) {
             $skipped++;
             continue;
         }
 
-        $fetch = appUpdaterFetchFileAtRef($filename, $headSha, $settings);
-        if (!$fetch['ok'] || !is_string($fetch['body'])) {
-            $failed++;
-            $errors[] = $fetch['error'] ?: ('Failed: ' . $filename);
-            continue;
+        $toDownload[] = $filename;
+    }
+
+    if ($toDownload !== []) {
+        $fetched = appUpdaterFetchFilesAtRef($toDownload, $headSha, $settings);
+        foreach ($toDownload as $filename) {
+            $fetch = $fetched[$filename] ?? null;
+            if (!$fetch || empty($fetch['ok']) || !is_string($fetch['body'])) {
+                $failed++;
+                $errors[] = ($fetch['error'] ?? null) ?: ('Failed: ' . $filename);
+                continue;
+            }
+            if (!appUpdaterWriteInstallFile($filename, $fetch['body'])) {
+                $failed++;
+                $errors[] = 'Could not write: ' . $filename;
+                continue;
+            }
+            $copied++;
         }
-        if (!appUpdaterWriteInstallFile($filename, $fetch['body'])) {
-            $failed++;
-            $errors[] = 'Could not write: ' . $filename;
-            continue;
-        }
-        $copied++;
     }
 
     if ($failed > 0 && $copied === 0 && $deleted === 0) {
@@ -704,6 +923,10 @@ function appUpdaterCopyTree(string $sourceRoot, string $destRoot): array
         $relative = str_replace('\\', '/', $relative);
 
         if (appUpdaterIsProtectedPath($relative)) {
+            $skipped++;
+            continue;
+        }
+        if (appUpdaterIsBulkySkipPath($relative)) {
             $skipped++;
             continue;
         }
