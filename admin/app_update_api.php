@@ -84,17 +84,27 @@ try {
             appUpdateApiRespond([
                 'ok' => false,
                 'error' => $result['error'],
+                'mode' => $result['mode'] ?? null,
                 'copied' => $result['copied'] ?? 0,
+                'deleted' => $result['deleted'] ?? 0,
                 'skipped' => $result['skipped'] ?? 0,
                 'failed' => $result['failed'] ?? 0,
                 'errors' => $result['errors'] ?? [],
             ], 500);
         }
 
+        $mode = $result['mode'] ?? 'full';
+        $modeLabel = $mode === 'incremental'
+            ? 'Changed files only (fast update)'
+            : 'Full package download';
+
         appUpdateApiRespond([
             'ok' => true,
             'message' => 'Update applied successfully.',
+            'mode' => $mode,
+            'mode_label' => $modeLabel,
             'copied' => $result['copied'],
+            'deleted' => $result['deleted'] ?? 0,
             'skipped' => $result['skipped'],
             'failed' => $result['failed'],
             'errors' => $result['errors'],

@@ -1,7 +1,8 @@
 <?php
 /**
- * App updater — download a GitHub zip and apply it over htdocs,
- * while leaving local databases and the products folder untouched.
+ * App updater — apply GitHub updates over htdocs.
+ * Prefers downloading only changed files (compare API); falls back to full zip
+ * for first install or large updates. Local DBs and products/ stay protected.
  */
 
 date_default_timezone_set('Africa/Harare');
@@ -11,6 +12,7 @@ define('APP_UPDATER_TMP_DIR', '.update_tmp');
 define('APP_UPDATER_DEFAULT_OWNER', 'Simsil1575');
 define('APP_UPDATER_DEFAULT_REPO', 'Easy-Stock-Point-Of-Sale-Solution');
 define('APP_UPDATER_DEFAULT_BRANCH', 'main');
+define('APP_UPDATER_INCREMENTAL_MAX_FILES', 250);
 
 /**
  * Absolute path to the project root (htdocs).
@@ -127,13 +129,32 @@ function appUpdaterIsProtectedPath(string $relativePath): bool
  *
  * @return array{ok:bool,status:int,body:string,error:?string}
  */
+/**
+ * Merge HTTP headers; later entries override earlier ones for the same name.
+ *
+ * @param string[] ...$headerLists
+ * @return string[]
+ */
+function appUpdaterMergeHeaders(array ...$headerLists): array
+{
+    $map = [];
+    foreach ($headerLists as $list) {
+        foreach ($list as $h) {
+            if (!is_string($h) || !preg_match('/^([^:]+):\s*(.*)$/s', $h, $m)) {
+                continue;
+            }
+            $map[strtolower(trim($m[1]))] = trim($m[1]) . ': ' . $m[2];
+        }
+    }
+    return array_values($map);
+}
+
 function appUpdaterHttpGet(string $url, array $headers = [], int $timeout = 120): array
 {
-    $defaultHeaders = [
+    $allHeaders = appUpdaterMergeHeaders([
         'User-Agent: EasyStock-POS-Updater',
         'Accept: application/vnd.github+json',
-    ];
-    $allHeaders = array_merge($defaultHeaders, $headers);
+    ], $headers);
 
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
@@ -194,6 +215,249 @@ function appUpdaterHttpGet(string $url, array $headers = [], int $timeout = 120)
     ];
 }
 
+function appUpdaterLooksLikeCommitSha(string $value): bool
+{
+    return (bool) preg_match('/^[0-9a-f]{7,40}$/i', trim($value));
+}
+
+/**
+ * Resolve a tag / branch / short sha to a full commit SHA.
+ */
+function appUpdaterResolveCommitSha(string $ref, array $settings): ?string
+{
+    $ref = trim($ref);
+    if ($ref === '') {
+        return null;
+    }
+    if (preg_match('/^[0-9a-f]{40}$/i', $ref)) {
+        return strtolower($ref);
+    }
+
+    $owner = rawurlencode((string) $settings['github_owner']);
+    $repo = rawurlencode((string) $settings['github_repo']);
+    $headers = appUpdaterAuthHeaders($settings);
+    $url = "https://api.github.com/repos/{$owner}/{$repo}/commits/" . rawurlencode($ref);
+    $res = appUpdaterHttpGet($url, $headers, 60);
+    if (!$res['ok']) {
+        return appUpdaterLooksLikeCommitSha($ref) ? strtolower($ref) : null;
+    }
+    $data = json_decode($res['body'], true);
+    if (!is_array($data) || empty($data['sha'])) {
+        return null;
+    }
+    return strtolower((string) $data['sha']);
+}
+
+/**
+ * URL-encode each path segment for the Contents API.
+ */
+function appUpdaterEncodeRepoPath(string $path): string
+{
+    $path = str_replace('\\', '/', $path);
+    $path = ltrim($path, '/');
+    $parts = array_filter(explode('/', $path), static function ($p) {
+        return $p !== '';
+    });
+    return implode('/', array_map('rawurlencode', $parts));
+}
+
+/**
+ * Download a single file at a given ref (raw bytes).
+ *
+ * @return array{ok:bool,body:?string,error:?string}
+ */
+function appUpdaterFetchFileAtRef(string $relativePath, string $ref, array $settings): array
+{
+    $owner = rawurlencode((string) $settings['github_owner']);
+    $repo = rawurlencode((string) $settings['github_repo']);
+    $encodedPath = appUpdaterEncodeRepoPath($relativePath);
+    $url = "https://api.github.com/repos/{$owner}/{$repo}/contents/{$encodedPath}?ref=" . rawurlencode($ref);
+    $headers = appUpdaterMergeHeaders(
+        appUpdaterAuthHeaders($settings),
+        ['Accept: application/vnd.github.raw']
+    );
+    $res = appUpdaterHttpGet($url, $headers, 120);
+    if ($res['ok']) {
+        return ['ok' => true, 'body' => $res['body'], 'error' => null];
+    }
+
+    // Fallback: JSON contents response (base64) or download_url for large files
+    $jsonHeaders = appUpdaterAuthHeaders($settings);
+    $jsonRes = appUpdaterHttpGet($url, $jsonHeaders, 120);
+    if (!$jsonRes['ok']) {
+        return ['ok' => false, 'body' => null, 'error' => $res['error'] ?: ('Could not download ' . $relativePath)];
+    }
+    $data = json_decode($jsonRes['body'], true);
+    if (!is_array($data)) {
+        return ['ok' => false, 'body' => null, 'error' => 'Invalid contents response for ' . $relativePath];
+    }
+    if (!empty($data['download_url']) && is_string($data['download_url'])) {
+        $dl = appUpdaterHttpGet($data['download_url'], appUpdaterAuthHeaders($settings), 180);
+        if ($dl['ok']) {
+            return ['ok' => true, 'body' => $dl['body'], 'error' => null];
+        }
+    }
+    if (($data['encoding'] ?? '') === 'base64' && isset($data['content']) && is_string($data['content'])) {
+        $decoded = base64_decode(preg_replace('/\s+/', '', $data['content']), true);
+        if ($decoded !== false) {
+            return ['ok' => true, 'body' => $decoded, 'error' => null];
+        }
+    }
+    return ['ok' => false, 'body' => null, 'error' => 'Could not read file content for ' . $relativePath];
+}
+
+/**
+ * Write file bytes under the install root (creates parent dirs).
+ */
+function appUpdaterWriteInstallFile(string $relativePath, string $contents): bool
+{
+    $relativePath = str_replace('\\', '/', $relativePath);
+    $relativePath = ltrim($relativePath, '/');
+    $dest = appUpdaterRoot() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+    $destDir = dirname($dest);
+    if (!is_dir($destDir) && !@mkdir($destDir, 0755, true)) {
+        return false;
+    }
+    return file_put_contents($dest, $contents, LOCK_EX) !== false;
+}
+
+/**
+ * Delete a file under the install root if it exists and is not protected.
+ */
+function appUpdaterDeleteInstallFile(string $relativePath): bool
+{
+    if (appUpdaterIsProtectedPath($relativePath)) {
+        return false;
+    }
+    $relativePath = str_replace('\\', '/', $relativePath);
+    $relativePath = ltrim($relativePath, '/');
+    $dest = appUpdaterRoot() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+    if (!is_file($dest)) {
+        return true;
+    }
+    return @unlink($dest);
+}
+
+/**
+ * Apply only files that changed between two commits.
+ *
+ * @return array{ok:bool,fallback:bool,error:?string,mode?:string,copied?:int,deleted?:int,skipped?:int,failed?:int,errors?:string[]}
+ */
+function appUpdaterApplyIncremental(string $baseSha, string $headSha, array $settings): array
+{
+    $owner = rawurlencode((string) $settings['github_owner']);
+    $repo = rawurlencode((string) $settings['github_repo']);
+    $headers = appUpdaterAuthHeaders($settings);
+    $compareUrl = "https://api.github.com/repos/{$owner}/{$repo}/compare/"
+        . rawurlencode($baseSha) . '...' . rawurlencode($headSha);
+
+    $compare = appUpdaterHttpGet($compareUrl, $headers, 90);
+    if (!$compare['ok']) {
+        return [
+            'ok' => false,
+            'fallback' => true,
+            'error' => 'Could not compare commits (' . ($compare['error'] ?: 'HTTP ' . $compare['status']) . ').',
+        ];
+    }
+
+    $data = json_decode($compare['body'], true);
+    if (!is_array($data)) {
+        return ['ok' => false, 'fallback' => true, 'error' => 'Unexpected compare response from GitHub.'];
+    }
+
+    $files = isset($data['files']) && is_array($data['files']) ? $data['files'] : [];
+    if (count($files) > APP_UPDATER_INCREMENTAL_MAX_FILES) {
+        return [
+            'ok' => false,
+            'fallback' => true,
+            'error' => 'Too many changed files (' . count($files) . '); using full package download.',
+        ];
+    }
+
+    $copied = 0;
+    $deleted = 0;
+    $skipped = 0;
+    $failed = 0;
+    $errors = [];
+
+    foreach ($files as $file) {
+        if (!is_array($file)) {
+            continue;
+        }
+        $filename = str_replace('\\', '/', (string) ($file['filename'] ?? ''));
+        $status = (string) ($file['status'] ?? '');
+        $previous = str_replace('\\', '/', (string) ($file['previous_filename'] ?? ''));
+
+        if ($filename === '') {
+            continue;
+        }
+
+        if ($status === 'renamed' && $previous !== '' && !appUpdaterIsProtectedPath($previous)) {
+            if (appUpdaterDeleteInstallFile($previous)) {
+                $deleted++;
+            }
+        }
+
+        if ($status === 'removed') {
+            if (appUpdaterIsProtectedPath($filename)) {
+                $skipped++;
+                continue;
+            }
+            if (appUpdaterDeleteInstallFile($filename)) {
+                $deleted++;
+            } else {
+                $failed++;
+                $errors[] = 'Could not delete: ' . $filename;
+            }
+            continue;
+        }
+
+        if (appUpdaterIsProtectedPath($filename)) {
+            $skipped++;
+            continue;
+        }
+
+        $fetch = appUpdaterFetchFileAtRef($filename, $headSha, $settings);
+        if (!$fetch['ok'] || !is_string($fetch['body'])) {
+            $failed++;
+            $errors[] = $fetch['error'] ?: ('Failed: ' . $filename);
+            continue;
+        }
+        if (!appUpdaterWriteInstallFile($filename, $fetch['body'])) {
+            $failed++;
+            $errors[] = 'Could not write: ' . $filename;
+            continue;
+        }
+        $copied++;
+    }
+
+    if ($failed > 0 && $copied === 0 && $deleted === 0) {
+        return [
+            'ok' => false,
+            'fallback' => count($files) > 0,
+            'error' => 'Incremental update failed — no files could be applied.',
+            'mode' => 'incremental',
+            'copied' => $copied,
+            'deleted' => $deleted,
+            'skipped' => $skipped,
+            'failed' => $failed,
+            'errors' => array_slice($errors, 0, 20),
+        ];
+    }
+
+    return [
+        'ok' => true,
+        'fallback' => false,
+        'error' => null,
+        'mode' => 'incremental',
+        'copied' => $copied,
+        'deleted' => $deleted,
+        'skipped' => $skipped,
+        'failed' => $failed,
+        'errors' => array_slice($errors, 0, 20),
+    ];
+}
+
 function appUpdaterAuthHeaders(array $settings): array
 {
     $token = trim((string) ($settings['github_token'] ?? ''));
@@ -224,9 +488,13 @@ function appUpdaterCheckRemote(?array $settings = null): array
         $data = json_decode($release['body'], true);
         if (is_array($data) && !empty($data['tag_name'])) {
             $tag = (string) $data['tag_name'];
-            $sha = '';
-            if (!empty($data['target_commitish'])) {
-                $sha = (string) $data['target_commitish'];
+            // Resolve tag to a full commit SHA (target_commitish is often just a branch name)
+            $sha = appUpdaterResolveCommitSha($tag, $settings);
+            if ($sha === null && !empty($data['target_commitish'])) {
+                $sha = appUpdaterResolveCommitSha((string) $data['target_commitish'], $settings);
+            }
+            if ($sha === null) {
+                $sha = $tag;
             }
             // Prefer zipball_url from API (works with private repos + token)
             $zipUrl = !empty($data['zipball_url'])
@@ -234,7 +502,7 @@ function appUpdaterCheckRemote(?array $settings = null): array
                 : "https://api.github.com/repos/{$owner}/{$repo}/zipball/" . rawurlencode($tag);
 
             $settings['last_check_at'] = date('c');
-            $settings['last_remote_sha'] = $sha !== '' ? $sha : $tag;
+            $settings['last_remote_sha'] = $sha;
             $settings['last_remote_tag'] = $tag;
             $settings['last_remote_name'] = (string) ($data['name'] ?? $tag);
             appUpdaterSaveSettings($settings);
@@ -479,25 +747,91 @@ function appUpdaterCopyTree(string $sourceRoot, string $destRoot): array
 }
 
 /**
- * Download remote zip and apply over the install.
+ * Download remote changes and apply over the install.
+ * Uses incremental (changed files only) when a previous install SHA is known;
+ * otherwise downloads the full zip package.
  *
- * @return array{ok:bool,error:?string,copied?:int,skipped?:int,failed?:int,errors?:string[],remote?:array}
+ * @return array{ok:bool,error:?string,mode?:string,copied?:int,deleted?:int,skipped?:int,failed?:int,errors?:string[],remote?:array}
  */
 function appUpdaterApplyUpdate(?array $remote = null): array
 {
     @set_time_limit(0);
     @ini_set('memory_limit', '512M');
 
-    if (!class_exists('ZipArchive')) {
-        return ['ok' => false, 'error' => 'PHP ZipArchive extension is required.'];
-    }
-
     $settings = appUpdaterLoadSettings();
     if ($remote === null) {
         $remote = appUpdaterCheckRemote($settings);
+        $settings = appUpdaterLoadSettings();
     }
     if (empty($remote['ok'])) {
         return ['ok' => false, 'error' => $remote['error'] ?? 'Could not resolve remote version.'];
+    }
+
+    $headSha = (string) ($remote['sha'] ?? '');
+    if (!appUpdaterLooksLikeCommitSha($headSha)) {
+        $resolvedHead = appUpdaterResolveCommitSha(
+            $headSha !== '' ? $headSha : (string) ($remote['tag'] ?? $settings['github_branch']),
+            $settings
+        );
+        if ($resolvedHead !== null) {
+            $headSha = $resolvedHead;
+            $remote['sha'] = $headSha;
+        }
+    } else {
+        $headSha = strtolower($headSha);
+        $remote['sha'] = $headSha;
+    }
+
+    $baseSha = trim((string) ($settings['installed_sha'] ?? ''));
+    // Only compare when we have a real commit SHA (old installs may have stored a branch name)
+    if ($baseSha !== '' && !appUpdaterLooksLikeCommitSha($baseSha)) {
+        $baseSha = '';
+    } elseif ($baseSha !== '') {
+        $baseSha = strtolower($baseSha);
+    }
+
+    // Incremental path: only download files that changed since last install
+    if ($baseSha !== '' && appUpdaterLooksLikeCommitSha($baseSha) && appUpdaterLooksLikeCommitSha($headSha)
+        && strcasecmp($baseSha, $headSha) !== 0) {
+        $incremental = appUpdaterApplyIncremental($baseSha, $headSha, $settings);
+        if (!empty($incremental['ok'])) {
+            $settings = appUpdaterLoadSettings();
+            $settings['installed_sha'] = $headSha;
+            $settings['installed_tag'] = (string) ($remote['tag'] ?? '');
+            $settings['installed_at'] = date('c');
+            appUpdaterSaveSettings($settings);
+
+            return [
+                'ok' => true,
+                'error' => null,
+                'mode' => 'incremental',
+                'copied' => $incremental['copied'] ?? 0,
+                'deleted' => $incremental['deleted'] ?? 0,
+                'skipped' => $incremental['skipped'] ?? 0,
+                'failed' => $incremental['failed'] ?? 0,
+                'errors' => $incremental['errors'] ?? [],
+                'remote' => $remote,
+            ];
+        }
+        // Hard failure without fallback (e.g. every file failed and compare was empty-ish)
+        if (empty($incremental['fallback'])) {
+            return [
+                'ok' => false,
+                'error' => $incremental['error'] ?? 'Incremental update failed.',
+                'mode' => 'incremental',
+                'copied' => $incremental['copied'] ?? 0,
+                'deleted' => $incremental['deleted'] ?? 0,
+                'skipped' => $incremental['skipped'] ?? 0,
+                'failed' => $incremental['failed'] ?? 0,
+                'errors' => $incremental['errors'] ?? [],
+                'remote' => $remote,
+            ];
+        }
+        // else fall through to full zip
+    }
+
+    if (!class_exists('ZipArchive')) {
+        return ['ok' => false, 'error' => 'PHP ZipArchive extension is required for full package updates.'];
     }
 
     $root = appUpdaterRoot();
@@ -553,7 +887,9 @@ function appUpdaterApplyUpdate(?array $remote = null): array
         return [
             'ok' => false,
             'error' => 'Update failed — no files could be copied.',
+            'mode' => 'full',
             'copied' => $stats['copied'],
+            'deleted' => 0,
             'skipped' => $stats['skipped'],
             'failed' => $stats['failed'],
             'errors' => $stats['errors'],
@@ -562,7 +898,7 @@ function appUpdaterApplyUpdate(?array $remote = null): array
     }
 
     $settings = appUpdaterLoadSettings();
-    $settings['installed_sha'] = (string) ($remote['sha'] ?? '');
+    $settings['installed_sha'] = $headSha !== '' ? $headSha : (string) ($remote['sha'] ?? '');
     $settings['installed_tag'] = (string) ($remote['tag'] ?? '');
     $settings['installed_at'] = date('c');
     appUpdaterSaveSettings($settings);
@@ -570,7 +906,9 @@ function appUpdaterApplyUpdate(?array $remote = null): array
     return [
         'ok' => true,
         'error' => null,
+        'mode' => 'full',
         'copied' => $stats['copied'],
+        'deleted' => 0,
         'skipped' => $stats['skipped'],
         'failed' => $stats['failed'],
         'errors' => $stats['errors'],

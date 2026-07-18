@@ -1509,7 +1509,8 @@ $settingsSectionTitles = [
                                     App updater
                                 </h3>
                                 <p class="text-sm text-gray-500 mt-1">
-                                    Download the latest files from GitHub and replace files in this install.
+                                    Downloads only files that changed since your last update (much faster).
+                                    Falls back to a full package download on first update or very large changes.
                                     Local data is protected: <code class="text-xs bg-gray-100 px-1 rounded">pos.db</code>,
                                     <code class="text-xs bg-gray-100 px-1 rounded">active.db</code>,
                                     <code class="text-xs bg-gray-100 px-1 rounded">user.db</code>,
@@ -1541,7 +1542,7 @@ $settingsSectionTitles = [
                                 <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                                     <div class="bg-indigo-500 h-2 rounded-full animate-pulse" style="width: 70%"></div>
                                 </div>
-                                <p class="text-xs text-gray-500 mt-1">Downloading and applying update — keep this page open…</p>
+                                <p class="text-xs text-gray-500 mt-1">Applying update — only changed files when possible. Keep this page open…</p>
                             </div>
                         </div>
                     </div>
@@ -1784,12 +1785,13 @@ $settingsSectionTitles = [
                             installBtn.addEventListener('click', function () {
                                 showConfirm(
                                     'Install App Update',
-                                    'Download the latest files from GitHub and replace files in this folder?<br><br>' +
+                                    'Update this install from GitHub?<br><br>' +
+                                    'Only <strong>changed files</strong> will be downloaded when possible (faster).<br><br>' +
                                     '<strong>Protected (not overwritten):</strong> pos.db, active.db, user.db, info.db, products/<br><br>' +
                                     'Do not close this page until the update finishes.',
                                     async function () {
                                         setBusy(true);
-                                        messageEl.textContent = 'Downloading and applying update…';
+                                        messageEl.textContent = 'Applying update (changed files only when possible)…';
                                         try {
                                             const data = await apiCall('update');
                                             if (!data.ok) {
@@ -1797,12 +1799,24 @@ $settingsSectionTitles = [
                                                 messageEl.textContent = data.error || 'Update failed.';
                                                 return;
                                             }
-                                            renderStatus(data.status, 'Update applied. Copied ' + data.copied + ' file(s), skipped ' + data.skipped + ' protected path(s).');
+                                            const deleted = data.deleted || 0;
+                                            const modeNote = data.mode === 'incremental'
+                                                ? 'Fast update (changed files only).'
+                                                : 'Full package download.';
+                                            renderStatus(
+                                                data.status,
+                                                modeNote + ' Updated ' + data.copied + ' file(s)' +
+                                                (deleted > 0 ? ', removed ' + deleted : '') +
+                                                ', skipped ' + data.skipped + ' protected path(s).'
+                                            );
                                             showAlert(
                                                 'success',
                                                 'Update Installed',
-                                                'Copied <strong>' + data.copied + '</strong> file(s). Skipped <strong>' + data.skipped + '</strong> protected path(s).' +
-                                                (data.failed > 0 ? '<br><br>' + data.failed + ' file(s) could not be copied.' : '') +
+                                                modeNote + '<br><br>' +
+                                                'Updated <strong>' + data.copied + '</strong> file(s)' +
+                                                (deleted > 0 ? ', removed <strong>' + deleted + '</strong>' : '') +
+                                                '. Skipped <strong>' + data.skipped + '</strong> protected path(s).' +
+                                                (data.failed > 0 ? '<br><br>' + data.failed + ' file(s) could not be applied.' : '') +
                                                 '<br><br>Refresh the page if anything looks outdated.',
                                                 'settings?s=system'
                                             );
