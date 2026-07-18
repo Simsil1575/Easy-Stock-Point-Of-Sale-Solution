@@ -143,8 +143,8 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
         <div class="sidebar">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 content mt-1">
-            <div class="container mx-auto p-10">
+        <div class="content flex-1 lg:ml-64 mt-1">
+            <div class="w-full p-6 lg:p-10">
                 <!-- Header with Back Button and Title -->
                 <div class="flex items-center justify-between mb-6">
                     <a href="home" class="inline-flex items-center px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors">

@@ -76,6 +76,7 @@ require_once __DIR__ . '/../ui_cards_helper.php';
 ensureUiCardsSchema($infoDb);
 $uiCardScope = 'manager_reports';
 $hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
+$orderedUiCards = uiGetCardOrder($infoDb, $uiCardScope);
 $showHiddenUiCards = isset($_GET['show_hidden']);
 $uiCardsCustomizeMode = isset($_GET['customize']) || $showHiddenUiCards;
 $uiCardsApiUrl = '../ui_cards_api.php';

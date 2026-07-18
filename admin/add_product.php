@@ -13,13 +13,15 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_once __DIR__ . '/../ensure_stock_changes_username.php';
     $db = new SQLite3('../pos.db');
+    ensureStockChangesUsernameColumn($db);
     
     $name = $_POST['name'];
     $quantity = $_POST['quantity'];
     $price = $_POST['price'];
     $buying_price_raw = isset($_POST['buying_price']) ? trim((string)$_POST['buying_price']) : '';
-    $buying_price = $buying_price_raw === '' ? null : (float)$buying_price_raw;
+    $buying_price = $buying_price_raw === '' ? 0.0 : (float)$buying_price_raw;
     $restock_level = $_POST['restock_level'];
     $capacity = $_POST['capacity'];
     $expiry_date = $_POST['expiry_date'];
@@ -67,11 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':quantity', $quantity, SQLITE3_INTEGER);
     $stmt->bindValue(':price', $price, SQLITE3_FLOAT);
-    if ($buying_price === null) {
-        $stmt->bindValue(':buying_price', null, SQLITE3_NULL);
-    } else {
-        $stmt->bindValue(':buying_price', $buying_price, SQLITE3_FLOAT);
-    }
+    $stmt->bindValue(':buying_price', $buying_price, SQLITE3_FLOAT);
     $stmt->bindValue(':image_url', $image_url, SQLITE3_TEXT);
     $stmt->bindValue(':restock_level', $restock_level, SQLITE3_INTEGER);
     $stmt->bindValue(':capacity', $capacity, SQLITE3_TEXT);
@@ -85,11 +83,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ((int)$quantity !== 0) {
         $log_stmt = $db->prepare("
             INSERT INTO stock_changes 
-            (product_id, action, quantity_change, old_quantity, new_quantity) 
-            VALUES (:product_id, 'add', :quantity, 0, :quantity)
+            (product_id, action, quantity_change, old_quantity, new_quantity, username) 
+            VALUES (:product_id, 'add', :quantity, 0, :quantity, :username)
         ");
         $log_stmt->bindValue(':product_id', $product_id, SQLITE3_INTEGER);
         $log_stmt->bindValue(':quantity', $quantity, SQLITE3_INTEGER);
+        $log_stmt->bindValue(':username', currentStockChangeUsername(), SQLITE3_TEXT);
         $log_stmt->execute();
     }
 
@@ -217,18 +216,18 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
         }
     </style>
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <!-- Header Row: Title + Controls -->
-                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 shadow-sm">
+                <div class="sticky top-0 z-50 bg-gray-100 py-4 mb-6 flex items-center justify-between gap-4 -mx-4 lg:-mx-6 px-4 lg:px-6 shadow-sm">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
                         <!-- Mobile Hamburger Menu Button -->
@@ -387,7 +386,15 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
 
                             <!-- Right Column - Image Upload and Cropper -->
                             <div>
-                                <label for="image" class="block text-sm font-medium text-gray-700 mb-2">Product Image</label>
+                                <div class="flex items-center gap-2 mb-2">
+                                    <label for="image" class="block text-sm font-medium text-gray-700">Product Image</label>
+                                    <button type="button" id="googleSearchBtn" title="Search Google Images" aria-label="Search Google Images"
+                                        class="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition duration-150">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                        </svg>
+                                    </button>
+                                </div>
                                 <div id="drop-zone" class="border-2 border-dashed border-gray-300 rounded-lg p-6 cursor-pointer">
                                     <div class="flex items-center justify-center flex-col">
                                         <label class="flex items-center px-3 py-2 bg-white text-gray-400 
@@ -426,6 +433,8 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
         </div>
     </div>
 
+    <div id="toast-container" class="fixed top-4 right-4 z-50"></div>
+
     <script>
         const fileInput = document.getElementById('image');
         const fileChosen = document.getElementById('file-chosen');
@@ -433,7 +442,34 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
         const previewImage = document.getElementById('preview-image');
         const croppedImageInput = document.getElementById('cropped-image');
         const form = document.querySelector('form');
+        const googleSearchBtn = document.getElementById('googleSearchBtn');
+        const productNameInput = document.getElementById('name');
         let cropper = null;
+
+        function getGoogleImagesUrl(query) {
+            const params = new URLSearchParams({
+                q: query,
+                udm: '2'
+            });
+            return `https://www.google.com/search?${params.toString()}`;
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+            toast.className = `px-6 py-3 rounded-md text-white shadow-lg transition-all duration-500 ${
+                type === 'success' ? 'bg-teal-500' :
+                type === 'error' ? 'bg-rose-600' :
+                'bg-sky-500'
+            }`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.classList.add('opacity-0', '-translate-y-full');
+                setTimeout(() => toast.remove(), 500);
+            }, 3000);
+        }
 
         fileInput.addEventListener('change', function(e) {
             if(this.files && this.files[0]) {
@@ -471,6 +507,17 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
                 }
             }
         });
+
+        if (googleSearchBtn) {
+            googleSearchBtn.addEventListener('click', () => {
+                const query = (productNameInput?.value || '').trim();
+                if (!query) {
+                    showToast('Enter a product name first.', 'error');
+                    return;
+                }
+                window.open(getGoogleImagesUrl(query), '_blank', 'noopener,noreferrer');
+            });
+        }
 
         form.addEventListener('submit', function(e) {
             if (cropper) {

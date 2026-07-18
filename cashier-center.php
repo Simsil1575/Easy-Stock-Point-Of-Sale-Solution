@@ -295,14 +295,17 @@ try {
             
             <main class="p-4 lg:p-6">
                 <!-- Page Header -->
-                <div class="mb-6">
-                    <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Cashier Operations Center</h1>
-                    <p class="text-gray-600">Quick access to all cashier functions and operations</p>
+                <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="min-w-0 flex-1">
+                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Cashier Operations Center</h1>
+                        <p class="text-gray-600">Quick access to all cashier functions and operations</p>
+                    </div>
+                    <?php $operationsSearchInclude = 'field'; include __DIR__ . '/includes/operations_center_search.php'; ?>
                 </div>
                 
                 <!-- All Operations in One Container -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div id="operationsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Tabs -->
                         <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='credit-tabs'">
@@ -447,6 +450,7 @@ try {
                             <p class="text-sm text-gray-500">Record tips and gratuities</p>
                         </div>
                         
+                        <?php $operationsSearchInclude = 'empty'; include __DIR__ . '/includes/operations_center_search.php'; ?>
                     </div>
                 </div>
             </main>
@@ -1124,6 +1128,8 @@ try {
             const coh = document.getElementById('cashUpCashOnHand');
             if (coh) coh.value = '';
             document.getElementById('cashUpModal').classList.add('active');
+            // Open drawer so cashier can count cash on hand
+            openCashDrawer().catch(function() {});
         }
         
         function closeCashUpModal() {
@@ -1289,9 +1295,9 @@ try {
                     if (!printResult.success) throw new Error(printResult.error || 'Printing failed');
                 }
 
-                // Success UI
+                // Success UI — then log out (end of shift)
                 {
-                    Swal.fire({
+                    await Swal.fire({
                         icon: 'success',
                         title: 'Z-Report Generated!',
                         html: `
@@ -1304,11 +1310,12 @@ try {
                                 <p class="mb-2"><strong>Cash on Hand:</strong> N$ ${cashOnHandValue.toFixed(2)}</p>
                                 <p class="mb-2"><strong>Over / Short:</strong> N$ ${overShortDisplay.toFixed(2)}</p>
                             </div>
-                            <p class="mt-4 text-sm text-gray-600">Z-Report has been printed</p>
+                            <p class="mt-4 text-sm text-gray-600">Z-Report has been printed. You will be logged out.</p>
                         `,
                         confirmButtonText: 'OK',
                         timer: 5000
                     });
+                    window.location.href = 'logout.php';
                 }
                 
             } catch (error) {
@@ -1321,5 +1328,6 @@ try {
             }
         }
     </script>
+    <?php $operationsSearchInclude = 'script'; include __DIR__ . '/includes/operations_center_search.php'; ?>
 </body>
 </html>

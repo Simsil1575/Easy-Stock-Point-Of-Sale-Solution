@@ -324,11 +324,11 @@ $expenseCategories = [
 <body class="bg-gray-50">
     <div class="flex">
         <?php include 'sidebar.php'; ?>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-4 lg:p-6">
+            <div class="w-full p-4 lg:p-6">
                 <!-- Header -->
                 <div class="sticky top-0 z-40 bg-gray-50 py-4 mb-6 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 -mx-4 lg:-mx-6 px-4 lg:px-6 shadow-sm">
                     <div class="flex items-center gap-3">

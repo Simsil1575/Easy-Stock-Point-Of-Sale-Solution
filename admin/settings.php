@@ -21,7 +21,7 @@ if (!in_array($settingsSection, $settingsSectionAllowed, true)) {
     $settingsSection = '';
 }
 $settingsSectionTitles = [
-    'display' => 'POS display & printing',
+    'display' => 'Display & features',
     'account' => 'Account & links',
     'activation' => 'Software activation',
     'cashout' => 'Month-end cashout',
@@ -39,8 +39,7 @@ $settingsSectionTitles = [
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <link rel="icon" href="../favicon.ico" type="image/png">
-    <!-- Font Awesome CDN -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
 
     <style>
         .sidebar {
@@ -296,11 +295,11 @@ $settingsSectionTitles = [
     </script>
 
  
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-6">
+            <div class="w-full p-4 lg:p-6">
                 <!-- Header Row: Title + Controls -->
                 <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex flex-wrap items-center justify-between gap-3 -mx-6 px-6 shadow-sm">
                     <div class="flex items-center gap-3 min-w-0">
@@ -337,8 +336,8 @@ $settingsSectionTitles = [
                                     </div>
                                     <span class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded-full">POS</span>
                                 </div>
-                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-slate-900">Display &amp; printing</h3>
-                                <p class="text-sm text-gray-500">Stock visibility, QZ Tray, kitchen printer</p>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-slate-900">Display &amp; features</h3>
+                                <p class="text-sm text-gray-500">Permissions, inactivity, POS interface, receipts, printing</p>
                             </a>
                             <a href="settings?s=account" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
                                 <div class="flex items-start justify-between mb-3">
@@ -358,7 +357,7 @@ $settingsSectionTitles = [
                                     <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Business</span>
                                 </div>
                                 <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-indigo-900">Business info</h3>
-                                <p class="text-sm text-gray-500">Name, VAT, receipts, cashier permissions</p>
+                                <p class="text-sm text-gray-500">Name, VAT, receipts logo/footer</p>
                             </a>
                             <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
                                 <div class="flex items-start justify-between mb-3">
@@ -408,7 +407,7 @@ $settingsSectionTitles = [
                                     <span class="text-xs bg-rose-100 text-rose-700 px-2 py-1 rounded-full">Data</span>
                                 </div>
                                 <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-rose-900">System management</h3>
-                                <p class="text-sm text-gray-500">Reset data, export, barcodes</p>
+                                <p class="text-sm text-gray-500">Reset data, export, barcodes, app updates</p>
                             </a>
                         </div>
                     </div>
@@ -519,131 +518,444 @@ $settingsSectionTitles = [
                     $credit_interest_rate_val = 18.0;
                     error_log("Database error: " . $e->getMessage());
                 }
+
+                // Feature settings (permissions, inactivity, receipt, POS interface)
+                $cashierPermissions = [
+                    'allow_menu' => 1,
+                    'allow_transactions' => 1,
+                    'allow_reports' => 1,
+                    'allow_settings' => 0,
+                ];
+                try {
+                    $infoDb = new PDO('sqlite:../info.db');
+                    $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    $infoDb->exec("CREATE TABLE IF NOT EXISTS cashier_permissions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        allow_tabs BOOLEAN NOT NULL DEFAULT 1,
+                        allow_transactions BOOLEAN NOT NULL DEFAULT 1,
+                        allow_credit_book BOOLEAN NOT NULL DEFAULT 1,
+                        allow_cash_inout BOOLEAN NOT NULL DEFAULT 1,
+                        allow_settings BOOLEAN NOT NULL DEFAULT 0,
+                        allow_menu BOOLEAN NOT NULL DEFAULT 1,
+                        allow_reports BOOLEAN NOT NULL DEFAULT 1
+                    )");
+                    foreach (['allow_menu', 'allow_reports'] as $permCol) {
+                        try {
+                            $infoDb->exec("ALTER TABLE cashier_permissions ADD COLUMN {$permCol} BOOLEAN NOT NULL DEFAULT 1");
+                        } catch (PDOException $e) {
+                        }
+                    }
+                    $permissions = $infoDb->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                    if ($permissions) {
+                        $legacyMenu = (int)($permissions['allow_tabs'] ?? 1)
+                            || (int)($permissions['allow_credit_book'] ?? 1)
+                            || (int)($permissions['allow_cash_inout'] ?? 1);
+                        $legacyTx = (int)($permissions['allow_transactions'] ?? 1);
+                        $cashierPermissions = [
+                            'allow_menu' => array_key_exists('allow_menu', $permissions)
+                                ? (int)$permissions['allow_menu']
+                                : ($legacyMenu ? 1 : 0),
+                            'allow_transactions' => $legacyTx ? 1 : 0,
+                            'allow_reports' => array_key_exists('allow_reports', $permissions)
+                                ? (int)$permissions['allow_reports']
+                                : ($legacyTx ? 1 : 0),
+                            'allow_settings' => (int)($permissions['allow_settings'] ?? 0),
+                        ];
+                    }
+                } catch (PDOException $e) {
+                }
+
+                $defaultPrintReceipt = 0;
+                $cashierInactivityEnabled = 1;
+                $cashierIdleTimeoutSeconds = 120;
+                $inactivityRoleAdmin = 0;
+                $inactivityRoleManager = 0;
+                $inactivityRoleCashier = 1;
+                $inactivityRoleWaitress = 0;
+                $drawerOpenOnCheckout = 'on_ok';
+                $showReverseTransaction = 1;
+                $waitressCanTakeTabPayments = 0;
+                $touchKeyboardEnabled = 0;
+                try {
+                    if (!isset($posDb) || !($posDb instanceof PDO)) {
+                        $posDb = new PDO('sqlite:../pos.db');
+                        $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    }
+                    require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
+                    ensureTouchKeyboardSettingsColumn($posDb);
+                    foreach ([
+                        "ALTER TABLE product_settings ADD COLUMN cashier_inactivity_enabled BOOLEAN NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN drawer_open_on_checkout TEXT NOT NULL DEFAULT 'on_ok'",
+                        "ALTER TABLE product_settings ADD COLUMN show_reverse_transaction BOOLEAN NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN waitress_can_take_tab_payments BOOLEAN NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_admin INTEGER NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_manager INTEGER NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_cashier INTEGER NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_waitress INTEGER NOT NULL DEFAULT 0",
+                    ] as $featSql) {
+                        try { $posDb->exec($featSql); } catch (PDOException $e) {}
+                    }
+                    $featRow = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, drawer_open_on_checkout, show_reverse_transaction, waitress_can_take_tab_payments, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                    if ($featRow) {
+                        $defaultPrintReceipt = (int)($featRow['default_print_receipt'] ?? 0);
+                        $cashierInactivityEnabled = (int)($featRow['cashier_inactivity_enabled'] ?? 1);
+                        $cashierIdleTimeoutSeconds = (int)($featRow['cashier_idle_timeout_seconds'] ?? 120);
+                        $inactivityRoleAdmin = (int)($featRow['inactivity_role_admin'] ?? 0);
+                        $inactivityRoleManager = (int)($featRow['inactivity_role_manager'] ?? 0);
+                        $inactivityRoleCashier = (int)($featRow['inactivity_role_cashier'] ?? 1);
+                        $inactivityRoleWaitress = (int)($featRow['inactivity_role_waitress'] ?? 0);
+                        $drawerOpenOnCheckout = $featRow['drawer_open_on_checkout'] ?? 'on_ok';
+                        $showReverseTransaction = (int)($featRow['show_reverse_transaction'] ?? 1);
+                        $waitressCanTakeTabPayments = (int)($featRow['waitress_can_take_tab_payments'] ?? 0);
+                        $touchKeyboardEnabled = (int)($featRow['touch_keyboard_enabled'] ?? 0);
+                    }
+                    if ($cashierIdleTimeoutSeconds < 30) $cashierIdleTimeoutSeconds = 30;
+                    if ($cashierIdleTimeoutSeconds > 3600) $cashierIdleTimeoutSeconds = 3600;
+                } catch (PDOException $e) {
+                }
+
+                $settingsFlashSuccess = $_SESSION['settings_flash_success'] ?? '';
+                $settingsFlashError = $_SESSION['settings_flash_error'] ?? '';
+                unset($_SESSION['settings_flash_success'], $_SESSION['settings_flash_error']);
                 ?>
-                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
-                    <h2 class="text-2xl font-bold mb-6">Display Settings</h2>
-                    <div class="flex items-center space-x-3 mb-4">
-                        <div class="flex items-center h-5">
-                            <input type="checkbox" name="hide_available_quantity" id="hide_available_quantity" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $hide_available_quantity_checked; ?>>
-                        </div>
-                        <div class="ml-2 text-sm">
-                            <label for="hide_available_quantity" class="font-medium text-gray-700 flex items-center cursor-pointer">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                                    <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                                </svg>
-                                Hide available quantity from cashiers
-                            </label>
-                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, cashiers won't see product quantities on the POS. Stock checks during checkout are still enforced unless "Skip stock checks" is enabled.</p>
-                        </div>
+                <?php if ($settingsFlashSuccess !== ''): ?>
+                    <div class="bg-teal-50 border-l-4 border-teal-500 p-4 mb-4 rounded-md">
+                        <p class="text-sm text-teal-700"><?php echo htmlspecialchars($settingsFlashSuccess); ?></p>
                     </div>
-                    <div class="flex items-center space-x-3 mb-4 mt-6">
-                        <div class="flex items-center h-5">
-                            <input type="checkbox" name="skip_stock_checks" id="skip_stock_checks" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $skip_stock_checks_checked; ?>>
-                        </div>
-                        <div class="ml-2 text-sm">
-                            <label for="skip_stock_checks" class="font-medium text-gray-700 flex items-center cursor-pointer">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-                                </svg>
-                                Skip stock checks during checkout
-                            </label>
-                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, checkout will not block sales for insufficient or zero stock. Use only if you manage stock elsewhere or allow overselling.</p>
-                        </div>
+                <?php endif; ?>
+                <?php if ($settingsFlashError !== ''): ?>
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-4 rounded-md">
+                        <p class="text-sm text-red-700"><?php echo htmlspecialchars($settingsFlashError); ?></p>
                     </div>
-                    <div class="mt-8 pt-6 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Gratuity (POS)</h3>
-                        <p class="text-sm text-gray-600 mb-4">On View Tab, staff can turn gratuity on for a tab. The configured percentage is added to the tab balance (not as a product line) and prints on copy and balance receipts when enabled.</p>
-                        <div class="flex flex-wrap items-end gap-4 max-w-xl mb-4">
-                            <div>
-                                <label for="gratuity_percent_admin" class="block text-sm font-medium text-gray-700 mb-1">Gratuity %</label>
-                                <input type="number" id="gratuity_percent_admin" min="0" max="100" step="0.5" value="<?php echo htmlspecialchars((string) $gratuity_percent_val, ENT_QUOTES, 'UTF-8'); ?>" class="block w-36 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                <?php endif; ?>
+                <div class="mb-8">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5">
+                        <!-- POS display -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-desktop text-slate-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">POS display</h2>
+                                    <p class="text-xs text-gray-500">Stock visibility on the register</p>
+                                </div>
                             </div>
-                            <button type="button" id="saveGratuityPercentBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save %</button>
-                        </div>
-                        <div class="flex items-center space-x-3 mb-4">
-                            <div class="flex items-center h-5">
-                                <input type="checkbox" id="gratuity_default_enabled" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $gratuity_default_enabled_checked; ?>>
+                            <div class="space-y-4 flex-1">
+                                <div class="flex items-start gap-3">
+                                    <input type="checkbox" name="hide_available_quantity" id="hide_available_quantity" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $hide_available_quantity_checked; ?>>
+                                    <div class="min-w-0">
+                                        <label for="hide_available_quantity" class="font-medium text-sm text-gray-800 cursor-pointer">Hide available quantity from cashiers</label>
+                                        <p class="text-xs text-gray-500 mt-1">Cashiers won&apos;t see product quantities. Stock checks still apply unless skip is enabled.</p>
+                                    </div>
+                                </div>
+                                <div class="flex items-start gap-3">
+                                    <input type="checkbox" name="skip_stock_checks" id="skip_stock_checks" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $skip_stock_checks_checked; ?>>
+                                    <div class="min-w-0">
+                                        <label for="skip_stock_checks" class="font-medium text-sm text-gray-800 cursor-pointer">Skip stock checks during checkout</label>
+                                        <p class="text-xs text-gray-500 mt-1">Allows sales with insufficient or zero stock.</p>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="ml-2 text-sm">
-                                <label for="gratuity_default_enabled" class="font-medium text-gray-700 cursor-pointer">Default: gratuity ON when a new tab is opened</label>
-                                <p class="text-xs text-gray-500 mt-1 ml-0">Clears when the cart is cleared; cashier can still switch off.</p>
+                        </section>
+
+                        <!-- Gratuity -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-hand-holding-usd text-teal-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Gratuity (POS)</h2>
+                                    <p class="text-xs text-gray-500">Tip % on View Tab</p>
+                                </div>
                             </div>
-                        </div>
-                    </div>
-                    <div class="mt-8 pt-6 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Credit payment interest</h3>
-                        <p class="text-sm text-gray-600 mb-4">When enabled, paying off credit balances adds an interest charge on each payment (shown on receipts and credit transactions). Turn off to collect payments without interest.</p>
-                        <div class="flex items-center space-x-3 mb-4">
-                            <div class="flex items-center h-5">
-                                <input type="checkbox" id="credit_interest_enabled" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $credit_interest_enabled_checked; ?>>
+                            <p class="text-xs text-gray-600 mb-4">Added to tab balance when enabled; prints on copy and balance receipts.</p>
+                            <div class="flex flex-wrap items-end gap-3 mb-4">
+                                <div>
+                                    <label for="gratuity_percent_admin" class="block text-sm font-medium text-gray-700 mb-1">Gratuity %</label>
+                                    <input type="number" id="gratuity_percent_admin" min="0" max="100" step="0.5" value="<?php echo htmlspecialchars((string) $gratuity_percent_val, ENT_QUOTES, 'UTF-8'); ?>" class="block w-28 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                </div>
+                                <button type="button" id="saveGratuityPercentBtn" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save %</button>
                             </div>
-                            <div class="ml-2 text-sm">
-                                <label for="credit_interest_enabled" class="font-medium text-gray-700 cursor-pointer">Apply interest on credit payments</label>
+                            <div class="flex items-start gap-3 mt-auto">
+                                <input type="checkbox" id="gratuity_default_enabled" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $gratuity_default_enabled_checked; ?>>
+                                <div class="min-w-0">
+                                    <label for="gratuity_default_enabled" class="font-medium text-sm text-gray-800 cursor-pointer">Default: gratuity ON for new tabs</label>
+                                    <p class="text-xs text-gray-500 mt-1">Clears when the cart is cleared; cashier can still switch off.</p>
+                                </div>
                             </div>
-                        </div>
-                        <div class="flex flex-wrap items-end gap-4 max-w-xl mb-4" id="creditInterestRateRow">
-                            <div>
-                                <label for="credit_interest_rate_admin" class="block text-sm font-medium text-gray-700 mb-1">Interest rate (%)</label>
-                                <input type="number" id="credit_interest_rate_admin" min="0" max="100" step="0.5" value="<?php echo htmlspecialchars((string) $credit_interest_rate_val, ENT_QUOTES, 'UTF-8'); ?>" class="block w-36 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                        </section>
+
+                        <!-- Credit interest -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-percent text-amber-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Credit payment interest</h2>
+                                    <p class="text-xs text-gray-500">Interest on credit payoffs</p>
+                                </div>
                             </div>
-                            <button type="button" id="saveCreditInterestRateBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save rate</button>
-                        </div>
-                    </div>
-                    <div class="mt-8 pt-6 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Cashier idle logout</h3>
-                        <p class="text-sm text-gray-600 mb-4">After this many seconds with no activity on the POS (cashier home), the session logs out automatically when the cart is empty. Mouse movement only counts after the pointer stops briefly.</p>
-                        <div class="flex flex-wrap items-end gap-4 max-w-xl">
-                            <div>
-                                <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Timeout (seconds)</label>
-                                <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds" value="<?php echo (int) $cashier_idle_timeout_seconds_val; ?>" min="30" max="3600" step="1" class="block w-40 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            <p class="text-xs text-gray-600 mb-4">When enabled, interest is added on each credit payment and shown on receipts.</p>
+                            <div class="flex items-start gap-3 mb-4">
+                                <input type="checkbox" id="credit_interest_enabled" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $credit_interest_enabled_checked; ?>>
+                                <label for="credit_interest_enabled" class="font-medium text-sm text-gray-800 cursor-pointer">Apply interest on credit payments</label>
                             </div>
-                            <button type="button" id="saveCashierIdleTimeoutBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save</button>
-                        </div>
-                        <p class="text-xs text-gray-500 mt-2">Allowed range: 30–3600 seconds (30 minutes max). Default 120.</p>
-                    </div>
-                    <div class="flex items-center space-x-3 mb-4 mt-6">
-                        <div class="flex items-center h-5">
-                            <input type="checkbox" name="use_qz_tray" id="use_qz_tray" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $use_qz_tray_checked; ?>>
-                        </div>
-                        <div class="ml-2 text-sm">
-                            <label for="use_qz_tray" class="font-medium text-gray-700 flex items-center cursor-pointer">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-                                </svg>
-                                Use QZ Tray printing for receipts
-                            </label>
-                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled (desktop/web), receipts will be printed via QZ Tray using <code>qzreceipt.php</code> instead of direct ESC/POS printing via <code>receipt.php</code>. Android will still use <code>receipt.php</code>.</p>
-                        </div>
-                    </div>
-                    <div class="mt-8 pt-6 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Receipt paper width</h3>
-                        <p class="text-sm text-gray-600 mb-4">Set the customer receipt layout width. 58mm is default and optimized for narrow thermal rolls; 80mm uses wider columns.</p>
-                        <div class="flex flex-wrap items-end gap-4 max-w-xl">
-                            <div>
-                                <label for="receipt_paper_width_mm" class="block text-sm font-medium text-gray-700 mb-1">Paper width</label>
-                                <select id="receipt_paper_width_mm" name="receipt_paper_width_mm" class="block w-40 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
-                                    <option value="58" <?php echo ((int)$receipt_paper_width_mm_val === 58) ? 'selected' : ''; ?>>58 mm</option>
-                                    <option value="80" <?php echo ((int)$receipt_paper_width_mm_val === 80) ? 'selected' : ''; ?>>80 mm</option>
-                                </select>
+                            <div class="flex flex-wrap items-end gap-3 mt-auto" id="creditInterestRateRow">
+                                <div>
+                                    <label for="credit_interest_rate_admin" class="block text-sm font-medium text-gray-700 mb-1">Interest rate (%)</label>
+                                    <input type="number" id="credit_interest_rate_admin" min="0" max="100" step="0.5" value="<?php echo htmlspecialchars((string) $credit_interest_rate_val, ENT_QUOTES, 'UTF-8'); ?>" class="block w-28 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                </div>
+                                <button type="button" id="saveCreditInterestRateBtn" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save rate</button>
                             </div>
-                            <button type="button" id="saveReceiptPaperWidthBtn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save width</button>
-                        </div>
-                    </div>
-                    <div class="mt-8 pt-6 border-t border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-800 mb-2">Kitchen printer (Add to tab)</h3>
-                        <p class="text-sm text-gray-600 mb-4">When cashiers choose &quot;Send to kitchen&quot; on tab orders, the server sends the same kitchen ticket to this ESC/POS printer over TCP (raw port, usually 9100). The PC running PHP must reach this IP on your LAN.</p>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-xl">
-                            <div>
-                                <label for="kitchen_printer_ip" class="block text-sm font-medium text-gray-700 mb-1">Kitchen printer IP</label>
-                                <input type="text" id="kitchen_printer_ip" name="kitchen_printer_ip" value="<?php echo $kitchen_printer_ip_val; ?>" placeholder="e.g. 192.168.1.50" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                        </section>
+
+
+                        <!-- Cashier sidebar permissions -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-user-shield text-cyan-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Cashier sidebar permissions</h2>
+                                    <p class="text-xs text-gray-500">One toggle per sidebar item</p>
+                                </div>
                             </div>
-                            <div>
-                                <label for="kitchen_printer_port" class="block text-sm font-medium text-gray-700 mb-1">Port</label>
-                                <input type="number" id="kitchen_printer_port" name="kitchen_printer_port" value="<?php echo (int)$kitchen_printer_port_val; ?>" min="1" max="65535" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm">
+                            <p class="text-xs text-gray-600 mb-3">Home and Logout always stay visible. Admins/managers always see all items.</p>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <?php
+                                $permRows = [
+                                    ['allow_menu', 'Menu', 'Cashier Menu'],
+                                    ['allow_transactions', 'Transactions', 'Transactions'],
+                                    ['allow_reports', 'Reports', 'Reports'],
+                                    ['allow_settings', 'Settings', 'Settings'],
+                                ];
+                                foreach ($permRows as [$pkey, $plabel, $phint]):
+                                ?>
+                                <div class="flex items-center justify-between gap-3 py-2 border-b border-gray-100 last:border-0">
+                                    <div class="min-w-0">
+                                        <label for="<?php echo $pkey; ?>" class="block text-sm font-medium text-gray-700"><?php echo $plabel; ?></label>
+                                        <p class="text-xs text-gray-500"><?php echo $phint; ?></p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="<?php echo $pkey; ?>" id="<?php echo $pkey; ?>" class="sr-only peer" <?php echo !empty($cashierPermissions[$pkey]) ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <?php endforeach; ?>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_cashier_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save permissions</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Inactivity logout (full) -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-user-clock text-violet-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Inactivity logout</h2>
+                                    <p class="text-xs text-gray-500">Auto logout by role when idle</p>
+                                </div>
                             </div>
-                        </div>
-                        <button type="button" id="saveKitchenPrinterBtn" class="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save kitchen printer</button>
+                            <p class="text-xs text-gray-600 mb-3">When enabled, selected roles are logged out after inactivity (empty cart on POS).</p>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div>
+                                        <label for="cashier_inactivity_enabled" class="block text-sm font-medium text-gray-700">Enable inactivity logout</label>
+                                        <p class="text-xs text-gray-500">Master switch</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="cashier_inactivity_enabled" id="cashier_inactivity_enabled" class="sr-only peer" <?php echo $cashierInactivityEnabled ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div>
+                                    <p class="text-sm font-medium text-gray-700 mb-2">Apply to</p>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_admin" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleAdmin ? 'checked' : ''; ?>> Admin</label>
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_manager" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleManager ? 'checked' : ''; ?>> Manager</label>
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_cashier" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleCashier ? 'checked' : ''; ?>> Cashier</label>
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_waitress" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleWaitress ? 'checked' : ''; ?>> Waitress</label>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Idle timeout (seconds)</label>
+                                    <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds" value="<?php echo (int) $cashierIdleTimeoutSeconds; ?>" min="30" max="3600" step="1" class="block w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                    <p class="text-xs text-gray-500 mt-1">Range 30–3600. Default 120.</p>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_cashier_inactivity" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save inactivity</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Waitress permissions -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-pink-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-concierge-bell text-pink-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Waitress permissions</h2>
+                                    <p class="text-xs text-gray-500">View Tab payment access</p>
+                                </div>
+                            </div>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div class="min-w-0">
+                                        <label for="waitress_can_take_tab_payments" class="block text-sm font-medium text-gray-700">Allow waitress tab payments</label>
+                                        <p class="text-xs text-gray-500 mt-1">When enabled, waitresses can record cash/EFT/mixed payments on open tabs.</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="waitress_can_take_tab_payments" id="waitress_can_take_tab_payments" class="sr-only peer" <?php echo $waitressCanTakeTabPayments ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_waitress_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- POS interface -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-sky-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-keyboard text-sky-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">POS interface</h2>
+                                    <p class="text-xs text-gray-500">On-screen touch keyboard</p>
+                                </div>
+                            </div>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div class="min-w-0">
+                                        <label for="touch_keyboard_enabled" class="block text-sm font-medium text-gray-700">Enable touch keyboard</label>
+                                        <p class="text-xs text-gray-500 mt-1">Shows on-screen keyboard for cash, payment, login, and tab fields on desktop/tablet.</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="touch_keyboard_enabled" id="touch_keyboard_enabled" class="sr-only peer" <?php echo $touchKeyboardEnabled ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_pos_interface" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Receipt settings -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-file-invoice text-emerald-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Receipt settings</h2>
+                                    <p class="text-xs text-gray-500">Print default, drawer &amp; reverse</p>
+                                </div>
+                            </div>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <input type="hidden" name="update_receipt_setting" value="1">
+                                <div class="flex items-center justify-between gap-3 py-2 border-b border-gray-100">
+                                    <div class="min-w-0">
+                                        <label for="default_print_receipt" class="block text-sm font-medium text-gray-700">Default print with receipt</label>
+                                        <p class="text-xs text-gray-500">Checked by default at checkout</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="default_print_receipt" id="default_print_receipt" class="sr-only peer" <?php echo $defaultPrintReceipt ? 'checked' : ''; ?> onchange="this.form.submit()">
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div class="flex items-center justify-between gap-3 py-2 border-b border-gray-100">
+                                    <div class="min-w-0">
+                                        <label for="drawer_open_on_checkout" class="block text-sm font-medium text-gray-700">Cash drawer open on</label>
+                                        <p class="text-xs text-gray-500">For cash transactions</p>
+                                    </div>
+                                    <select name="drawer_open_on_checkout" id="drawer_open_on_checkout" class="px-3 py-2 border border-gray-300 bg-white rounded-md shadow-sm text-sm" onchange="this.form.submit()">
+                                        <option value="on_ok" <?php echo ($drawerOpenOnCheckout === 'on_ok') ? 'selected' : ''; ?>>On OK</option>
+                                        <option value="on_checkout" <?php echo ($drawerOpenOnCheckout === 'on_checkout') ? 'selected' : ''; ?>>On Checkout</option>
+                                    </select>
+                                </div>
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div class="min-w-0">
+                                        <label for="show_reverse_transaction" class="block text-sm font-medium text-gray-700">Show reverse transaction</label>
+                                        <p class="text-xs text-gray-500">On payment confirmation screen</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="show_reverse_transaction" id="show_reverse_transaction" class="sr-only peer" <?php echo $showReverseTransaction ? 'checked' : ''; ?> onchange="this.form.submit()">
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Printing -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-print text-blue-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Receipt printing</h2>
+                                    <p class="text-xs text-gray-500">QZ Tray &amp; paper size</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start gap-3 mb-5">
+                                <input type="checkbox" name="use_qz_tray" id="use_qz_tray" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $use_qz_tray_checked; ?>>
+                                <div class="min-w-0">
+                                    <label for="use_qz_tray" class="font-medium text-sm text-gray-800 cursor-pointer">Use QZ Tray for receipts</label>
+                                    <p class="text-xs text-gray-500 mt-1">Desktop uses QZ Tray; Android still uses direct printing.</p>
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap items-end gap-3 mt-auto">
+                                <div>
+                                    <label for="receipt_paper_width_mm" class="block text-sm font-medium text-gray-700 mb-1">Paper width</label>
+                                    <select id="receipt_paper_width_mm" name="receipt_paper_width_mm" class="block w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                        <option value="58" <?php echo ((int)$receipt_paper_width_mm_val === 58) ? 'selected' : ''; ?>>58 mm</option>
+                                        <option value="80" <?php echo ((int)$receipt_paper_width_mm_val === 80) ? 'selected' : ''; ?>>80 mm</option>
+                                    </select>
+                                </div>
+                                <button type="button" id="saveReceiptPaperWidthBtn" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save width</button>
+                            </div>
+                        </section>
+
+                        <!-- Kitchen printer -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col lg:col-span-2 xl:col-span-1">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-rose-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-utensils text-rose-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Kitchen printer</h2>
+                                    <p class="text-xs text-gray-500">Send to kitchen (Add to tab)</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-600 mb-4">ESC/POS over TCP (usually port 9100). The PHP server must reach this IP on your LAN.</p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                                <div>
+                                    <label for="kitchen_printer_ip" class="block text-sm font-medium text-gray-700 mb-1">Printer IP</label>
+                                    <input type="text" id="kitchen_printer_ip" name="kitchen_printer_ip" value="<?php echo $kitchen_printer_ip_val; ?>" placeholder="e.g. 192.168.1.50" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                </div>
+                                <div>
+                                    <label for="kitchen_printer_port" class="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                                    <input type="number" id="kitchen_printer_port" name="kitchen_printer_port" value="<?php echo (int)$kitchen_printer_port_val; ?>" min="1" max="65535" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                </div>
+                            </div>
+                            <button type="button" id="saveKitchenPrinterBtn" class="mt-auto self-start inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save kitchen printer</button>
+                        </section>
                     </div>
                 </div>
                 <script>
@@ -775,29 +1087,6 @@ $settingsSectionTitles = [
                             })
                             .catch(function() { showAlert('error', 'Error', 'Failed to save'); });
                         });
-
-                        document.getElementById('saveCashierIdleTimeoutBtn').addEventListener('click', function() {
-                            let sec = parseInt(document.getElementById('cashier_idle_timeout_seconds').value, 10);
-                            if (isNaN(sec)) sec = 120;
-                            if (sec < 30) sec = 30;
-                            if (sec > 3600) sec = 3600;
-                            document.getElementById('cashier_idle_timeout_seconds').value = String(sec);
-                            fetch('../update_display_setting.php', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ cashier_idle_timeout_seconds: sec })
-                            })
-                            .then(function(r) { return r.json(); })
-                            .then(function(data) {
-                                if (data.success) {
-                                    showAlert('success', 'Success', 'Cashier idle timeout saved');
-                                } else {
-                                    showAlert('error', 'Error', data.error || 'Failed to save');
-                                }
-                            })
-                            .catch(function() {
-                                showAlert('error', 'Error', 'Failed to save');
-                            });
                         });
 
                         const useQzTrayCheckbox = document.getElementById('use_qz_tray');
@@ -956,67 +1245,6 @@ $settingsSectionTitles = [
                                     </svg>
                                     Update
                                 </button>
-                            </div>
-
-                            <div class="mt-8 pt-6 border-t border-gray-200">
-                                <h3 class="text-sm font-semibold text-gray-800 mb-3">Quick links</h3>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                                    <a href="business_settings" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center shrink-0">
-                                                <i class="fas fa-store text-indigo-600"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-indigo-900">Business info</span>
-                                                <span class="text-xs text-gray-500">VAT, receipts, permissions</span>
-                                            </div>
-                                        </div>
-                                    </a>
-                                    <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center shrink-0">
-                                                <i class="fas fa-clipboard-list text-blue-600"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-blue-900">Activity logs</span>
-                                                <span class="text-xs text-gray-500">Audit trail</span>
-                                            </div>
-                                        </div>
-                                    </a>
-                                    <a href="add_user" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center shrink-0">
-                                                <i class="fas fa-user-plus text-cyan-600"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-cyan-900">Add users</span>
-                                                <span class="text-xs text-gray-500">New staff login</span>
-                                            </div>
-                                        </div>
-                                    </a>
-                                    <a href="users" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
-                                                <i class="fas fa-users text-teal-600"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-teal-900">Manage users</span>
-                                                <span class="text-xs text-gray-500">List and edit accounts</span>
-                                            </div>
-                                        </div>
-                                    </a>
-                                    <a href="damaged_goods" class="settings-menu-card group block bg-gray-50 rounded-xl p-4 border border-gray-200 no-underline text-inherit">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center shrink-0">
-                                                <i class="fas fa-box-open text-orange-600"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <span class="font-semibold text-gray-800 text-sm block group-hover:text-orange-900">Damaged stock</span>
-                                                <span class="text-xs text-gray-500">Write-offs</span>
-                                            </div>
-                                        </div>
-                                    </a>
-                                </div>
                             </div>
                         </form>
                         <?php
@@ -1272,6 +1500,52 @@ $settingsSectionTitles = [
                     </div>
                     <p class="text-sm text-gray-500 mt-4">Product images are copied to the <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">product_image_exports</code> folder using each product name, for example <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">castle_lite_750ml.png</code>. Products without a custom image are skipped.
 
+                    <!-- App updater (GitHub) -->
+                    <div class="mt-8 pt-6 border-t border-gray-200">
+                        <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                            <div>
+                                <h3 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                                    <i class="fas fa-cloud-download-alt text-indigo-600"></i>
+                                    App updater
+                                </h3>
+                                <p class="text-sm text-gray-500 mt-1">
+                                    Download the latest files from GitHub and replace files in this install.
+                                    Local data is protected: <code class="text-xs bg-gray-100 px-1 rounded">pos.db</code>,
+                                    <code class="text-xs bg-gray-100 px-1 rounded">active.db</code>,
+                                    <code class="text-xs bg-gray-100 px-1 rounded">user.db</code>,
+                                    <code class="text-xs bg-gray-100 px-1 rounded">info.db</code>, and the
+                                    <code class="text-xs bg-gray-100 px-1 rounded">products</code> folder.
+                                </p>
+                            </div>
+                            <div class="flex flex-wrap gap-2 shrink-0">
+                                <button type="button" id="app_update_check_btn" class="bg-indigo-500 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
+                                    <i class="fas fa-sync-alt mr-2"></i>
+                                    Check for updates
+                                </button>
+                                <button type="button" id="app_update_install_btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200" disabled>
+                                    <i class="fas fa-download mr-2"></i>
+                                    Install update
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="app_update_status_box" class="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                <div><span class="text-gray-500">Repository:</span> <span id="app_update_repo">—</span></div>
+                                <div><span class="text-gray-500">Installed:</span> <span id="app_update_installed">—</span></div>
+                                <div><span class="text-gray-500">Latest remote:</span> <span id="app_update_remote">—</span></div>
+                                <div><span class="text-gray-500">Status:</span> <span id="app_update_available_label">Loading…</span></div>
+                            </div>
+                            <p id="app_update_message" class="mt-3 text-gray-500"></p>
+                            <div id="app_update_progress" class="hidden mt-3">
+                                <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                    <div class="bg-indigo-500 h-2 rounded-full animate-pulse" style="width: 70%"></div>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">Downloading and applying update — keep this page open…</p>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Export Transactions Modal -->
                     <div id="export_modal" class="fixed inset-0 flex items-center justify-center z-50 hidden">
                         <div class="absolute inset-0 bg-black opacity-50"></div>
@@ -1379,6 +1653,171 @@ $settingsSectionTitles = [
                             const message = params.get('message') || 'Product image export failed.';
                             showAlert('error', 'Export Failed', message, 'settings?s=system');
                         }
+
+                        // --- App updater ---
+                        (function () {
+                            const checkBtn = document.getElementById('app_update_check_btn');
+                            const installBtn = document.getElementById('app_update_install_btn');
+                            const repoEl = document.getElementById('app_update_repo');
+                            const installedEl = document.getElementById('app_update_installed');
+                            const remoteEl = document.getElementById('app_update_remote');
+                            const availableEl = document.getElementById('app_update_available_label');
+                            const messageEl = document.getElementById('app_update_message');
+                            const progressEl = document.getElementById('app_update_progress');
+                            let updateAvailable = false;
+
+                            function setBusy(busy) {
+                                checkBtn.disabled = busy;
+                                installBtn.disabled = busy || !updateAvailable;
+                                if (busy) {
+                                    progressEl.classList.remove('hidden');
+                                } else {
+                                    progressEl.classList.add('hidden');
+                                }
+                            }
+
+                            function renderStatus(status, extraMessage) {
+                                if (!status) return;
+                                repoEl.textContent = status.github_owner + '/' + status.github_repo + ' (' + status.github_branch + ')';
+                                let installed = status.installed_label || 'Not recorded';
+                                if (status.installed_at) {
+                                    installed += ' · ' + status.installed_at;
+                                }
+                                installedEl.textContent = installed;
+
+                                let remote = '—';
+                                if (status.last_remote_name) {
+                                    remote = status.last_remote_name;
+                                } else if (status.last_remote_tag) {
+                                    remote = status.last_remote_tag;
+                                } else if (status.last_remote_sha) {
+                                    remote = status.last_remote_sha.substring(0, 7);
+                                }
+                                if (status.last_check_at) {
+                                    remote += ' · checked ' + status.last_check_at;
+                                }
+                                remoteEl.textContent = remote;
+
+                                updateAvailable = !!status.update_available;
+                                if (!status.last_remote_sha && !status.last_remote_tag) {
+                                    availableEl.textContent = 'Not checked yet';
+                                    availableEl.className = 'text-gray-600';
+                                } else if (updateAvailable) {
+                                    availableEl.textContent = 'Update available';
+                                    availableEl.className = 'text-green-700 font-semibold';
+                                } else {
+                                    availableEl.textContent = 'Up to date';
+                                    availableEl.className = 'text-indigo-700 font-semibold';
+                                }
+                                installBtn.disabled = !updateAvailable;
+                                if (extraMessage) {
+                                    messageEl.textContent = extraMessage;
+                                } else if (status.has_token === false) {
+                                    messageEl.textContent = 'No GitHub token set. Public repos work without one; for a private repo, add github_token in app_updater_settings.json.';
+                                } else {
+                                    messageEl.textContent = '';
+                                }
+                            }
+
+                            async function apiCall(action) {
+                                const options = action === 'status'
+                                    ? { method: 'GET', credentials: 'same-origin' }
+                                    : {
+                                        method: 'POST',
+                                        credentials: 'same-origin',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ action: action })
+                                    };
+                                const url = action === 'status'
+                                    ? 'app_update_api.php?action=status'
+                                    : 'app_update_api.php';
+                                const res = await fetch(url, options);
+                                const data = await res.json().catch(function () { return null; });
+                                if (!data) {
+                                    throw new Error('Invalid response from updater API.');
+                                }
+                                return data;
+                            }
+
+                            async function loadStatus() {
+                                try {
+                                    const data = await apiCall('status');
+                                    if (data.ok) {
+                                        renderStatus(data);
+                                    } else {
+                                        messageEl.textContent = data.error || 'Could not load updater status.';
+                                    }
+                                } catch (e) {
+                                    messageEl.textContent = e.message || 'Could not load updater status.';
+                                }
+                            }
+
+                            checkBtn.addEventListener('click', async function () {
+                                setBusy(true);
+                                messageEl.textContent = 'Checking GitHub…';
+                                try {
+                                    const data = await apiCall('check');
+                                    if (!data.ok) {
+                                        showAlert('error', 'Check Failed', data.error || 'Could not check for updates.');
+                                        messageEl.textContent = data.error || 'Check failed.';
+                                        if (data.status) renderStatus(data.status, data.error);
+                                        return;
+                                    }
+                                    renderStatus(data.status, data.update_available
+                                        ? 'A newer version is available. Click Install update to apply it.'
+                                        : 'You already have the latest version.');
+                                    showAlert(
+                                        'success',
+                                        data.update_available ? 'Update Available' : 'Up to Date',
+                                        data.update_available
+                                            ? ('Latest: <strong>' + (data.remote.name || data.remote.tag || data.remote.sha) + '</strong>')
+                                            : 'No newer release or commit was found.'
+                                    );
+                                } catch (e) {
+                                    showAlert('error', 'Check Failed', e.message || 'Could not check for updates.');
+                                    messageEl.textContent = e.message || 'Check failed.';
+                                } finally {
+                                    setBusy(false);
+                                }
+                            });
+
+                            installBtn.addEventListener('click', function () {
+                                showConfirm(
+                                    'Install App Update',
+                                    'Download the latest files from GitHub and replace files in this folder?<br><br>' +
+                                    '<strong>Protected (not overwritten):</strong> pos.db, active.db, user.db, info.db, products/<br><br>' +
+                                    'Do not close this page until the update finishes.',
+                                    async function () {
+                                        setBusy(true);
+                                        messageEl.textContent = 'Downloading and applying update…';
+                                        try {
+                                            const data = await apiCall('update');
+                                            if (!data.ok) {
+                                                showAlert('error', 'Update Failed', data.error || 'Update failed.');
+                                                messageEl.textContent = data.error || 'Update failed.';
+                                                return;
+                                            }
+                                            renderStatus(data.status, 'Update applied. Copied ' + data.copied + ' file(s), skipped ' + data.skipped + ' protected path(s).');
+                                            showAlert(
+                                                'success',
+                                                'Update Installed',
+                                                'Copied <strong>' + data.copied + '</strong> file(s). Skipped <strong>' + data.skipped + '</strong> protected path(s).' +
+                                                (data.failed > 0 ? '<br><br>' + data.failed + ' file(s) could not be copied.' : '') +
+                                                '<br><br>Refresh the page if anything looks outdated.',
+                                                'settings?s=system'
+                                            );
+                                        } catch (e) {
+                                            showAlert('error', 'Update Failed', e.message || 'Update failed.');
+                                            messageEl.textContent = e.message || 'Update failed.';
+                                        } finally {
+                                            setBusy(false);
+                                        }
+                                    }
+                                );
+                            });
+
+                            loadStatus();
+                        })();
                     </script>
                 </div>
                 <?php endif; ?>

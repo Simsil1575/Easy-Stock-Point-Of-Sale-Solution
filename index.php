@@ -275,8 +275,6 @@ try {
     <?php $kbAssetPrefix = ''; $kbPart = 'styles'; include __DIR__ . '/includes/kioskboard_payment.php'; ?>
 
     <style>
-
-    
         body {
             -webkit-user-select: none; /* Safari */
             -ms-user-select: none; /* IE 10 and IE 11 */
@@ -288,6 +286,20 @@ try {
             -moz-user-drag: none;
             -o-user-drag: none;
             user-drag: none;
+        }
+
+        /* Login: keep branding + original form width; shift left for side keyboard */
+        body.pos-kb-side-active #loginPageRow {
+            padding-right: var(--pos-kb-side-width, 340px);
+            box-sizing: border-box;
+            transition: padding-right 0.2s ease;
+        }
+        body.pos-kb-side-active #loginBrandSection,
+        body.pos-kb-side-active #loginFormColumn {
+            flex-shrink: 0;
+        }
+        body.pos-kb-bottom-active #loginFormColumn {
+            padding-bottom: 12rem;
         }
     </style>
 </head>
@@ -358,8 +370,8 @@ try {
             </header>
 <div class="container mx-auto px-2 sm:px-4 lg:px-6 relative z-10 flex justify-center py-10 sm:py-17">
     <div class="max-w-full sm:max-w-7xl mx-auto">
-                    <div class="flex flex-col md:flex-row items-center justify-center md:space-x-8">
-                    <div class="w-full md:w-1/3 text-center md:text-left">
+                    <div id="loginPageRow" class="flex flex-col md:flex-row items-center justify-center md:space-x-8">
+                    <div id="loginBrandSection" class="w-full md:w-1/3 text-center md:text-left">
     <h1 class="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold mb-4 leading-tight text-gray-600">
         <i class="fa-solid fa-cube fa-bounce"></i>
     </h1>
@@ -372,45 +384,98 @@ try {
         Smart Inventory Stronger Businesses! Our stock management system is designed to help small and medium-sized enterprises (SMEs) 
     </p>
 
-    <div class="hidden md:flex items-center gap-4 mt-10 mb-4">
-       
-        
-        <?php
-        // Get server IP address
-        $serverIP = $_SERVER['SERVER_ADDR'] ?? 'localhost';
-        // If SERVER_ADDR is localhost or 127.0.0.1, try to get the actual IP
-        if ($serverIP === '127.0.0.1' || $serverIP === '::1' || empty($serverIP)) {
-            // Try to get the actual network IP
-            $hostname = gethostname();
-            $serverIP = gethostbyname($hostname);
-            // If still localhost, use HTTP_HOST
-            if ($serverIP === '127.0.0.1' || $serverIP === $hostname) {
-                $serverIP = $_SERVER['HTTP_HOST'] ?? 'localhost';
-            }
+    <?php
+    // Get server IP address
+    $serverIP = $_SERVER['SERVER_ADDR'] ?? 'localhost';
+    // If SERVER_ADDR is localhost or 127.0.0.1, try to get the actual IP
+    if ($serverIP === '127.0.0.1' || $serverIP === '::1' || empty($serverIP)) {
+        // Try to get the actual network IP
+        $hostname = gethostname();
+        $serverIP = gethostbyname($hostname);
+        // If still localhost, use HTTP_HOST
+        if ($serverIP === '127.0.0.1' || $serverIP === $hostname) {
+            $serverIP = $_SERVER['HTTP_HOST'] ?? 'localhost';
         }
-        
-        // Construct the URL (use http:// if not HTTPS)
-        $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
-        $serverURL = $protocol . $serverIP;
-        
-        // Generate QR code URL using free QR code API
-        $qrCodeURL = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=' . urlencode($serverURL);
-        ?>
-        
-        <div class="flex flex-col items-center">
-            <img src="<?php echo htmlspecialchars($qrCodeURL); ?>" 
-                 alt="QR Code - <?php echo htmlspecialchars($serverURL); ?>" 
-                 class="w-24 h-24 border-2 border-gray-300 rounded-lg p-1 bg-white shadow-sm">
+    }
+
+    // Construct the URL (use http:// if not HTTPS)
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+    $serverURL = $protocol . $serverIP;
+
+    // Generate QR code URL using free QR code API
+    $qrCodeURL = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=' . urlencode($serverURL);
+    ?>
+
+    <div class="hidden md:flex items-center gap-4 mt-10 mb-4">
+        <!-- QR + URL hidden until internet is available -->
+        <div id="qrCodeSection" class="hidden flex-col items-center" aria-hidden="true">
+            <img id="qrCodeImage"
+                 src="<?php echo htmlspecialchars($qrCodeURL); ?>"
+                 alt="QR Code - <?php echo htmlspecialchars($serverURL); ?>"
+                 class="w-24 h-24 border-2 border-gray-300 rounded-lg p-1 bg-white shadow-sm"
+                 loading="eager">
             <p class="text-xs text-gray-500 mt-1 break-all max-w-[120px]"><?php echo htmlspecialchars($serverURL); ?></p>
-        </div> 
+        </div>
         <span class="inline-block bg-teal-300 text-teal-900 font-semibold px-3 py-1 rounded shadow text-xs uppercase tracking-wider">
             <i class="fas fa-cube mr-1 text-teal-600"></i> Version 10
         </span>
     </div>
+    <script>
+    (function () {
+        var section = document.getElementById('qrCodeSection');
+        var img = document.getElementById('qrCodeImage');
+        if (!section || !img) return;
+
+        var qrReady = false;
+
+        function hideQrSection() {
+            section.classList.add('hidden');
+            section.classList.remove('flex');
+            section.setAttribute('aria-hidden', 'true');
+        }
+
+        function showQrSection() {
+            if (!qrReady || !navigator.onLine) {
+                hideQrSection();
+                return;
+            }
+            section.classList.remove('hidden');
+            section.classList.add('flex');
+            section.setAttribute('aria-hidden', 'false');
+        }
+
+        function reloadQrImage() {
+            qrReady = false;
+            hideQrSection();
+            if (!navigator.onLine) return;
+            var base = img.getAttribute('src').split('&_t=')[0];
+            img.src = base + '&_t=' + Date.now();
+        }
+
+        img.addEventListener('load', function () {
+            qrReady = true;
+            showQrSection();
+        });
+        img.addEventListener('error', function () {
+            qrReady = false;
+            hideQrSection();
+        });
+
+        window.addEventListener('offline', hideQrSection);
+        window.addEventListener('online', reloadQrImage);
+
+        if (!navigator.onLine) {
+            hideQrSection();
+        } else if (img.complete && img.naturalWidth > 0) {
+            qrReady = true;
+            showQrSection();
+        }
+    })();
+    </script>
 </div>
 
                         <!-- Login Form Section -->
-                        <div class="flex flex-col justify-center w-full md:w-1/2 px-2 sm:px-4 lg:px-8">
+                        <div id="loginFormColumn" class="flex flex-col justify-center w-full md:w-1/2 px-2 sm:px-4 lg:px-8">
     
                     
                             <div class="mt-10 sm:mx-auto sm:w-full sm:max-w-sm bg-gray-250 rounded-xl p-2">
@@ -696,10 +761,53 @@ try {
                     allowRealKeyboard: false
                 });
             }
+            // #region agent log
+            function dbgLoginLayout(reason) {
+                var brand = document.getElementById('loginBrandSection');
+                var col = document.getElementById('loginFormColumn');
+                var row = document.getElementById('loginPageRow');
+                var formInner = document.querySelector('#loginFormColumn .sm\\:max-w-sm, #loginFormColumn [class*="max-w-sm"]') || document.querySelector('#loginFormColumn > div');
+                var user = document.getElementById('username');
+                var wrap = user && user.closest('.kioskboard-input-wrap');
+                var kb = document.getElementById('KioskBoard-VirtualKeyboard');
+                var csCol = col ? getComputedStyle(col) : null;
+                var data = {
+                    reason: reason,
+                    bodyClasses: document.body.className,
+                    sideActive: document.body.classList.contains('pos-kb-side-active'),
+                    winW: window.innerWidth,
+                    brandDisplay: brand ? getComputedStyle(brand).display : null,
+                    brandW: brand ? brand.getBoundingClientRect().width : null,
+                    rowW: row ? row.getBoundingClientRect().width : null,
+                    colW: col ? col.getBoundingClientRect().width : null,
+                    colClientW: col ? col.clientWidth : null,
+                    colPaddingRight: csCol ? csCol.paddingRight : null,
+                    colMaxWidth: csCol ? csCol.maxWidth : null,
+                    formInnerW: formInner ? formInner.getBoundingClientRect().width : null,
+                    wrapW: wrap ? wrap.getBoundingClientRect().width : null,
+                    inputW: user ? user.getBoundingClientRect().width : null,
+                    kbW: kb ? kb.getBoundingClientRect().width : null,
+                    kbExists: !!kb
+                };
+                fetch('http://127.0.0.1:7918/ingest/543ece8e-e9a4-4ceb-9f09-b26f1ebce51b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'cccb25'},body:JSON.stringify({sessionId:'cccb25',runId:'fix-applied',hypothesisId:'A-E',location:'index.php:login-layout',message:'login layout snapshot',data:data,timestamp:Date.now()})}).catch(function(){});
+            }
+            function watchLoginKbLayout() {
+                dbgLoginLayout('initial');
+                var obs = new MutationObserver(function () {
+                    dbgLoginLayout(document.body.classList.contains('pos-kb-side-active') ? 'kb-open' : 'kb-close');
+                });
+                obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+                window.addEventListener('resize', function () { dbgLoginLayout('resize'); });
+            }
+            // #endregion
             if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initLoginKeypad);
+                document.addEventListener('DOMContentLoaded', function () {
+                    initLoginKeypad();
+                    watchLoginKbLayout();
+                });
             } else {
                 initLoginKeypad();
+                watchLoginKbLayout();
             }
         })();
     </script>

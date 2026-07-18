@@ -70,6 +70,7 @@ require_once __DIR__ . '/../ui_cards_helper.php';
 ensureUiCardsSchema($infoDb);
 $uiCardScope = 'manager_menu';
 $hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
+$orderedUiCards = uiGetCardOrder($infoDb, $uiCardScope);
 $showHiddenUiCards = isset($_GET['show_hidden']);
 $uiCardsCustomizeMode = isset($_GET['customize']) || $showHiddenUiCards;
 $uiCardsApiUrl = '../ui_cards_api.php';
@@ -306,15 +307,18 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             
             <main class="p-4 lg:p-6">
                 <!-- Page Header -->
-                <div class="mb-6">
-                    <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Manager Operations Center</h1>
-                    <p class="text-gray-600">Quick access to all manager functions and operations</p>
+                <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="min-w-0 flex-1">
+                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Manager Operations Center</h1>
+                        <p class="text-gray-600">Quick access to all manager functions and operations</p>
+                    </div>
+                    <?php $operationsSearchInclude = 'field'; include __DIR__ . '/../includes/operations_center_search.php'; ?>
                 </div>
                 
                 <!-- All Operations in One Container -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6<?= $uiCardsCustomizeMode ? ' ui-cards-customize-mode' : '' ?>">
                     <?php include __DIR__ . '/../includes/ui_cards_toolbar.php'; ?>
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div id="operationsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Tabs -->
                         <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tabs" onclick="window.location.href='credit-tabs'">
@@ -497,6 +501,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <p class="text-sm text-gray-500">Manage suppliers, create POs, and download PDFs</p>
                         </div>
                         
+                        <?php $operationsSearchInclude = 'empty'; include __DIR__ . '/../includes/operations_center_search.php'; ?>
                     </div>
                 </div>
             </main>
@@ -1340,6 +1345,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             document.getElementById('cashup_expenses').value = '';
             document.getElementById('cashUpModal').classList.remove('hidden');
             updateCashUpStepDisplay();
+            openCashDrawer().catch(function() {});
         }
         
         function closeCashUpModal() {
@@ -1724,5 +1730,6 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             }
         });
     </script>
+    <?php $operationsSearchInclude = 'script'; include __DIR__ . '/../includes/operations_center_search.php'; ?>
 </body>
 </html>

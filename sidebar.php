@@ -197,12 +197,11 @@
     $isPrivilegedRole = $isAdmin || $isManager;
     $sidebarCashierPosOnly = $sidebarCashierPosOnly ?? false;
     
-    // Default permissions (all enabled for admins and managers)
+    // Default permissions (all enabled for admins and managers) — one flag per sidebar item
     $permissions = [
-        'allow_tabs' => true,
+        'allow_menu' => true,
         'allow_transactions' => true,
-        'allow_credit_book' => true,
-        'allow_cash_inout' => true,
+        'allow_reports' => true,
         'allow_settings' => true
     ];
     
@@ -216,14 +215,20 @@
             $infoDb = new PDO('sqlite:' . $dbPath);
             $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             
-            // Get cashier permissions
             $permResult = $infoDb->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
             if ($permResult) {
+                $legacyMenu = (bool)($permResult['allow_tabs'] ?? 1)
+                    || (bool)($permResult['allow_credit_book'] ?? 1)
+                    || (bool)($permResult['allow_cash_inout'] ?? 1);
+                $legacyTx = (bool)($permResult['allow_transactions'] ?? 1);
                 $permissions = [
-                    'allow_tabs' => (bool)($permResult['allow_tabs'] ?? 1),
-                    'allow_transactions' => (bool)($permResult['allow_transactions'] ?? 1),
-                    'allow_credit_book' => (bool)($permResult['allow_credit_book'] ?? 1),
-                    'allow_cash_inout' => (bool)($permResult['allow_cash_inout'] ?? 1),
+                    'allow_menu' => array_key_exists('allow_menu', $permResult)
+                        ? (bool)$permResult['allow_menu']
+                        : $legacyMenu,
+                    'allow_transactions' => $legacyTx,
+                    'allow_reports' => array_key_exists('allow_reports', $permResult)
+                        ? (bool)$permResult['allow_reports']
+                        : $legacyTx,
                     'allow_settings' => (bool)($permResult['allow_settings'] ?? 0)
                 ];
             }
@@ -246,8 +251,8 @@
 
             <?php if (!$sidebarCashierPosOnly): ?>
 
-         <!-- Cashier Operations - Conditional (includes Tabs, Credit Book, Cash In/Out) -->
-         <?php if ($isPrivilegedRole || $permissions['allow_tabs'] || $permissions['allow_credit_book'] || $permissions['allow_cash_inout']): ?>
+            <!-- Menu -->
+            <?php if ($isPrivilegedRole || $permissions['allow_menu']): ?>
             <li>
                 <a href="cashier-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="cashier-center">
                     <svg class="w-7 h-7 mr-4" fill="none" stroke="currentColor" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
@@ -261,12 +266,7 @@
             </li>
             <?php endif; ?>
 
-
-                        <!-- Reports - Conditional -->
-                        <?php if ($isPrivilegedRole || $permissions['allow_transactions']): ?>
-    
-
-            <!-- Transactions - Conditional -->
+            <!-- Transactions -->
             <?php if ($isPrivilegedRole || $permissions['allow_transactions']): ?>
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
@@ -278,7 +278,9 @@
             </li>
             <?php endif; ?>
 
-        <li>
+            <!-- Reports -->
+            <?php if ($isPrivilegedRole || $permissions['allow_reports']): ?>
+            <li>
                 <a href="reports-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports-center">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M3 3v18h18"/>
@@ -291,8 +293,7 @@
             </li>
             <?php endif; ?>
 
-
-            <!-- Settings - Conditional -->
+            <!-- Settings -->
             <?php if ($isPrivilegedRole || $permissions['allow_settings']): ?>
             <li>
                 <a href="settings" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="settings">

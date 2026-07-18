@@ -216,6 +216,16 @@ try {
         } catch(PDOException $e) {
             $errorMessage = 'Error updating receipt setting: ' . $e->getMessage();
         }
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
+            }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
+        }
     }
     
     // Handle POS interface form submission
@@ -237,6 +247,17 @@ try {
         } catch (PDOException $e) {
             $errorMessage = 'Error updating POS interface settings: ' . $e->getMessage();
         }
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
+            }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
+        }
+
     }
 
     // Handle CSV import
@@ -373,41 +394,63 @@ try {
                 allow_transactions BOOLEAN NOT NULL DEFAULT 1,
                 allow_credit_book BOOLEAN NOT NULL DEFAULT 1,
                 allow_cash_inout BOOLEAN NOT NULL DEFAULT 1,
-                allow_settings BOOLEAN NOT NULL DEFAULT 0
+                allow_settings BOOLEAN NOT NULL DEFAULT 0,
+                allow_menu BOOLEAN NOT NULL DEFAULT 1,
+                allow_reports BOOLEAN NOT NULL DEFAULT 1
             )");
+            foreach (['allow_menu', 'allow_reports'] as $permCol) {
+                try {
+                    $db->exec("ALTER TABLE cashier_permissions ADD COLUMN {$permCol} BOOLEAN NOT NULL DEFAULT 1");
+                } catch (PDOException $e) {
+                }
+            }
             
             // Check if row exists
             $checkStmt = $db->query("SELECT COUNT(*) FROM cashier_permissions")->fetchColumn();
             if ($checkStmt == 0) {
-                $db->exec("INSERT INTO cashier_permissions (allow_tabs, allow_transactions, allow_credit_book, allow_cash_inout, allow_settings) VALUES (1, 1, 1, 1, 0)");
+                $db->exec("INSERT INTO cashier_permissions (allow_tabs, allow_transactions, allow_credit_book, allow_cash_inout, allow_settings, allow_menu, allow_reports) VALUES (1, 1, 1, 1, 0, 1, 1)");
             }
             
-            // Update permissions
-            $allowTabs = isset($_POST['allow_tabs']) ? 1 : 0;
+            // One permission per cashier sidebar item
+            $allowMenu = isset($_POST['allow_menu']) ? 1 : 0;
             $allowTransactions = isset($_POST['allow_transactions']) ? 1 : 0;
-            $allowCreditBook = isset($_POST['allow_credit_book']) ? 1 : 0;
-            $allowCashInOut = isset($_POST['allow_cash_inout']) ? 1 : 0;
+            $allowReports = isset($_POST['allow_reports']) ? 1 : 0;
             $allowSettings = isset($_POST['allow_settings']) ? 1 : 0;
             
             $updateStmt = $db->prepare("UPDATE cashier_permissions SET 
-                allow_tabs = :allow_tabs,
+                allow_menu = :allow_menu,
                 allow_transactions = :allow_transactions,
+                allow_reports = :allow_reports,
+                allow_settings = :allow_settings,
+                allow_tabs = :allow_tabs,
                 allow_credit_book = :allow_credit_book,
-                allow_cash_inout = :allow_cash_inout,
-                allow_settings = :allow_settings
+                allow_cash_inout = :allow_cash_inout
                 WHERE id = 1");
             $updateStmt->execute([
-                ':allow_tabs' => $allowTabs,
+                ':allow_menu' => $allowMenu,
                 ':allow_transactions' => $allowTransactions,
-                ':allow_credit_book' => $allowCreditBook,
-                ':allow_cash_inout' => $allowCashInOut,
-                ':allow_settings' => $allowSettings
+                ':allow_reports' => $allowReports,
+                ':allow_settings' => $allowSettings,
+                ':allow_tabs' => $allowMenu,
+                ':allow_credit_book' => $allowMenu,
+                ':allow_cash_inout' => $allowMenu
             ]);
             
             $successMessage = 'Cashier permissions updated successfully!';
         } catch(PDOException $e) {
             $errorMessage = 'Error updating cashier permissions: ' . $e->getMessage();
         }
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
+            }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
+        }
+
     }
 
     // Handle inactivity settings form submission
@@ -456,100 +499,17 @@ try {
         } catch (PDOException $e) {
             $errorMessage = 'Error updating inactivity settings: ' . $e->getMessage();
         }
-    }
-    
-    // Get current cashier permissions
-    $cashierPermissions = [
-        'allow_tabs' => 1,
-        'allow_transactions' => 1,
-        'allow_credit_book' => 1,
-        'allow_cash_inout' => 1,
-        'allow_settings' => 0
-    ];
-    try {
-        // Create table if it doesn't exist
-        $db->exec("CREATE TABLE IF NOT EXISTS cashier_permissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            allow_tabs BOOLEAN NOT NULL DEFAULT 1,
-            allow_transactions BOOLEAN NOT NULL DEFAULT 1,
-            allow_credit_book BOOLEAN NOT NULL DEFAULT 1,
-            allow_cash_inout BOOLEAN NOT NULL DEFAULT 1,
-            allow_settings BOOLEAN NOT NULL DEFAULT 0
-        )");
-        
-        // Get current permissions
-        $permissions = $db->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        if ($permissions) {
-            $cashierPermissions = [
-                'allow_tabs' => $permissions['allow_tabs'] ?? 1,
-                'allow_transactions' => $permissions['allow_transactions'] ?? 1,
-                'allow_credit_book' => $permissions['allow_credit_book'] ?? 1,
-                'allow_cash_inout' => $permissions['allow_cash_inout'] ?? 1,
-                'allow_settings' => $permissions['allow_settings'] ?? 0
-            ];
-        } else {
-            // Insert default row
-            $db->exec("INSERT INTO cashier_permissions (allow_tabs, allow_transactions, allow_credit_book, allow_cash_inout, allow_settings) VALUES (1, 1, 1, 1, 0)");
-        }
-    } catch(PDOException $e) {
-        // Use defaults if error
-    }
-    
-    // Get current receipt and inactivity settings
-    $defaultPrintReceipt = 0;
-    $cashierInactivityEnabled = 1;
-    $cashierIdleTimeoutSeconds = 120;
-    $inactivityRoleAdmin = 0;
-    $inactivityRoleManager = 0;
-    $inactivityRoleCashier = 1;
-    $inactivityRoleWaitress = 0;
-    $touchKeyboardEnabled = 0;
-    try {
-        require_once __DIR__ . '/../inactivity_settings_helper.php';
-        require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
-        $posDb = new PDO('sqlite:../pos.db');
-        $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        
-        // Check if default_print_receipt column exists, if not add it
-        $columns = $posDb->query("PRAGMA table_info(product_settings)")->fetchAll(PDO::FETCH_ASSOC);
-        $columnExists = false;
-        foreach($columns as $column) {
-            if($column['name'] === 'default_print_receipt') {
-                $columnExists = true;
-                break;
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
             }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
         }
-        
-        if(!$columnExists) {
-            $posDb->exec("ALTER TABLE product_settings ADD COLUMN default_print_receipt BOOLEAN NOT NULL DEFAULT 0");
-        }
-        ensureInactivitySettingsColumns($posDb);
-        ensureTouchKeyboardSettingsColumn($posDb);
-        
-        // Get current setting
-        $receiptSetting = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        $defaultPrintReceipt = $receiptSetting ? ($receiptSetting['default_print_receipt'] ?? 0) : 0;
-        $cashierInactivityEnabled = $receiptSetting ? (int) ($receiptSetting['cashier_inactivity_enabled'] ?? 1) : 1;
-        $cashierIdleTimeoutSeconds = $receiptSetting ? (int) ($receiptSetting['cashier_idle_timeout_seconds'] ?? 120) : 120;
-        $inactivityRoleAdmin = $receiptSetting ? (int) ($receiptSetting['inactivity_role_admin'] ?? 0) : 0;
-        $inactivityRoleManager = $receiptSetting ? (int) ($receiptSetting['inactivity_role_manager'] ?? 0) : 0;
-        $inactivityRoleCashier = $receiptSetting ? (int) ($receiptSetting['inactivity_role_cashier'] ?? 1) : 1;
-        $inactivityRoleWaitress = $receiptSetting ? (int) ($receiptSetting['inactivity_role_waitress'] ?? 0) : 0;
-        $touchKeyboardEnabled = $receiptSetting ? (int) ($receiptSetting['touch_keyboard_enabled'] ?? 0) : 0;
-        if ($cashierIdleTimeoutSeconds < 30) {
-            $cashierIdleTimeoutSeconds = 30;
-        }
-        if ($cashierIdleTimeoutSeconds > 3600) {
-            $cashierIdleTimeoutSeconds = 3600;
-        }
-    } catch(PDOException $e) {
-        $defaultPrintReceipt = 0;
-        $cashierInactivityEnabled = 1;
-        $cashierIdleTimeoutSeconds = 120;
-        $inactivityRoleAdmin = 0;
-        $inactivityRoleManager = 0;
-        $inactivityRoleCashier = 1;
-        $inactivityRoleWaitress = 0;
+
     }
     
     // Get current business info
@@ -584,22 +544,14 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Business Settings</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio,line-clamp"></script>
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <title>Business info</title>
     <link href="../src/output.css" rel="stylesheet">
-    <script src="../navigation.js" async></script>
-    <script src="../src/howler.min.js"></script>
-    <script src="../src/chart.js"></script>
-    <meta name="google" content="notranslate">
-    <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
-    <script src="3.4.16"></script>
+    <script src="../navigation.js" async></script>
+    <meta name="google" content="notranslate">
+    <link rel="icon" href="../favicon.ico" type="image/png">
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <!-- Toast Notification Container -->
     <div id="toast" class="fixed top-4 right-4 z-50 hidden max-w-xs w-full bg-white rounded-lg shadow-lg border-l-4 p-4 transition-transform duration-300 transform translate-x-full">
         <div class="flex items-center justify-between">
@@ -619,17 +571,15 @@ try {
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 ml-64 content">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <div class="flex justify-between items-center mb-8">
-                    <h1 class="text-3xl font-bold">Business Settings</h1>
-                    
-                    <a href="settings" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-                        </svg>
-                        Go Back
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full px-4 lg:px-6 py-6">
+                <div class="mb-6">
+                    <a href="settings" class="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400 mb-4">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                        Back to settings
                     </a>
+                    <h1 class="text-2xl lg:text-3xl font-bold text-gray-900">Business info</h1>
+                    <p class="text-sm text-gray-500 mt-1">Name, branding, VAT, and product CSV import</p>
                 </div>
                 
                 <?php if (!empty($successMessage)): ?>
@@ -662,47 +612,66 @@ try {
                     </div>
                 <?php endif; ?>
                 
-                <!-- Business Settings Form -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6">
-                    <form method="post" action="">
-                        <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
-                            <div class="col-span-2 sm:col-span-1">
+                <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5 mb-4">
+                <form method="post" action="" class="contents">
+                    <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6">
+                        <div class="flex items-center gap-3 mb-4">
+                            <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center shrink-0">
+                                <i class="fas fa-store text-indigo-600"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-base font-semibold text-gray-900">Business details</h2>
+                                <p class="text-xs text-gray-500">Name, location, phone &amp; closing time</p>
+                            </div>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
                                 <label for="name" class="block text-sm font-medium text-gray-700">Business Name</label>
-                                <input type="text" id="name" name="name" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
+                                <input type="text" id="name" name="name" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
                                        value="<?php echo htmlspecialchars($businessInfo['name']); ?>" required>
                             </div>
-                            
-                            <div class="col-span-2 sm:col-span-1">
+                            <div>
                                 <label for="location" class="block text-sm font-medium text-gray-700">Business Location</label>
-                                <input type="text" id="location" name="location" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
+                                <input type="text" id="location" name="location" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
                                        value="<?php echo htmlspecialchars($businessInfo['location']); ?>" required>
                             </div>
-                            
-                            <div class="col-span-2 sm:col-span-1">
+                            <div>
                                 <label for="phone" class="block text-sm font-medium text-gray-700">Phone Number</label>
-                                <input type="text" id="phone" name="phone" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
+                                <input type="text" id="phone" name="phone" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
                                        value="<?php echo htmlspecialchars($businessInfo['phone']); ?>" required>
                             </div>
-                            
-                            <div class="col-span-2 sm:col-span-1">
+                            <div>
                                 <label for="closing_time" class="block text-sm font-medium text-gray-700">Business Closing Time</label>
-                                <input type="time" id="closing_time" name="closing_time" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
+                                <input type="time" id="closing_time" name="closing_time" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
                                        value="<?php echo htmlspecialchars($closingTime); ?>">
-                                <p class="mt-1 text-xs text-gray-500">Set the time when your business closes each day. System will alert for transactions after this time.</p>
+                                <p class="mt-1 text-xs text-gray-500">System alerts for transactions after this time.</p>
                             </div>
-                            
-                            <div class="col-span-2 sm:col-span-1">
+                        </div>
+                    </section>
+
+                    <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6">
+                        <div class="flex items-center gap-3 mb-4">
+                            <div class="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center shrink-0">
+                                <i class="fas fa-receipt text-blue-600"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-base font-semibold text-gray-900">Printer &amp; receipt branding</h2>
+                                <p class="text-xs text-gray-500">Footer text &amp; printer port</p>
+                            </div>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label for="footer_text" class="block text-sm font-medium text-gray-700">Receipt Footer Text</label>
+                                <textarea id="footer_text" name="footer_text" rows="3" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"><?php echo htmlspecialchars($businessInfo['footer_text']); ?></textarea>
+                            </div>
+                            <div>
                                 <label for="printer_port" class="block text-sm font-medium text-gray-700">Printer Port</label>
                                 <select id="printer_port" name="printer_port" class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
                                     <?php
-                                    // Common printer ports
                                     $ports = ['COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'LPT1', 'USB001', '/dev/usb/lp0'];
-                                    
-                                    // Add custom port if it's not in the list
                                     if (!in_array($printerPort, $ports)) {
                                         $ports[] = $printerPort;
                                     }
-                                    
                                     foreach ($ports as $port) {
                                         $selected = ($port === $printerPort) ? 'selected' : '';
                                         echo "<option value=\"$port\" $selected>$port</option>";
@@ -713,372 +682,102 @@ try {
                                     <label for="custom_port" class="block text-sm font-medium text-gray-700">Or enter custom port:</label>
                                     <div class="mt-1 flex rounded-md shadow-sm">
                                         <input type="text" id="custom_port" class="focus:ring-teal-500 focus:border-teal-500 flex-1 block w-full rounded-none rounded-l-md sm:text-sm border-gray-300" placeholder="Custom port name">
-                                        <button type="button" class="inline-flex items-center px-3 py-2 border border-l-0 border-gray-300 bg-gray-50 text-gray-500 text-sm rounded-r-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500" 
-                                                onclick="addCustomPort()">Add</button>
+                                        <button type="button" class="inline-flex items-center px-3 py-2 border border-l-0 border-gray-300 bg-gray-50 text-gray-500 text-sm rounded-r-md hover:bg-gray-100" onclick="addCustomPort()">Add</button>
                                     </div>
                                 </div>
-                                
-                                <!-- Android Printer Settings Button -->
-                                <div id="androidPrinterSettings" class="mt-4">
-                                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                                        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                            <div class="flex-1">
-                                                <h4 class="text-sm font-semibold text-blue-900 mb-1">📱 Android Printer Settings</h4>
-                                                <p class="text-xs text-blue-700">Configure Bluetooth, USB, or Network printers for Android devices</p>
-                                                <p id="androidPrinterStatus" class="text-xs text-blue-600 mt-1 hidden"></p>
-                                            </div>
-                                            <button type="button" 
-                                                    onclick="openAndroidPrinterSettings()"
-                                                    class="w-full sm:w-auto inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150 ease-in-out">
-                                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                                </svg>
-                                                Open Printer Settings
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="col-span-2">
-                                <label for="footer_text" class="block text-sm font-medium text-gray-700">Receipt Footer Text</label>
-                                <textarea id="footer_text" name="footer_text" rows="3" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"><?php echo htmlspecialchars($businessInfo['footer_text']); ?></textarea>
-                            </div>
-                            
-                            <!-- VAT Settings Section -->
-                            <div class="col-span-2 border-t pt-6 mt-6">
-                                <h3 class="text-lg font-semibold text-gray-900 mb-4">Namibian VAT Settings</h3>
-                                
-                                <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4 rounded-md">
-                                    <div class="flex">
-                                        <div class="flex-shrink-0">
-                                            <svg class="h-5 w-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-                                            </svg>
-                                        </div>
-                                        <div class="ml-3">
-                                            <p class="text-sm text-yellow-700">
-                                                <strong>Important:</strong> Changing the VAT setting or VAT rate will automatically convert all product prices in your inventory. 
-                                                Make sure to backup your data before making changes.
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
-                                    <div class="col-span-2 sm:col-span-1">
-                                        <label for="vat_inclusive" class="block text-sm font-medium text-gray-700 mb-2">Price Display</label>
-                                        <select id="vat_inclusive" name="vat_inclusive" class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
-                                            <option value="exclusive" <?php echo ($vatInclusive === 'exclusive') ? 'selected' : ''; ?>>VAT Exclusive (Prices shown exclude VAT)</option>
-                                            <option value="inclusive" <?php echo ($vatInclusive === 'inclusive') ? 'selected' : ''; ?>>VAT Inclusive (Prices shown include VAT)</option>
-                                        </select>
-                                        <p class="mt-1 text-xs text-gray-500">
-                                            <?php if ($vatInclusive === 'exclusive'): ?>
-                                                Prices displayed will exclude VAT. VAT will be added at checkout.
-                                            <?php else: ?>
-                                                Prices displayed will include VAT. No additional VAT will be added at checkout.
-                                            <?php endif; ?>
-                                        </p>
-                                    </div>
-                                    
-                                    <div class="col-span-2 sm:col-span-1">
-                                        <label for="vat_rate" class="block text-sm font-medium text-gray-700">VAT Rate (%)</label>
-                                        <input type="number" id="vat_rate" name="vat_rate" step="0.01" min="0" max="100" 
-                                               class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" 
-                                               value="<?php echo htmlspecialchars(number_format($vatRate, 2, '.', '')); ?>" required>
-                                        <p class="mt-1 text-xs text-gray-500">Enter the VAT rate percentage (e.g., 15 for 15%). Default is 15% for Namibia.</p>
+                                <div id="androidPrinterSettings" class="mt-3">
+                                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                                        <button type="button" onclick="openAndroidPrinterSettings()"
+                                                class="w-full sm:w-auto inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
+                                            <i class="fas fa-cog mr-2"></i>
+                                            Open Printer Settings
+                                        </button>
                                     </div>
                                 </div>
                             </div>
                         </div>
-                        
-                        <div class="mt-6 flex justify-end">
-                            <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
-                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                                </svg>
+                    </section>
+
+                    <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                        <div class="flex items-center gap-3 mb-4">
+                            <div class="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+                                <i class="fas fa-percent text-amber-600"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-base font-semibold text-gray-900">Namibian VAT Settings</h2>
+                                <p class="text-xs text-gray-500">VAT mode &amp; rate</p>
+                            </div>
+                        </div>
+                        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-3 mb-4 rounded-md">
+                            <p class="text-sm text-yellow-700">
+                                <strong>Important:</strong> Changing the VAT setting or VAT rate will automatically convert all product prices in your inventory. Make sure to backup your data before making changes.
+                            </p>
+                        </div>
+                        <div class="space-y-4 flex-1">
+                            <div>
+                                <label for="vat_inclusive" class="block text-sm font-medium text-gray-700 mb-2">Price Display</label>
+                                <select id="vat_inclusive" name="vat_inclusive" class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
+                                    <option value="exclusive" <?php echo ($vatInclusive === 'exclusive') ? 'selected' : ''; ?>>VAT Exclusive (Prices shown exclude VAT)</option>
+                                    <option value="inclusive" <?php echo ($vatInclusive === 'inclusive') ? 'selected' : ''; ?>>VAT Inclusive (Prices shown include VAT)</option>
+                                </select>
+                                <p class="mt-1 text-xs text-gray-500">
+                                    <?php if ($vatInclusive === 'exclusive'): ?>
+                                        Prices displayed will exclude VAT. VAT will be added at checkout.
+                                    <?php else: ?>
+                                        Prices displayed will include VAT. No additional VAT will be added at checkout.
+                                    <?php endif; ?>
+                                </p>
+                            </div>
+                            <div>
+                                <label for="vat_rate" class="block text-sm font-medium text-gray-700">VAT Rate (%)</label>
+                                <input type="number" id="vat_rate" name="vat_rate" step="0.01" min="0" max="100"
+                                       class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
+                                       value="<?php echo htmlspecialchars(number_format($vatRate, 2, '.', '')); ?>" required>
+                                <p class="mt-1 text-xs text-gray-500">Default is 15% for Namibia.</p>
+                            </div>
+                        </div>
+                        <div class="mt-5 flex justify-end">
+                            <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">
+                                <i class="fas fa-check mr-2"></i>
                                 Save Settings
                             </button>
                         </div>
-                    </form>
-                </div>
-                
-                <!-- Cashier Permissions Section -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
-                    <h2 class="text-2xl font-bold mb-6">Cashier Sidebar Permissions</h2>
-                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <svg class="h-5 w-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                </svg>
-                            </div>
-                            <div class="ml-3">
-                                <p class="text-sm text-blue-700">
-                                    <strong>Note:</strong> Control which sidebar menu options are available to cashiers. Admins always have access to all options. Home and Logout are always visible to all users.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                    <form action="" method="POST" class="space-y-4">
-                        <div class="grid grid-cols-1 gap-4">
-                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                                <div class="flex-1">
-                                    <label for="allow_tabs" class="block text-sm font-medium text-gray-700 mb-1">
-                                        Allow Tabs
-                                    </label>
-                                    <p class="text-xs text-gray-500">Enable cashiers to access the Tabs menu</p>
-                                </div>
-                                <div class="ml-4">
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" name="allow_tabs" id="allow_tabs" 
-                                               class="sr-only peer" 
-                                               <?php echo $cashierPermissions['allow_tabs'] ? 'checked' : ''; ?>>
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                                <div class="flex-1">
-                                    <label for="allow_transactions" class="block text-sm font-medium text-gray-700 mb-1">
-                                        Allow Transactions
-                                    </label>
-                                    <p class="text-xs text-gray-500">Enable cashiers to access the Transactions/Reports menu</p>
-                                </div>
-                                <div class="ml-4">
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" name="allow_transactions" id="allow_transactions" 
-                                               class="sr-only peer" 
-                                               <?php echo $cashierPermissions['allow_transactions'] ? 'checked' : ''; ?>>
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                                <div class="flex-1">
-                                    <label for="allow_credit_book" class="block text-sm font-medium text-gray-700 mb-1">
-                                        Allow Credit Book
-                                    </label>
-                                    <p class="text-xs text-gray-500">Enable cashiers to access the Credit Book menu</p>
-                                </div>
-                                <div class="ml-4">
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" name="allow_credit_book" id="allow_credit_book" 
-                                               class="sr-only peer" 
-                                               <?php echo $cashierPermissions['allow_credit_book'] ? 'checked' : ''; ?>>
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                                <div class="flex-1">
-                                    <label for="allow_cash_inout" class="block text-sm font-medium text-gray-700 mb-1">
-                                        Allow Cash In/Out
-                                    </label>
-                                    <p class="text-xs text-gray-500">Enable cashiers to access the Cash In/Out menu</p>
-                                </div>
-                                <div class="ml-4">
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" name="allow_cash_inout" id="allow_cash_inout" 
-                                               class="sr-only peer" 
-                                               <?php echo $cashierPermissions['allow_cash_inout'] ? 'checked' : ''; ?>>
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                                <div class="flex-1">
-                                    <label for="allow_settings" class="block text-sm font-medium text-gray-700 mb-1">
-                                        Allow Settings
-                                    </label>
-                                    <p class="text-xs text-gray-500">Enable cashiers to access the Settings menu (not recommended for security)</p>
-                                </div>
-                                <div class="ml-4">
-                                    <label class="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" name="allow_settings" id="allow_settings" 
-                                               class="sr-only peer" 
-                                               <?php echo $cashierPermissions['allow_settings'] ? 'checked' : ''; ?>>
-                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="flex justify-end mt-6">
-                            <button type="submit" 
-                                    name="update_cashier_permissions" 
-                                    value="1"
-                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
-                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                                </svg>
-                                Save Permissions
-                            </button>
-                        </div>
-                    </form>
-                </div>
+                    </section>
+                </form>
 
-                <!-- Inactivity Logout Section -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
-                    <h2 class="text-2xl font-bold mb-6">Inactivity Logout</h2>
-                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
-                        <p class="text-sm text-blue-700">
-                            When enabled, selected user roles are logged out automatically after a period of inactivity (when the cart is empty on POS).
-                        </p>
-                    </div>
-                    <form action="" method="POST" class="space-y-4">
-                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <div class="flex-1">
-                                <label for="cashier_inactivity_enabled" class="block text-sm font-medium text-gray-700 mb-1">Enable inactivity logout</label>
-                                <p class="text-xs text-gray-500">Master switch for automatic logout by role.</p>
-                            </div>
-                            <div class="ml-4">
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" name="cashier_inactivity_enabled" id="cashier_inactivity_enabled" class="sr-only peer" <?php echo $cashierInactivityEnabled ? 'checked' : ''; ?>>
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <p class="block text-sm font-medium text-gray-700 mb-3">Apply inactivity timer to</p>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-                                    <input type="checkbox" name="inactivity_role_admin" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleAdmin ? 'checked' : ''; ?>> Admin
-                                </label>
-                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-                                    <input type="checkbox" name="inactivity_role_manager" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleManager ? 'checked' : ''; ?>> Manager
-                                </label>
-                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-                                    <input type="checkbox" name="inactivity_role_cashier" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleCashier ? 'checked' : ''; ?>> Cashier
-                                </label>
-                                <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-                                    <input type="checkbox" name="inactivity_role_waitress" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleWaitress ? 'checked' : ''; ?>> Waitress
-                                </label>
-                            </div>
-                        </div>
-                        <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Idle timeout (seconds)</label>
-                            <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds" value="<?php echo (int) $cashierIdleTimeoutSeconds; ?>" min="30" max="3600" step="1" class="mt-1 block w-40 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
-                            <p class="mt-2 text-xs text-gray-500">Allowed range: 30–3600 seconds. Default is 120.</p>
-                        </div>
-                        <div class="flex justify-end">
-                            <button type="submit" name="update_cashier_inactivity" value="1" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
-                                Save Inactivity Settings
-                            </button>
-                        </div>
-                    </form>
-                </div>
-                
-                <!-- POS Interface Section -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
-                    <h2 class="text-2xl font-bold mb-6">POS Interface</h2>
-                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
-                        <p class="text-sm text-blue-700">
-                            Control on-screen touch keyboard behavior on desktop and tablet POS screens. When disabled, staff use the physical keyboard only.
-                        </p>
-                    </div>
-                    <form action="" method="POST" class="space-y-4">
-                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <div class="flex-1">
-                                <label for="touch_keyboard_enabled" class="block text-sm font-medium text-gray-700 mb-1">
-                                    Enable touch keyboard
-                                </label>
-                                <p class="text-xs text-gray-500">Shows the on-screen keyboard panel for cash, payment, login, and tab fields on desktop/tablet POS screens.</p>
-                            </div>
-                            <div class="ml-4">
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" name="touch_keyboard_enabled" id="touch_keyboard_enabled"
-                                           class="sr-only peer"
-                                           <?php echo $touchKeyboardEnabled ? 'checked' : ''; ?>>
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="flex justify-end">
-                            <button type="submit"
-                                    name="update_pos_interface"
-                                    value="1"
-                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
-                                Save POS Interface Settings
-                            </button>
-                        </div>
-                    </form>
-                </div>
-                
-                <!-- Receipt Settings Section -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
-                    <h2 class="text-2xl font-bold mb-6">Receipt Settings</h2>
-                    <form action="" method="POST" class="space-y-4">
-                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <div class="flex-1">
-                                <label for="default_print_receipt" class="block text-sm font-medium text-gray-700 mb-1">
-                                    Default "Print with Receipt" Checkbox
-                                </label>
-                                <p class="text-xs text-gray-500">When enabled, the "Print with receipt" checkbox will be checked by default during checkout.</p>
-                            </div>
-                            <div class="ml-4">
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" name="default_print_receipt" id="default_print_receipt" 
-                                           class="sr-only peer" 
-                                           <?php echo $defaultPrintReceipt ? 'checked' : ''; ?>
-                                           onchange="this.form.submit()">
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gray-600"></div>
-                                </label>
-                            </div>
-                        </div>
-                        <input type="hidden" name="update_receipt_setting" value="1">
-                    </form>
-                </div>
-                
                 <!-- CSV Import Section -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden p-6 mt-8">
-                    <h2 class="text-2xl font-bold mb-6">Import Products from CSV</h2>
-                    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6 rounded-md">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <svg class="h-5 w-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                </svg>
-                            </div>
-                            <div class="ml-3">
-                                <p class="text-sm text-blue-700">
-                                    <strong>CSV Format:</strong> The CSV file should contain columns: STOCKCODE, BARCODE, DESCRIPTION, PRICE, PRICEINC (inclusive), PRICE2, PRICEINC2, PRICE3, PRICEINC3, UNITCOST, DEPARTMENT, CATEGORY, STOCKONHAND, SUPPLIER
-                                    <br><strong>Note:</strong> Only the PRICEINC column (inclusive) will be used. Products will be matched by name (DESCRIPTION). Existing products will be updated, new products will be imported.
-                                </p>
-                            </div>
+                <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
+                            <i class="fas fa-file-csv text-teal-600"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-base font-semibold text-gray-900">Import Products from CSV</h2>
+                            <p class="text-xs text-gray-500">Bulk import or update inventory</p>
                         </div>
                     </div>
-                    <form action="" method="POST" enctype="multipart/form-data" class="space-y-4">
-                        <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <div class="flex-1">
-                                <label for="csv_file" class="block text-sm font-medium text-gray-700 mb-2">
-                                    Select CSV File
-                                </label>
-                                <input type="file" 
-                                       id="csv_file" 
-                                       name="csv_file" 
-                                       accept=".csv"
-                                       class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100"
-                                       required>
-                                <p class="mt-2 text-xs text-gray-500">Select a CSV file to import products. The file should match the PLF.csv format.</p>
-                            </div>
+                    <div class="bg-blue-50 border-l-4 border-blue-400 p-3 mb-4 rounded-md">
+                        <p class="text-sm text-blue-700">
+                            <strong>CSV Format:</strong> STOCKCODE, BARCODE, DESCRIPTION, PRICE, PRICEINC (inclusive), ...
+                            <br><strong>Note:</strong> Only PRICEINC is used. Products matched by DESCRIPTION.
+                        </p>
+                    </div>
+                    <form action="" method="POST" enctype="multipart/form-data" class="space-y-4 flex-1 flex flex-col">
+                        <div>
+                            <label for="csv_file" class="block text-sm font-medium text-gray-700 mb-2">Select CSV File</label>
+                            <input type="file" id="csv_file" name="csv_file" accept=".csv"
+                                   class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100"
+                                   required>
                         </div>
-                        <div class="flex justify-end">
-                            <button type="submit" 
-                                    name="import_csv" 
-                                    value="1"
-                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
-                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
-                                </svg>
+                        <div class="mt-auto pt-3 flex justify-end">
+                            <button type="submit" name="import_csv" value="1"
+                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">
+                                <i class="fas fa-upload mr-2"></i>
                                 Import Products
                             </button>
                         </div>
                     </form>
+                </section>
                 </div>
             </div>
         </div>

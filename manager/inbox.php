@@ -335,14 +335,14 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
         <div class="sidebar">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <div class="h-full flex flex-col">
                 <!-- Header -->
                 <header class="border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/60">
-                    <div class="container mx-auto flex h-16 items-center px-6">
+                    <div class="w-full flex h-16 items-center px-4 lg:px-6">
                         <!-- Mobile Hamburger Menu Button -->
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 mr-3" onclick="toggleSidebar()">
                             <span></span>
@@ -368,7 +368,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
                 <!-- Main Content -->
                 <main class="flex-1 overflow-y-auto">
-                    <div class="container mx-auto p-6">
+                    <div class="w-full p-4 lg:p-6">
                         <div class="flex items-center justify-between mb-6">
                             <h1 class="text-2xl font-semibold tracking-tight">Messages</h1>
                             <div class="flex items-center gap-4">

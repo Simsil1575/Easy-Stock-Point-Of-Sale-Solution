@@ -160,8 +160,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         
         /* Mobile responsive adjustments */
         @media (max-width: 1023px) {
-            /* Remove left margin on mobile */
-            .ml-64 {
+            .content {
                 margin-left: 0 !important;
             }
             
@@ -451,16 +450,18 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         }
     </style>
 </head>
-<body class="bg-gray-50 overflow-x-hidden">
+<body class="bg-gray-100 overflow-x-hidden">
     <div class="flex min-h-screen">
         <?php include 'sidebar.php'; ?>
-        <div class="flex-1 content lg:ml-0 ml-0">
-            <!-- Mobile Sidebar Overlay -->
-            <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
-            
-            <!-- Fixed Header -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 shadow-sm">
-                <div class="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8">
+        
+        <!-- Mobile Overlay -->
+        <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
+        
+        <!-- Main Content -->
+        <div class="content flex-1 lg:ml-64">
+            <!-- Page Header -->
+            <div class="sticky top-0 z-50 bg-gray-100 shadow-sm">
+                <div class="w-full px-4 lg:px-6">
                     <!-- Mobile: Two Row Layout -->
                     <div class="lg:hidden">
                         <!-- Top Row: Title and Icons -->
@@ -773,11 +774,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 </div>
             </div>
             
-            <!-- Spacer for fixed header -->
-            <div class="h-[120px] sm:h-[140px] lg:h-20 mb-4"></div>
-            
-            <div class="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8">
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden w-full">
+            <main class="p-4 lg:p-6">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden w-full">
                     <div class="mobile-table-container w-full">
                     <table class="w-full divide-y divide-gray-200">
                         <thead class="bg-gray-300">
@@ -924,9 +922,8 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                             </div>
                         </div>
                     </div>
+                    </div>
                 </div>
-            </div>
-            <div class="w-full max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8">
                 <div class="text-center mt-4 sm:mt-6">
                     <a href="stock_tracking" class="text-teal-600 hover:text-teal-800 flex items-center justify-center space-x-2 text-sm sm:text-base transition-colors duration-200">
                         <span>Inventory Logs</span>
@@ -935,7 +932,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                         </svg>
                     </a>
                 </div>
-            </div>
+            </main>
         </div>
     </div>
 

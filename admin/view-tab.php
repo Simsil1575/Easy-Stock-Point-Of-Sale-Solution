@@ -1601,11 +1601,11 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
 <body class="bg-gray-50">
     <div class="flex">
         <?php include 'sidebar.php'; ?>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-6">
+            <div class="w-full p-4 lg:p-6">
                 <?php if (isset($_SESSION['error'])): ?>
                 <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded shadow" role="alert">
                     <p><?= $_SESSION['error'] ?></p>

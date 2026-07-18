@@ -343,17 +343,17 @@ $missingImageCount = count(array_filter($products, static fn($product) => !$prod
         }
     </style>
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
 
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
 
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <div class="sticky top-0 z-40 bg-gray-50 py-4 mb-6 flex flex-wrap items-center justify-between gap-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 shadow-sm">
+            <div class="w-full px-4 lg:px-6 py-6">
+                <div class="sticky top-0 z-40 bg-gray-100 py-4 mb-6 flex flex-wrap items-center justify-between gap-4 -mx-4 lg:-mx-6 px-4 lg:px-6 shadow-sm">
                     <div class="flex items-center gap-3">
                         <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded" onclick="toggleSidebar()">
                             <span></span>

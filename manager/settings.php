@@ -15,6 +15,20 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 require_once '../activation_helper.php';
 
 require_once __DIR__ . '/../manager_pin_helper.php';
+
+$settingsSection = isset($_GET['s']) && is_string($_GET['s']) ? preg_replace('/[^a-z]/', '', $_GET['s']) : '';
+$settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system'];
+if (!in_array($settingsSection, $settingsSectionAllowed, true)) {
+    $settingsSection = '';
+}
+$settingsSectionTitles = [
+    'display' => 'Display & features',
+    'account' => 'Account & profile',
+    'activation' => 'Software activation',
+    'cashout' => 'Month-end cashout',
+    'system' => 'System management',
+];
+
 $manager_pin_configured = false;
 try {
     $manager_pin_configured = managerVoidPinIsConfigured();
@@ -35,10 +49,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
             setManagerVoidPin($newPin);
             $manager_pin_success = true;
             $manager_pin_configured = true;
+            $_SESSION['settings_flash_success'] = 'Manager void PIN saved.';
+            header('Location: settings?s=account');
+            exit();
         } catch (Throwable $e) {
             $manager_pin_error = $e->getMessage();
         }
     }
+    $settingsSection = 'account';
 }
 ?>
 
@@ -52,8 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
     <script src="../navigation.js" async></script>
     <link href="../src/output.css" rel="stylesheet">
     <link rel="icon" href="../favicon.ico" type="image/png">
-    <!-- Font Awesome CDN -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
 
     <style>
         .sidebar {
@@ -73,6 +90,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
+        }
+
+        .settings-menu-card {
+            transition: all 0.3s ease;
+        }
+        .settings-menu-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            background: white !important;
         }
         
         /* Mobile hamburger menu styles */
@@ -300,33 +326,158 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
     </script>
 
  
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-6">
+            <div class="w-full p-4 lg:p-6">
                 <!-- Header Row: Title + Controls -->
-                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex items-center justify-between gap-4 -mx-6 px-6 shadow-sm">
-                    <!-- Mobile Controls Row -->
-                    <div class="flex items-center gap-3">
-                        <!-- Mobile Hamburger Menu Button -->
-                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2" onclick="toggleSidebar()">
+                <div class="sticky top-0 z-50 bg-gray-50 py-4 mb-6 flex flex-wrap items-center justify-between gap-3 -mx-6 px-6 shadow-sm">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <?php if ($settingsSection !== ''): ?>
+                        <a href="settings" class="inline-flex shrink-0 items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400" title="Back to settings overview">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                            Back
+                        </a>
+                        <?php endif; ?>
+                        <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 shrink-0" onclick="toggleSidebar()">
                             <span></span>
                             <span></span>
                             <span></span>
                         </div>
-                        <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0">Settings</h1>
+                        <div class="min-w-0">
+                            <h1 class="text-xl lg:text-2xl xl:text-3xl font-bold mb-0 truncate">Settings</h1>
+                            <?php if ($settingsSection !== '' && isset($settingsSectionTitles[$settingsSection])): ?>
+                            <p class="text-sm text-gray-600 truncate"><?php echo htmlspecialchars($settingsSectionTitles[$settingsSection], ENT_QUOTES, 'UTF-8'); ?></p>
+                            <?php elseif ($settingsSection === ''): ?>
+                            <p class="text-sm text-gray-600 hidden sm:block">Choose a category below</p>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
 
                 <?php
+                $settingsFlashSuccess = $_SESSION['settings_flash_success'] ?? '';
+                $settingsFlashError = $_SESSION['settings_flash_error'] ?? '';
+                unset($_SESSION['settings_flash_success'], $_SESSION['settings_flash_error']);
+                ?>
+                <?php if ($settingsFlashSuccess !== ''): ?>
+                    <div class="bg-teal-50 border-l-4 border-teal-500 p-4 mb-4 rounded-md">
+                        <p class="text-sm text-teal-700"><?php echo htmlspecialchars($settingsFlashSuccess); ?></p>
+                    </div>
+                <?php endif; ?>
+                <?php if ($settingsFlashError !== ''): ?>
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-4 rounded-md">
+                        <p class="text-sm text-red-700"><?php echo htmlspecialchars($settingsFlashError); ?></p>
+                    </div>
+                <?php endif; ?>
+
+                <?php if ($settingsSection === ''): ?>
+                <div class="mb-8">
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <a href="settings?s=display" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-slate-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-desktop text-slate-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded-full">POS</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-slate-900">Display &amp; features</h3>
+                                <p class="text-sm text-gray-500">Permissions, inactivity, POS interface, receipts</p>
+                            </a>
+                            <a href="settings?s=account" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-user-shield text-teal-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">Profile</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-teal-900">Account &amp; profile</h3>
+                                <p class="text-sm text-gray-500">Username, password, and manager void PIN</p>
+                            </a>
+                            <a href="business_settings" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-store text-indigo-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Business</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-indigo-900">Business info</h3>
+                                <p class="text-sm text-gray-500">Name, VAT, receipts logo/footer</p>
+                            </a>
+                            <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-clipboard-list text-blue-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Audit</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-blue-900">Activity logs</h3>
+                                <p class="text-sm text-gray-500">POS and user activity history</p>
+                            </a>
+                            <a href="users" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-cyan-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-users text-cyan-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-cyan-100 text-cyan-700 px-2 py-1 rounded-full">Staff</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-cyan-900">Manage users</h3>
+                                <p class="text-sm text-gray-500">View and edit staff accounts</p>
+                            </a>
+                            <a href="damaged_goods" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-exclamation-triangle text-orange-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded-full">Inventory</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-orange-900">Damaged stock</h3>
+                                <p class="text-sm text-gray-500">Record damaged or spoiled goods</p>
+                            </a>
+                            <a href="settings?s=activation" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-amber-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-key text-amber-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">License</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-amber-900">Software activation</h3>
+                                <p class="text-sm text-gray-500">Enter key and view license status</p>
+                            </a>
+                            <a href="settings?s=cashout" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-file-invoice-dollar text-emerald-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Month-end</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-emerald-900">Month-end cashout</h3>
+                                <p class="text-sm text-gray-500">Report download and transaction cleanup</p>
+                            </a>
+                            <a href="settings?s=system" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-rose-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-database text-rose-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-rose-100 text-rose-700 px-2 py-1 rounded-full">Data</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-rose-900">System management</h3>
+                                <p class="text-sm text-gray-500">Export transactions and barcodes</p>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($settingsSection === 'display'):
                 try {
                     $posDb = new PDO('sqlite:../pos.db');
-                    // Add column if it doesn't exist
+                    $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
                     try {
                         $posDb->exec("ALTER TABLE product_settings ADD COLUMN hide_available_quantity BOOLEAN NOT NULL DEFAULT 0");
                     } catch (PDOException $e) {
-                        // Column already exists, continue
                     }
                     $stmt = $posDb->query("SELECT hide_available_quantity FROM product_settings LIMIT 1");
                     $setting = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -337,36 +488,276 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                     $hide_available_quantity_checked = '';
                     error_log("Database error: " . $e->getMessage());
                 }
+
+                // Feature settings (permissions, inactivity, receipt, POS interface)
+                $cashierPermissions = [
+                    'allow_menu' => 1,
+                    'allow_transactions' => 1,
+                    'allow_reports' => 1,
+                    'allow_settings' => 0,
+                ];
+                try {
+                    $infoDb = new PDO('sqlite:../info.db');
+                    $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    $infoDb->exec("CREATE TABLE IF NOT EXISTS cashier_permissions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        allow_tabs BOOLEAN NOT NULL DEFAULT 1,
+                        allow_transactions BOOLEAN NOT NULL DEFAULT 1,
+                        allow_credit_book BOOLEAN NOT NULL DEFAULT 1,
+                        allow_cash_inout BOOLEAN NOT NULL DEFAULT 1,
+                        allow_settings BOOLEAN NOT NULL DEFAULT 0,
+                        allow_menu BOOLEAN NOT NULL DEFAULT 1,
+                        allow_reports BOOLEAN NOT NULL DEFAULT 1
+                    )");
+                    foreach (['allow_menu', 'allow_reports'] as $permCol) {
+                        try {
+                            $infoDb->exec("ALTER TABLE cashier_permissions ADD COLUMN {$permCol} BOOLEAN NOT NULL DEFAULT 1");
+                        } catch (PDOException $e) {
+                        }
+                    }
+                    $permissions = $infoDb->query("SELECT * FROM cashier_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                    if ($permissions) {
+                        $legacyMenu = (int)($permissions['allow_tabs'] ?? 1)
+                            || (int)($permissions['allow_credit_book'] ?? 1)
+                            || (int)($permissions['allow_cash_inout'] ?? 1);
+                        $legacyTx = (int)($permissions['allow_transactions'] ?? 1);
+                        $cashierPermissions = [
+                            'allow_menu' => array_key_exists('allow_menu', $permissions)
+                                ? (int)$permissions['allow_menu']
+                                : ($legacyMenu ? 1 : 0),
+                            'allow_transactions' => $legacyTx ? 1 : 0,
+                            'allow_reports' => array_key_exists('allow_reports', $permissions)
+                                ? (int)$permissions['allow_reports']
+                                : ($legacyTx ? 1 : 0),
+                            'allow_settings' => (int)($permissions['allow_settings'] ?? 0),
+                        ];
+                    }
+                } catch (PDOException $e) {
+                }
+
+                $defaultPrintReceipt = 0;
+                $cashierInactivityEnabled = 1;
+                $cashierIdleTimeoutSeconds = 120;
+                $inactivityRoleAdmin = 0;
+                $inactivityRoleManager = 0;
+                $inactivityRoleCashier = 1;
+                $inactivityRoleWaitress = 0;
+                $drawerOpenOnCheckout = 'on_ok';
+                $showReverseTransaction = 1;
+                $waitressCanTakeTabPayments = 0;
+                $touchKeyboardEnabled = 0;
+                try {
+                    if (!isset($posDb) || !($posDb instanceof PDO)) {
+                        $posDb = new PDO('sqlite:../pos.db');
+                        $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    }
+                    require_once __DIR__ . '/../touch_keyboard_settings_helper.php';
+                    ensureTouchKeyboardSettingsColumn($posDb);
+                    foreach ([
+                        "ALTER TABLE product_settings ADD COLUMN cashier_inactivity_enabled BOOLEAN NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN drawer_open_on_checkout TEXT NOT NULL DEFAULT 'on_ok'",
+                        "ALTER TABLE product_settings ADD COLUMN show_reverse_transaction BOOLEAN NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN waitress_can_take_tab_payments BOOLEAN NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_admin INTEGER NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_manager INTEGER NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_cashier INTEGER NOT NULL DEFAULT 1",
+                        "ALTER TABLE product_settings ADD COLUMN inactivity_role_waitress INTEGER NOT NULL DEFAULT 0",
+                    ] as $featSql) {
+                        try { $posDb->exec($featSql); } catch (PDOException $e) {}
+                    }
+                    $featRow = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, drawer_open_on_checkout, show_reverse_transaction, waitress_can_take_tab_payments, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                    if ($featRow) {
+                        $defaultPrintReceipt = (int)($featRow['default_print_receipt'] ?? 0);
+                        $cashierInactivityEnabled = (int)($featRow['cashier_inactivity_enabled'] ?? 1);
+                        $cashierIdleTimeoutSeconds = (int)($featRow['cashier_idle_timeout_seconds'] ?? 120);
+                        $inactivityRoleAdmin = (int)($featRow['inactivity_role_admin'] ?? 0);
+                        $inactivityRoleManager = (int)($featRow['inactivity_role_manager'] ?? 0);
+                        $inactivityRoleCashier = (int)($featRow['inactivity_role_cashier'] ?? 1);
+                        $inactivityRoleWaitress = (int)($featRow['inactivity_role_waitress'] ?? 0);
+                        $drawerOpenOnCheckout = $featRow['drawer_open_on_checkout'] ?? 'on_ok';
+                        $showReverseTransaction = (int)($featRow['show_reverse_transaction'] ?? 1);
+                        $waitressCanTakeTabPayments = (int)($featRow['waitress_can_take_tab_payments'] ?? 0);
+                        $touchKeyboardEnabled = (int)($featRow['touch_keyboard_enabled'] ?? 0);
+                    }
+                    if ($cashierIdleTimeoutSeconds < 30) $cashierIdleTimeoutSeconds = 30;
+                    if ($cashierIdleTimeoutSeconds > 3600) $cashierIdleTimeoutSeconds = 3600;
+                } catch (PDOException $e) {
+                }
+
                 ?>
-                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
-                    <h2 class="text-2xl font-bold mb-6">Display Settings</h2>
-                    <div class="flex items-center space-x-3 mb-4">
-                        <div class="flex items-center h-5">
-                            <input type="checkbox" name="hide_available_quantity" id="hide_available_quantity" class="h-5 w-5 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $hide_available_quantity_checked; ?>>
-                        </div>
-                        <div class="ml-2 text-sm">
-                            <label for="hide_available_quantity" class="font-medium text-gray-700 flex items-center cursor-pointer">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                                    <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                                </svg>
-                                Hide available quantity from cashiers (skip stock checks)
-                            </label>
-                            <p class="text-xs text-gray-500 mt-1 ml-7">When enabled, cashiers won't see product quantities and stock validation will be skipped during checkout</p>
-                        </div>
+                <div class="mb-8">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5">
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-desktop text-slate-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">POS display</h2>
+                                    <p class="text-xs text-gray-500">Stock visibility on the register</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start gap-3">
+                                <input type="checkbox" name="hide_available_quantity" id="hide_available_quantity" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $hide_available_quantity_checked; ?>>
+                                <div class="min-w-0">
+                                    <label for="hide_available_quantity" class="font-medium text-sm text-gray-800 cursor-pointer">Hide available quantity from cashiers</label>
+                                    <p class="text-xs text-gray-500 mt-1">Cashiers won&apos;t see product quantities (and stock checks may be skipped depending on configuration).</p>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Cashier sidebar permissions -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-user-shield text-cyan-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Cashier sidebar permissions</h2>
+                                    <p class="text-xs text-gray-500">One toggle per sidebar item</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-600 mb-3">Home and Logout always stay visible. Admins/managers always see all items.</p>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <?php
+                                $permRows = [
+                                    ['allow_menu', 'Menu', 'Cashier Menu'],
+                                    ['allow_transactions', 'Transactions', 'Transactions'],
+                                    ['allow_reports', 'Reports', 'Reports'],
+                                    ['allow_settings', 'Settings', 'Settings'],
+                                ];
+                                foreach ($permRows as [$pkey, $plabel, $phint]):
+                                ?>
+                                <div class="flex items-center justify-between gap-3 py-2 border-b border-gray-100 last:border-0">
+                                    <div class="min-w-0">
+                                        <label for="<?php echo $pkey; ?>" class="block text-sm font-medium text-gray-700"><?php echo $plabel; ?></label>
+                                        <p class="text-xs text-gray-500"><?php echo $phint; ?></p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="<?php echo $pkey; ?>" id="<?php echo $pkey; ?>" class="sr-only peer" <?php echo !empty($cashierPermissions[$pkey]) ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <?php endforeach; ?>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_cashier_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save permissions</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Inactivity logout (full) -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-user-clock text-violet-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Inactivity logout</h2>
+                                    <p class="text-xs text-gray-500">Auto logout by role when idle</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-600 mb-3">When enabled, selected roles are logged out after inactivity (empty cart on POS).</p>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div>
+                                        <label for="cashier_inactivity_enabled" class="block text-sm font-medium text-gray-700">Enable inactivity logout</label>
+                                        <p class="text-xs text-gray-500">Master switch</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="cashier_inactivity_enabled" id="cashier_inactivity_enabled" class="sr-only peer" <?php echo $cashierInactivityEnabled ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div>
+                                    <p class="text-sm font-medium text-gray-700 mb-2">Apply to</p>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_admin" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleAdmin ? 'checked' : ''; ?>> Admin</label>
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_manager" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleManager ? 'checked' : ''; ?>> Manager</label>
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_cashier" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleCashier ? 'checked' : ''; ?>> Cashier</label>
+                                        <label class="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" name="inactivity_role_waitress" value="1" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500" <?php echo $inactivityRoleWaitress ? 'checked' : ''; ?>> Waitress</label>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="cashier_idle_timeout_seconds" class="block text-sm font-medium text-gray-700 mb-1">Idle timeout (seconds)</label>
+                                    <input type="number" id="cashier_idle_timeout_seconds" name="cashier_idle_timeout_seconds" value="<?php echo (int) $cashierIdleTimeoutSeconds; ?>" min="30" max="3600" step="1" class="block w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                    <p class="text-xs text-gray-500 mt-1">Range 30–3600. Default 120.</p>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_cashier_inactivity" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save inactivity</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- POS interface -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-sky-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-keyboard text-sky-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">POS interface</h2>
+                                    <p class="text-xs text-gray-500">On-screen touch keyboard</p>
+                                </div>
+                            </div>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div class="min-w-0">
+                                        <label for="touch_keyboard_enabled" class="block text-sm font-medium text-gray-700">Enable touch keyboard</label>
+                                        <p class="text-xs text-gray-500 mt-1">Shows on-screen keyboard for cash, payment, login, and tab fields on desktop/tablet.</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="touch_keyboard_enabled" id="touch_keyboard_enabled" class="sr-only peer" <?php echo $touchKeyboardEnabled ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_pos_interface" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Receipt settings -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-file-invoice text-emerald-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Receipt settings</h2>
+                                    <p class="text-xs text-gray-500">Print default, drawer &amp; reverse</p>
+                                </div>
+                            </div>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <input type="hidden" name="update_receipt_setting" value="1">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div class="min-w-0">
+                                        <label for="default_print_receipt" class="block text-sm font-medium text-gray-700">Default print with receipt</label>
+                                        <p class="text-xs text-gray-500">Checked by default at checkout</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="default_print_receipt" id="default_print_receipt" class="sr-only peer" <?php echo $defaultPrintReceipt ? 'checked' : ''; ?> onchange="this.form.submit()">
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                            </form>
+                        </section>
+
                     </div>
                 </div>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         const checkbox = document.getElementById('hide_available_quantity');
-                        checkbox.checked = <?php echo $hide_available_quantity; ?>;
+                        if (!checkbox) return;
+                        checkbox.checked = <?php echo (int)$hide_available_quantity; ?>;
                         checkbox.addEventListener('change', function() {
                             const hideQuantity = this.checked ? 1 : 0;
                             fetch('../update_display_setting.php', {
                                 method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                },
+                                headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ hide_available_quantity: hideQuantity })
                             })
                             .then(response => response.json())
@@ -375,53 +766,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                     showAlert('success', 'Success', 'Setting updated successfully');
                                 } else {
                                     showAlert('error', 'Error', 'Failed to update setting');
-                                    checkbox.checked = !checkbox.checked; // Revert on error
+                                    checkbox.checked = !checkbox.checked;
                                 }
                             })
                             .catch(error => {
                                 showAlert('error', 'Error', 'Failed to update setting');
-                                checkbox.checked = !checkbox.checked; // Revert on error
+                                checkbox.checked = !checkbox.checked;
                             });
                         });
                     });
                 </script>
+                <?php endif; ?>
 
-                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
-                    <h2 class="text-2xl font-bold mb-2">Manager void PIN</h2>
-                    <p class="text-sm text-gray-600 mb-6">Required to void or delete transactions from Reports. Stored securely in the business info database.</p>
+                <?php if ($settingsSection === 'account'): ?>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-5 mb-8">
+                <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+                            <i class="fas fa-key text-amber-600"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-base font-semibold text-gray-900">Manager void PIN</h2>
+                            <p class="text-xs text-gray-500">Required to void or delete transactions</p>
+                        </div>
+                    </div>
                     <?php if ($manager_pin_configured): ?>
-                    <p class="text-sm text-teal-700 mb-4 font-medium">A manager PIN is currently set.</p>
+                    <p class="text-sm text-teal-700 mb-4 font-medium">A manager PIN is currently set. Enter a new PIN below to change it.</p>
                     <?php else: ?>
-                    <p class="text-sm text-amber-700 mb-4 font-medium">No PIN set yet — voiding transactions from reports will be blocked until you set one.</p>
+                    <p class="text-sm text-amber-700 mb-4 font-medium">No PIN set yet — voiding from reports will be blocked until you set one.</p>
                     <?php endif; ?>
-                    <form method="POST" action="" class="space-y-4 max-w-md" autocomplete="off">
+                    <form method="POST" action="settings?s=account" class="space-y-4 flex-1 flex flex-col" autocomplete="off">
                         <input type="hidden" name="save_manager_void_pin" value="1">
                         <div>
                             <label for="manager_void_pin_new" class="block text-sm font-medium text-gray-700 mb-1">New PIN</label>
-                            <input type="password" name="manager_void_pin_new" id="manager_void_pin_new" autocomplete="off" inputmode="numeric" minlength="4" required
-                                class="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-gray-600 focus:border-transparent">
+                            <input type="password" name="manager_void_pin_new" id="manager_void_pin_new" autocomplete="new-password" inputmode="numeric" minlength="4" required
+                                class="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
                         </div>
                         <div>
                             <label for="manager_void_pin_confirm" class="block text-sm font-medium text-gray-700 mb-1">Confirm PIN</label>
-                            <input type="password" name="manager_void_pin_confirm" id="manager_void_pin_confirm" autocomplete="off" inputmode="numeric" minlength="4" required
-                                class="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-gray-600 focus:border-transparent">
+                            <input type="password" name="manager_void_pin_confirm" id="manager_void_pin_confirm" autocomplete="new-password" inputmode="numeric" minlength="4" required
+                                class="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
                         </div>
-                        <button type="submit" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-700 transition-colors duration-200">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-                            </svg>
-                            Save manager PIN
-                        </button>
+                        <div class="mt-auto pt-3 flex justify-end">
+                            <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                <i class="fas fa-lock mr-2"></i>
+                                <?php echo $manager_pin_configured ? 'Change manager PIN' : 'Save manager PIN'; ?>
+                            </button>
+                        </div>
                     </form>
-                </div>
+                </section>
 
-                <?php if ($manager_pin_success): ?>
-                <script>
-                    document.addEventListener('DOMContentLoaded', function() {
-                        showAlert('success', 'Success', 'Manager void PIN saved.');
-                    });
-                </script>
-                <?php elseif ($manager_pin_error !== ''): ?>
+                <?php if ($manager_pin_error !== ''): ?>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         showAlert('error', 'Error', <?= json_encode($manager_pin_error, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>);
@@ -429,10 +824,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                 </script>
                 <?php endif; ?>
 
-                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
-                        <h2 class="text-2xl font-bold mb-6">Update Account Details</h2>
+                <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col lg:col-span-1">
+                        <div class="flex items-center gap-3 mb-4">
+                            <div class="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
+                                <i class="fas fa-user-shield text-teal-600"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-base font-semibold text-gray-900">Update account details</h2>
+                                <p class="text-xs text-gray-500">Username, email, and password</p>
+                            </div>
+                        </div>
                         
-                        <form action="" method="POST" class="space-y-6" autocomplete="off">
+                        <form action="settings?s=account" method="POST" class="space-y-6 flex-1 flex flex-col" autocomplete="off">
                             <?php
                             try {
                                 $pdo = new PDO('sqlite:../user.db');
@@ -506,39 +909,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                 </div>
                             </div>
 
-                            <div class="flex gap-8">
-                                <button type="submit" name="update_account" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-gray-600 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                                        <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                                        <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                                    </svg>
+                            <div class="mt-auto pt-3 flex justify-end">
+                                <button type="submit" name="update_account" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                                    <i class="fas fa-check mr-2"></i>
                                     Update
                                 </button>
-                                <a href="users" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path>
-                                    </svg>
-                                    Manage Users
-                                </a>
-                                <a href="logs" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                    </svg>
-                                    View Logs
-                                </a>
-
-                                <a href="damaged_goods" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                    </svg>
-                                    Damaged Stock
-                                </a>
-                                <a href="business_settings" class="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm bg-transparent text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
-                                    </svg>
-                                  info
-                                </a>
                             </div>
                         </form>
                         <?php
@@ -580,7 +955,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                         $updateStmt->execute($params);
                                         
                                         echo "<script>
-                                            showAlert('success', 'Success', 'Account details updated successfully!', 'settings');
+                                            showAlert('success', 'Success', 'Account details updated successfully!', 'settings?s=account');
                                         </script>";
                                     }
                                 } else {
@@ -595,16 +970,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                             }
                         }
                         ?>
-                    </div>
+                </section>
+                </div>
+                <?php endif; ?>
 
-                <div class="bg-white shadow-xl rounded-xl p-8 mb-8">
-                    <h2 class="text-2xl font-bold mb-6">Software Activation</h2>
-                    <form action="" method="POST" class="space-y-4">
+                <?php if ($settingsSection === 'activation'): ?>
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-8">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+                            <i class="fas fa-key text-amber-600"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-base font-semibold text-gray-900">Software activation</h2>
+                            <p class="text-xs text-gray-500">Enter key and view license status</p>
+                        </div>
+                    </div>
+                    <form action="settings?s=activation" method="POST" class="space-y-4">
                         <!-- CSRF Token for security -->
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(generateActivationCSRFToken()) ?>">
                         <input type="hidden" name="activate_software" value="1">
                         
-                        <div class="relative">
+                        <div class="relative max-w-xl">
                             <label for="key" class="block text-sm font-medium text-gray-700 mb-2">Activation Key</label>
                             <div class="relative rounded-md shadow-sm">
                                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -614,13 +1000,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                 </div>
                                 <input type="text" name="key" id="key" placeholder="Enter Your Activation Key" required
                                     maxlength="64" autocomplete="off"
-                                    class="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm placeholder-gray-400">
+                                    class="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 shadow-sm placeholder-gray-400">
                             </div>
                         </div>
-                        <button type="submit" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-gray-600 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors duration-200">
-                            <svg class="h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd"/>
-                            </svg>
+                        <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                            <i class="fas fa-check mr-2"></i>
                             Activate
                         </button>
                     </form>
@@ -677,7 +1061,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                         echo "<div class='mt-4 p-4 bg-yellow-100 text-yellow-700 rounded fade-in'>
                             <h2 class='font-bold'>Payment Methods</h2>
                             <p>Your account is not activated. Please contact <a href='mailto:info.easystockna@gmail.com' class='text-blue-600 underline'>info.easystockna@gmail.com</a> or call 0814759498 to purchase a key.</p><br>
-                            <div class='mt-2 flex space-x-4'>
+                            <div class='mt-2 flex flex-wrap gap-4'>
                                 <div class='flex items-center'>
                                     <img src='../props/FNB_Color.png' alt='FNB eWallet' class='h-12 w-12'>
                                     <span class='ml-2'>FNB eWallet</span>
@@ -699,27 +1083,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                     }
                     ?>
                 </div>
+                <?php endif; ?>
 
-                <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
-                    <h2 class="text-xl font-semibold mb-2">Month-End Cashout</h2>
-                    <p class="text-gray-600 mb-4">Perform end-of-month cashout operation. This will automatically generate a monthly report and then clear all transactions while preserving any unpaid credit balances.</p>
-                    <div class="flex space-x-2 mb-4">
+                <?php if ($settingsSection === 'cashout'): ?>
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-8">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                            <i class="fas fa-file-invoice-dollar text-emerald-600"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-base font-semibold text-gray-900">Month-end cashout</h2>
+                            <p class="text-xs text-gray-500">Report download and transaction cleanup</p>
+                        </div>
+                    </div>
+                    <p class="text-sm text-gray-600 mb-4">Perform end-of-month cashout operation. This will automatically generate a monthly report and then clear all transactions while preserving any unpaid credit balances.</p>
+                    <div class="flex flex-wrap gap-2 mb-4">
                         <?php
                         // Check activation status using secure helper
                         $cashoutActivationCheck = checkActivationStatus();
                         $isCashoutActivated = ($cashoutActivationCheck['status'] === 'active');
                         ?>
                         
-                        <button type="button" id="perform_cashout_btn" class="bg-teal-500 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200" <?php echo !$isCashoutActivated ? 'disabled title="Please activate the software to use this feature"' : ''; ?>>
-                            <svg class="w-5 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
-                            </svg>
-                            Generate Report & Cashout
+                        <button type="button" id="perform_cashout_btn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:opacity-50 disabled:cursor-not-allowed" <?php echo !$isCashoutActivated ? 'disabled title="Please activate the software to use this feature"' : ''; ?>>
+                            <i class="fas fa-file-download mr-2"></i>
+                            Generate Report &amp; Cashout
                         </button>
                     </div>
 
                     <!-- Hidden form for submission -->
-                    <form id="perform_cashout_form" method="POST" action="" style="display: none;">
+                    <form id="perform_cashout_form" method="POST" action="settings?s=cashout" style="display: none;">
                         <input type="hidden" name="perform_cashout" value="1">
                     </form>
 
@@ -740,21 +1132,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                         });
                     </script>
                 </div>
-                <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
-                    <h2 class="text-xl font-semibold mb-4">System Management</h2>
-                    <div class="flex space-x-2"> <!-- Small gap between buttons -->
+                <?php endif; ?>
+
+                <?php if ($settingsSection === 'system'): ?>
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-8">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 bg-rose-100 rounded-lg flex items-center justify-center shrink-0">
+                            <i class="fas fa-database text-rose-600"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-base font-semibold text-gray-900">System management</h2>
+                            <p class="text-xs text-gray-500">Export transactions and barcodes</p>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
         
-                        <a href="generate_barcodes_pdf.php" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
-                            <svg class="w-5 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
+                        <a href="generate_barcodes_pdf.php" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700">
+                            <i class="fas fa-barcode mr-2"></i>
                             Generate Barcode PDF
                         </a>
                         
-                        <button type="button" id="export_transactions_btn" class="bg-teal-500 hover:bg-teal-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
-                            <svg class="w-5 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
+                        <button type="button" id="export_transactions_btn" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-teal-600 hover:bg-teal-700">
+                            <i class="fas fa-file-excel mr-2"></i>
                             Export Transactions
                         </button>
                     </div>
@@ -797,46 +1196,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                     </form>
 
                     <script>
-                        document.getElementById('delete_all_btn').addEventListener('click', function() {
-                            showConfirm(
-                                'Delete All Records', 
-                                'Are you sure you want to delete ALL records? This action cannot be undone.',
-                                function() {
-                                    document.getElementById('delete_all_form').submit();
-                                }
-                            );
-                        });
+                        (function() {
+                            var deleteAllBtn = document.getElementById('delete_all_btn');
+                            if (deleteAllBtn) {
+                                deleteAllBtn.addEventListener('click', function() {
+                                    showConfirm(
+                                        'Delete All Records', 
+                                        'Are you sure you want to delete ALL records? This action cannot be undone.',
+                                        function() {
+                                            document.getElementById('delete_all_form').submit();
+                                        }
+                                    );
+                                });
+                            }
 
-                        document.getElementById('delete_all_products_btn').addEventListener('click', function() {
-                            showConfirm(
-                                'Delete All Products', 
-                                'Are you sure you want to delete ALL products? This action cannot be undone.',
-                                function() {
-                                    document.getElementById('delete_all_products_form').submit();
-                                }
-                            );
-                        });
+                            var deleteProductsBtn = document.getElementById('delete_all_products_btn');
+                            if (deleteProductsBtn) {
+                                deleteProductsBtn.addEventListener('click', function() {
+                                    showConfirm(
+                                        'Delete All Products', 
+                                        'Are you sure you want to delete ALL products? This action cannot be undone.',
+                                        function() {
+                                            document.getElementById('delete_all_products_form').submit();
+                                        }
+                                    );
+                                });
+                            }
 
-                        document.getElementById('reset_quantities_btn').addEventListener('click', function() {
-                            showConfirm(
-                                'Reset All Quantities', 
-                                'Are you sure you want to reset ALL product quantities to zero? This action cannot be undone.',
-                                function() {
-                                    document.getElementById('reset_quantities_form').submit();
-                                }
-                            );
-                        });
+                            var resetQtyBtn = document.getElementById('reset_quantities_btn');
+                            if (resetQtyBtn) {
+                                resetQtyBtn.addEventListener('click', function() {
+                                    showConfirm(
+                                        'Reset All Quantities', 
+                                        'Are you sure you want to reset ALL product quantities to zero? This action cannot be undone.',
+                                        function() {
+                                            document.getElementById('reset_quantities_form').submit();
+                                        }
+                                    );
+                                });
+                            }
                         
-                        // Export transactions modal
-                        document.getElementById('export_transactions_btn').addEventListener('click', function() {
-                            document.getElementById('export_modal').classList.remove('hidden');
-                        });
+                            // Export transactions modal
+                            var exportBtn = document.getElementById('export_transactions_btn');
+                            if (exportBtn) {
+                                exportBtn.addEventListener('click', function() {
+                                    document.getElementById('export_modal').classList.remove('hidden');
+                                });
+                            }
                         
-                        document.getElementById('export_cancel').addEventListener('click', function() {
-                            document.getElementById('export_modal').classList.add('hidden');
-                        });
+                            var exportCancel = document.getElementById('export_cancel');
+                            if (exportCancel) {
+                                exportCancel.addEventListener('click', function() {
+                                    document.getElementById('export_modal').classList.add('hidden');
+                                });
+                            }
+                        })();
                     </script>
                 </div>
+                <?php endif; ?>
             </div>
 
             <?php

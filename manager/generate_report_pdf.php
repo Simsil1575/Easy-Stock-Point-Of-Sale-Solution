@@ -1330,9 +1330,8 @@ switch ($reportType) {
         // Get shift/login data
         $cashierCondition = $cashierId ? " AND ul.user_id = " . $db->quote($cashierId) : "";
         $shiftQuery = $db->prepare("
-            SELECT ul.*, u.username
+            SELECT ul.*, CAST(ul.user_id AS TEXT) AS username
             FROM user_log ul
-            LEFT JOIN users u ON ul.user_id = u.id
             WHERE DATE(ul.action_time) BETWEEN :start AND :end $cashierCondition
             ORDER BY ul.action_time DESC
         ");
@@ -1429,28 +1428,8 @@ switch ($reportType) {
         break;
         
     case 'audit_log':
-        // Get user log/audit data
-        $logQuery = $db->prepare("
-            SELECT ul.*, u.username
-            FROM user_log ul
-            LEFT JOIN users u ON ul.user_id = u.id
-            WHERE DATE(ul.action_time) BETWEEN :start AND :end
-            ORDER BY ul.action_time DESC
-            LIMIT 500
-        ");
-        try {
-            $logQuery->execute([':start' => $startDate, ':end' => $endDate]);
-            $logs = $logQuery->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Exception $e) {
-            $logs = [];
-        }
-        
-        $reportData = [
-            'logs' => $logs,
-            'summary' => [
-                'total_entries' => count($logs)
-            ]
-        ];
+        require_once __DIR__ . '/../audit_log_helper.php';
+        $reportData = buildAuditLogReportData($db, $userDb, $startDate, $endDate, 1000);
         break;
 
     case 'supplier_receiving':
@@ -3480,7 +3459,23 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="summary-cards">
             <div class="summary-card">
                 <div class="label">Total Entries</div>
-                <div class="value"><?= $reportData['summary']['total_entries'] ?></div>
+                <div class="value"><?= (int) ($reportData['summary']['total_entries'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Sales</div>
+                <div class="value"><?= (int) ($reportData['summary']['sales'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Receiving</div>
+                <div class="value"><?= (int) ($reportData['summary']['receiving'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Adjustments</div>
+                <div class="value"><?= (int) ($reportData['summary']['adjustments'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Opening / Closing</div>
+                <div class="value"><?= (int) (($reportData['summary']['opening_stock'] ?? 0) + ($reportData['summary']['closing_stock'] ?? 0)) ?></div>
             </div>
         </div>
         
@@ -3490,23 +3485,27 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Date/Time</th>
                     <th>User</th>
                     <th>Action</th>
+                    <th>Details</th>
+                    <th>Amount</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (!empty($reportData['logs'])): ?>
                     <?php foreach ($reportData['logs'] as $log): ?>
                     <tr>
-                        <td><?= date('M j, Y H:i:s', strtotime($log['action_time'])) ?></td>
+                        <td><?= !empty($log['action_time']) ? date('M j, Y H:i:s', strtotime($log['action_time'])) : '-' ?></td>
                         <td><?= htmlspecialchars($log['username'] ?? 'Unknown') ?></td>
                         <td>
-                            <span class="badge <?= $log['action_type'] === 'login' ? 'badge-success' : 'badge-info' ?>">
-                                <?= ucfirst($log['action_type']) ?>
+                            <span class="badge <?= auditLogBadgeClass((string) ($log['action_type'] ?? '')) ?>">
+                                <?= htmlspecialchars(ucwords(str_replace('_', ' ', (string) ($log['action_type'] ?? '')))) ?>
                             </span>
                         </td>
+                        <td><?= htmlspecialchars($log['detail'] ?? '') ?></td>
+                        <td><?= isset($log['amount']) && $log['amount'] !== null ? 'N$' . number_format((float) $log['amount'], 2) : '-' ?></td>
                     </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="3" class="no-data">No audit log entries found for this period</td></tr>
+                    <tr><td colspan="5" class="no-data">No audit log entries found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

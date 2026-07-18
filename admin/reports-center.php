@@ -76,6 +76,7 @@ require_once __DIR__ . '/../ui_cards_helper.php';
 ensureUiCardsSchema($infoDb);
 $uiCardScope = 'admin_reports';
 $hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
+$orderedUiCards = uiGetCardOrder($infoDb, $uiCardScope);
 $showHiddenUiCards = isset($_GET['show_hidden']);
 $uiCardsCustomizeMode = isset($_GET['customize']) || $showHiddenUiCards;
 $uiCardsApiUrl = '../ui_cards_api.php';
@@ -660,7 +661,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                         </div>
                         
                         <!-- System Reports -->
-                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="audit_log" onclick="openReportModal('audit_log', 'Audit Log Report', 'System activity and user actions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="audit_log" onclick="openReportModal('audit_log', 'Audit Log Report', 'Logins, sales, receiving, adjustments, and opening/closing stock')">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-gray-200 rounded-lg flex items-center justify-center">

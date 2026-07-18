@@ -34,6 +34,8 @@ function ensureDamagedGoodsTable(PDO $db) {
     )");
 }
 ensureDamagedGoodsTable($db);
+require_once __DIR__ . '/ensure_stock_changes_username.php';
+ensureStockChangesUsernameColumn($db);
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -73,8 +75,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $new_quantity = $stmt->fetchColumn();
         
         // Insert into stock_changes
-        $stmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$product_id, 'damaged', -1, $old_quantity, $new_quantity]);
+        $stmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, username) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$product_id, 'damaged', -1, $old_quantity, $new_quantity, currentStockChangeUsername()]);
         
         $db->commit();
         
@@ -134,15 +136,17 @@ try {
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="3.4.16"></script>
+    <script src="sweetalert2@11.js"></script>
+    <script src="js/pos-confirm.js"></script>
 
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 ml-64 content">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <div class="flex justify-between items-center mb-8 border-b border-gray-200 pb-6">
                     <div>
                         <h1 class="text-3xl font-bold text-gray-900">Damaged Goods Tracking</h1>
@@ -252,9 +256,9 @@ try {
                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate"><?= htmlspecialchars($record['reason']) ?></td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><?= date('M j, Y H:i', strtotime($record['date'])) ?></td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
-                                            <form method="POST" action="delete_damaged.php" class="inline">
+                                            <form method="POST" action="delete_damaged.php" class="inline" onsubmit="return confirmPosFormSubmit(event, { title: 'Delete this record?', text: 'This damaged goods entry will be permanently removed.', confirmButtonText: 'Delete', variant: 'danger' });">
                                                 <input type="hidden" name="id" value="<?= $record['id'] ?>">
-                                                <button type="submit" class="text-red-400 hover:text-red-600 transition-colors duration-200" onclick="return confirm('Are you sure?')">
+                                                <button type="submit" class="text-red-400 hover:text-red-600 transition-colors duration-200">
                                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                                     </svg>

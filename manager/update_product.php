@@ -6,6 +6,10 @@ header('Content-Type: application/json');
 
 date_default_timezone_set('Africa/Johannesburg'); // GMT+2 (Windhoek is actually GMT+2, but using Johannesburg which is also GMT+2)
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -23,8 +27,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     try {
         require_once __DIR__ . '/../recipe_stock_helper.php';
+        require_once __DIR__ . '/../ensure_stock_changes_username.php';
         $db = new SQLite3('../pos.db');
         configureSqlite3($db);
+        ensureStockChangesUsernameColumn($db);
         
         if (!$db) {
             ob_clean();
@@ -68,13 +74,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // Insert stock change record
                 $stmtInsert = $db->prepare("INSERT INTO stock_changes 
-                    (product_id, action, quantity_change, old_quantity, new_quantity, changed_at)
-                    VALUES (:product_id, :action, :quantity_change, :old_quantity, :new_quantity, datetime('now'))");
+                    (product_id, action, quantity_change, old_quantity, new_quantity, changed_at, username)
+                    VALUES (:product_id, :action, :quantity_change, :old_quantity, :new_quantity, datetime('now'), :username)");
                 $stmtInsert->bindValue(':product_id', $data['id'], SQLITE3_INTEGER);
                 $stmtInsert->bindValue(':action', $action, SQLITE3_TEXT);
                 $stmtInsert->bindValue(':quantity_change', $quantityChange, SQLITE3_INTEGER);
                 $stmtInsert->bindValue(':old_quantity', $oldQuantity, SQLITE3_INTEGER);
                 $stmtInsert->bindValue(':new_quantity', $newQuantity, SQLITE3_INTEGER);
+                $stmtInsert->bindValue(':username', currentStockChangeUsername(), SQLITE3_TEXT);
                 $stmtInsert->execute();
             
                 // Update daily stock summary for receiving (when quantity increases)
@@ -112,7 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $summaryStmt->execute();
                 }
 
-                adjustRecipeStockByProductIdSQLite3($db, (int) $data['id'], (float) $quantityChange);
+                // Inventory quantity edits must not auto-adjust linked recipe ingredients
             }
         }
     

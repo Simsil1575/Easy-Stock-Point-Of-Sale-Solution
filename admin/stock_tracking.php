@@ -14,6 +14,9 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Database connection
 $db = new PDO('sqlite:../pos.db');
+require_once __DIR__ . '/../ensure_stock_changes_username.php';
+ensureStockChangesUsernameColumn($db);
+backfillStockChangesUsernames($db);
 
 // Pagination setup
 $rowsPerPage = 7;
@@ -22,7 +25,7 @@ $offset = ($page - 1) * $rowsPerPage;
 
 // Search functionality
 $search = isset($_GET['search']) ? $_GET['search'] : '';
-$searchCondition = $search ? "AND (p.name LIKE :search OR sc.action LIKE :search)" : "";
+$searchCondition = $search ? "AND (p.name LIKE :search OR sc.action LIKE :search OR IFNULL(sc.username, '') LIKE :search)" : "";
 
 // Date filter for receiving report
 $receivingDate = isset($_GET['receiving_date']) ? $_GET['receiving_date'] : '';
@@ -130,13 +133,14 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                 $this->Ln(10);
                 
                 // Table header for stock changes
-                $this->SetFont('Arial', 'B', 11);
-                $this->Cell(40, 10, 'Date', 1);
-                $this->Cell(50, 10, 'Product', 1);
-                $this->Cell(30, 10, 'Action', 1);
-                $this->Cell(25, 10, 'Qty Change', 1);
-                $this->Cell(20, 10, 'Old Qty', 1);
-                $this->Cell(20, 10, 'New Qty', 1);
+                $this->SetFont('Arial', 'B', 9);
+                $this->Cell(32, 8, 'Date', 1);
+                $this->Cell(40, 8, 'Product', 1);
+                $this->Cell(28, 8, 'Cashier', 1);
+                $this->Cell(24, 8, 'Action', 1);
+                $this->Cell(22, 8, 'Qty Change', 1);
+                $this->Cell(18, 8, 'Old Qty', 1);
+                $this->Cell(18, 8, 'New Qty', 1);
                 $this->Ln();
             } 
             else if ($this->pageType == 'inventory') {
@@ -219,13 +223,18 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
         
         // Add data to PDF
         foreach ($allStockChanges as $change) {
-            $pdf->Cell(40, 10, $change['formatted_date'], 1);
-            $pdf->Cell(50, 10, $change['product_name'], 1);
-            $pdf->Cell(30, 10, ucfirst($change['action']), 1);
+            $cashier = trim((string) ($change['username'] ?? ''));
+            if ($cashier === '') {
+                $cashier = '-';
+            }
+            $pdf->Cell(32, 8, $change['formatted_date'], 1);
+            $pdf->Cell(40, 8, substr($change['product_name'], 0, 22), 1);
+            $pdf->Cell(28, 8, substr($cashier, 0, 16), 1);
+            $pdf->Cell(24, 8, ucfirst($change['action']), 1);
             $qtyChangeText = ($change['quantity_change'] > 0 ? '+' : '') . $change['quantity_change'];
-            $pdf->Cell(25, 10, $qtyChangeText, 1);
-            $pdf->Cell(20, 10, $change['old_quantity'], 1);
-            $pdf->Cell(20, 10, $change['new_quantity'], 1);
+            $pdf->Cell(22, 8, $qtyChangeText, 1);
+            $pdf->Cell(18, 8, $change['old_quantity'], 1);
+            $pdf->Cell(18, 8, $change['new_quantity'], 1);
             $pdf->Ln();
         }
         
@@ -440,128 +449,139 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
     <meta name="google" content="notranslate">
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
- 
+    <style>
+        .stock-tracking-header-row {
+            flex-wrap: nowrap;
+            scrollbar-width: none;
+        }
+        .stock-tracking-header-row::-webkit-scrollbar {
+            display: none;
+        }
+    </style>
 </head>
-<body class="bg-gray-50">
-    <div class="flex">
-        <div class="sidebar fixed h-full">
-            <?php include 'sidebar.php'; ?>
-        </div>
-        <div class="flex-1 ml-64 content">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <div class="flex items-center justify-between gap-4 mb-8">
-                    <!-- Left: Go Back and Title -->
-                    <div class="flex items-center gap-4">
-                        <a href="inventory" class="inline-flex items-center justify-center h-10 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-colors">
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-                            </svg>
-                            Go Back
-                        </a>
-                        <h1 class="text-2xl font-bold whitespace-nowrap">Stock Tracking</h1>
+<body class="bg-gray-100 overflow-x-hidden">
+    <div class="flex min-h-screen">
+        <?php include 'sidebar.php'; ?>
+
+        <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
+
+        <div class="content flex-1 lg:ml-64 min-w-0">
+            <main class="p-4 lg:p-6">
+                <div class="w-full flex items-center gap-1.5 sm:gap-2 mb-4 overflow-x-auto stock-tracking-header-row" style="-webkit-overflow-scrolling: touch;">
+                    <div class="hamburger lg:hidden bg-[#f3f4f6] p-1.5 rounded flex-shrink-0" onclick="toggleSidebar()">
+                        <span></span>
+                        <span></span>
+                        <span></span>
                     </div>
-                    
-                    <!-- Right: All action buttons and search -->
-                    <div class="flex items-center gap-3">
-                        <a href="?export_pdf=true&report_type=stock_changes<?= $search ? '&search='.urlencode($search) : '' ?>" class="inline-flex items-center justify-center h-10 px-4 bg-gray-600 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors whitespace-nowrap">
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
-                            Stock Changes
-                        </a>
-                        <input type="date" id="inventoryDate" name="inventory_date" max="<?= htmlspecialchars($todayDate) ?>"
-                               title="Optional: pick a date for historical stock. Leave empty for current stock."
-                               class="h-10 px-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm">
-                        <select id="inventoryCategories" name="categories[]" multiple
-                               title="Optional: select one or more categories (Ctrl+click). Leave empty for all."
-                               class="h-10 min-w-[9rem] max-w-[11rem] px-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm">
-                            <?php foreach ($productCategories as $cat): ?>
-                                <option value="<?= htmlspecialchars($cat) ?>"><?= htmlspecialchars($cat) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <button type="button" onclick="downloadInventoryReport()" class="inline-flex items-center justify-center h-10 px-4 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap">
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
-                            Inventory
-                        </button>
-                        <select id="receivingDate" name="receiving_date" 
-                               class="h-10 px-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white">
-                            <option value="">Select date</option>
-                            <?php foreach ($receivingDates as $date): ?>
-                                <option value="<?= htmlspecialchars($date) ?>" <?= $receivingDate === $date ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($date) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <button onclick="downloadReceivingReport()" class="inline-flex items-center justify-center h-10 px-4 bg-teal-600 text-white text-sm font-medium rounded-md hover:bg-teal-700 transition-colors whitespace-nowrap">
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
-                            Receiving
-                        </button>
-                        <div class="relative">
-                            <input type="text" id="searchInput" name="search" placeholder="Search..." 
-                                   value="<?= htmlspecialchars($search) ?>"
-                                   class="h-10 w-40 pl-9 pr-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500">
-                            <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
-                        </div>
+                    <a href="inventory" class="inline-flex items-center justify-center h-9 px-2.5 border border-gray-300 rounded-md shadow-sm text-xs sm:text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-colors whitespace-nowrap flex-shrink-0">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                        </svg>
+                        Go Back
+                    </a>
+                    <h1 class="text-lg sm:text-xl font-bold whitespace-nowrap flex-shrink-0">Stock Tracking</h1>
+
+                    <a href="?export_pdf=true&report_type=stock_changes<?= $search ? '&search='.urlencode($search) : '' ?>" class="inline-flex items-center justify-center h-9 px-2.5 bg-gray-600 text-white text-xs sm:text-sm font-medium rounded-md hover:bg-gray-700 transition-colors whitespace-nowrap flex-shrink-0">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        Stock Changes
+                    </a>
+                    <input type="date" id="inventoryDate" name="inventory_date" max="<?= htmlspecialchars($todayDate) ?>"
+                           title="Optional: pick a date for historical stock. Leave empty for current stock."
+                           class="h-9 px-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-xs sm:text-sm flex-shrink-0 w-[9.5rem]">
+                    <select id="inventoryCategories" name="categories[]"
+                           title="Optional: select a category. Leave as All for every category."
+                           class="h-9 min-w-[7.5rem] max-w-[9rem] px-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-xs sm:text-sm flex-shrink-0">
+                        <option value="">All categories</option>
+                        <?php foreach ($productCategories as $cat): ?>
+                            <option value="<?= htmlspecialchars($cat) ?>"><?= htmlspecialchars($cat) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button type="button" onclick="downloadInventoryReport()" class="inline-flex items-center justify-center h-9 px-2.5 bg-blue-600 text-white text-xs sm:text-sm font-medium rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap flex-shrink-0">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        Inventory
+                    </button>
+                    <select id="receivingDate" name="receiving_date"
+                           class="h-9 px-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white text-xs sm:text-sm flex-shrink-0 max-w-[9rem]">
+                        <option value="">Select date</option>
+                        <?php foreach ($receivingDates as $date): ?>
+                            <option value="<?= htmlspecialchars($date) ?>" <?= $receivingDate === $date ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($date) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button type="button" onclick="downloadReceivingReport()" class="inline-flex items-center justify-center h-9 px-2.5 bg-teal-600 text-white text-xs sm:text-sm font-medium rounded-md hover:bg-teal-700 transition-colors whitespace-nowrap flex-shrink-0">
+                        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        Receiving
+                    </button>
+                    <div class="relative flex-1 min-w-[10rem]">
+                        <input type="text" id="searchInput" name="search" placeholder="Search..."
+                               value="<?= htmlspecialchars($search) ?>"
+                               class="h-9 w-full pl-8 pr-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white text-xs sm:text-sm">
+                        <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
                     </div>
                 </div>
 
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-300 h-16">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Date</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Product</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Action</th>
-                                <th class="px-6 py-3 text-center text-xs font-medium text-black uppercase">Qty Change</th>
-                                <th class="px-6 py-3 text-center text-xs font-medium text-black uppercase">Old Qty</th>
-                                <th class="px-6 py-3 text-center text-xs font-medium text-black uppercase">New Qty</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            <?php foreach ($stockChanges as $change): ?>
-                            <tr class="hover:bg-gray-50 transition-colors">
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900"><?= $change['formatted_date'] ?></td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900"><?= htmlspecialchars($change['product_name']) ?></td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 capitalize"><?= $change['action'] ?></td>
-                                <td class="px-6 py-4 whitespace-nowrap text-center text-sm <?= $change['quantity_change'] > 0 ? 'text-teal-600' : 'text-red-600' ?>">
-                                    <?= ($change['quantity_change'] > 0 ? '+' : '') . $change['quantity_change'] ?>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500"><?= $change['old_quantity'] ?></td>
-                                <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500"><?= $change['new_quantity'] ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
+                <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-8">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-300 h-16">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Date</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Product</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Cashier</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-black uppercase">Action</th>
+                                    <th class="px-6 py-3 text-center text-xs font-medium text-black uppercase">Qty Change</th>
+                                    <th class="px-6 py-3 text-center text-xs font-medium text-black uppercase">Old Qty</th>
+                                    <th class="px-6 py-3 text-center text-xs font-medium text-black uppercase">New Qty</th>
+                                </tr>
+                            </thead>
+                            <tbody id="stockChangesBody" class="bg-white divide-y divide-gray-200">
+                                <?php foreach ($stockChanges as $change): ?>
+                                <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900"><?= htmlspecialchars($change['formatted_date']) ?></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900"><?= htmlspecialchars($change['product_name']) ?></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900"><?= htmlspecialchars(!empty($change['username']) ? $change['username'] : '-') ?></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 capitalize"><?= htmlspecialchars($change['action']) ?></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-center text-sm <?= $change['quantity_change'] > 0 ? 'text-teal-600' : 'text-red-600' ?>">
+                                        <?= ($change['quantity_change'] > 0 ? '+' : '') . $change['quantity_change'] ?>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500"><?= $change['old_quantity'] ?></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500"><?= $change['new_quantity'] ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
 
                     <div class="px-6 py-4 border-t border-gray-200">
-                        <div class="flex justify-between items-center">
+                        <div class="flex flex-wrap justify-between items-center gap-2">
                             <button id="prev-page" data-page="<?= max(1, $page - 1) ?>" class="page-button inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md <?= $page > 1 ? 'text-gray-700 bg-white hover:bg-gray-50' : 'text-gray-300 cursor-not-allowed' ?>">
                                 Previous
                             </button>
-                            
+
                             <span id="page-info" class="text-sm text-gray-700">
                                 Page <?= $page ?> of <?= $totalPages ?>
                             </span>
-                            
+
                             <button id="next-page" data-page="<?= min($totalPages, $page + 1) ?>" class="page-button inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md <?= $page < $totalPages ? 'text-gray-700 bg-white hover:bg-gray-50' : 'text-gray-300 cursor-not-allowed' ?>">
                                 Next
                             </button>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Weekly Stock Table -->
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                <!-- Weekly Stock Table -->
                 <h2 class="text-2xl font-bold mb-4">Weekly Stock Overview (Monday-Sunday)</h2>
-                
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden mb-8">
+
+                <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-8">
                     <div class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-300 h-16">
@@ -581,10 +601,10 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                                 // Get the start and end date of the current week (Monday to Sunday)
                                 $startOfWeek = date('Y-m-d', strtotime('monday this week'));
                                 $endOfWeek = date('Y-m-d', strtotime('sunday this week'));
-                                
+
                                 // Query to get all stock changes this week
                                 $weeklyStmt = $db->prepare("
-                                    SELECT 
+                                    SELECT
                                         p.id as product_id,
                                         p.name as product_name,
                                         strftime('%w', datetime(sc.changed_at, '+2 hours')) as day_of_week,
@@ -595,22 +615,22 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                                     GROUP BY p.id, p.name, day_of_week
                                     ORDER BY p.name, day_of_week
                                 ");
-                                
+
                                 $weeklyStmt->bindValue(':start_date', $startOfWeek);
                                 $weeklyStmt->bindValue(':end_date', $endOfWeek);
                                 $weeklyStmt->execute();
                                 $weeklyData = $weeklyStmt->fetchAll(PDO::FETCH_ASSOC);
-                                
+
                                 // Organize data by product and day
                                 // Day mapping: 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday
                                 // We want: Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6, Sunday=0
                                 $productData = [];
-                                
+
                                 foreach ($weeklyData as $item) {
                                     $productId = $item['product_id'];
                                     $productName = $item['product_name'];
                                     $dayOfWeek = (int)$item['day_of_week'];
-                                    
+
                                     if (!isset($productData[$productId])) {
                                         $productData[$productId] = [
                                             'name' => $productName,
@@ -625,10 +645,10 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                                             ]
                                         ];
                                     }
-                                    
+
                                     $productData[$productId]['days'][$dayOfWeek] += (int)$item['total_change'];
                                 }
-                                
+
                                 // Get all products that had changes this week
                                 $allProductsStmt = $db->prepare("
                                     SELECT DISTINCT p.id, p.name
@@ -641,7 +661,7 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                                 $allProductsStmt->bindValue(':end_date', $endOfWeek);
                                 $allProductsStmt->execute();
                                 $allProducts = $allProductsStmt->fetchAll(PDO::FETCH_ASSOC);
-                                
+
                                 // Merge product data for products that had changes
                                 foreach ($allProducts as $product) {
                                     if (!isset($productData[$product['id']])) {
@@ -659,17 +679,17 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                                         ];
                                     }
                                 }
-                                
+
                                 if (count($productData) > 0) {
                                     // Sort by product name
                                     uasort($productData, function($a, $b) {
                                         return strcmp($a['name'], $b['name']);
                                     });
-                                    
+
                                     foreach ($productData as $productId => $data) {
                                         echo '<tr class="hover:bg-gray-50 transition-colors">';
                                         echo '<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white z-10">' . htmlspecialchars($data['name']) . '</td>';
-                                        
+
                                         // Display Monday through Sunday
                                         $dayOrder = [1, 2, 3, 4, 5, 6, 0]; // Monday to Sunday
                                         foreach ($dayOrder as $day) {
@@ -685,10 +705,10 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                                                 $cellClass .= 'text-gray-400';
                                                 $displayValue = '-';
                                             }
-                                            
+
                                             echo '<td class="' . $cellClass . '">' . $displayValue . '</td>';
                                         }
-                                        
+
                                         echo '</tr>';
                                     }
                                 } else {
@@ -699,20 +719,18 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                         </table>
                     </div>
                 </div>
-            </div>
+            </main>
         </div>
     </div>
-</body>
-</html>
 
-   <script>
+    <script>
         // JavaScript for AJAX pagination and real-time search
         document.addEventListener('DOMContentLoaded', function() {
             // Get the current search value from URL
             const urlParams = new URLSearchParams(window.location.search);
             let currentSearch = urlParams.get('search') || '';
             let searchTimeout;
-            
+
             // Add event listener to search input for real-time search
             const searchInput = document.getElementById('searchInput');
             searchInput.addEventListener('input', function() {
@@ -722,59 +740,67 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                     loadData(1); // Reset to first page when search changes
                 }, 300); // Debounce for 300ms
             });
-            
+
             // Function to load data via AJAX
             function loadData(page) {
                 const xhr = new XMLHttpRequest();
                 xhr.open('GET', `stock_tracking.php?page=${page}&search=${encodeURIComponent(currentSearch)}&ajax=true`, true);
-                
+
                 xhr.onload = function() {
                     if (this.status === 200) {
                         const response = JSON.parse(this.responseText);
                         updateTable(response.data);
                         updatePagination(response.pagination);
-                        
+
                         // Update URL without reloading
                         const url = `?page=${page}${currentSearch ? '&search=' + encodeURIComponent(currentSearch) : ''}`;
                         history.pushState({page: page, search: currentSearch}, '', url);
                     }
                 };
-                
+
                 xhr.send();
             }
-            
+
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text == null ? '' : String(text);
+                return div.innerHTML;
+            }
+
             // Function to update table with new data
             function updateTable(data) {
-                const tbody = document.querySelector('tbody');
+                const tbody = document.getElementById('stockChangesBody');
                 tbody.innerHTML = '';
-                
+
                 data.forEach(change => {
                     const row = document.createElement('tr');
                     row.className = 'hover:bg-gray-50 transition-colors';
-                    
+                    const cashier = change.username && String(change.username).trim() !== '' ? change.username : '-';
+
                     row.innerHTML = `
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${change.formatted_date}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${change.product_name}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 capitalize">${change.action}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${escapeHtml(change.formatted_date)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${escapeHtml(change.product_name)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${escapeHtml(cashier)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 capitalize">${escapeHtml(change.action)}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-center text-sm ${parseInt(change.quantity_change) > 0 ? 'text-teal-600' : 'text-red-600'}">
-                            ${(parseInt(change.quantity_change) > 0 ? '+' : '') + change.quantity_change}
+                            ${(parseInt(change.quantity_change) > 0 ? '+' : '') + escapeHtml(change.quantity_change)}
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500">${change.old_quantity}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500">${change.new_quantity}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500">${escapeHtml(change.old_quantity)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500">${escapeHtml(change.new_quantity)}</td>
                     `;
-                    
+
                     tbody.appendChild(row);
                 });
             }
-            
+
             // Function to update pagination controls
             function updatePagination(pagination) {
                 const pageInfo = document.getElementById('page-info');
                 pageInfo.textContent = `Page ${pagination.page} of ${pagination.totalPages}`;
-                
+
                 const prevButton = document.getElementById('prev-page');
                 const nextButton = document.getElementById('next-page');
-                
+
                 if (pagination.page > 1) {
                     prevButton.classList.remove('text-gray-300', 'cursor-not-allowed');
                     prevButton.classList.add('text-gray-700');
@@ -784,7 +810,7 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                     prevButton.classList.add('text-gray-300', 'cursor-not-allowed');
                     prevButton.dataset.page = 1;
                 }
-                
+
                 if (pagination.page < pagination.totalPages) {
                     nextButton.classList.remove('text-gray-300', 'cursor-not-allowed');
                     nextButton.classList.add('text-gray-700');
@@ -795,20 +821,20 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                     nextButton.dataset.page = pagination.totalPages;
                 }
             }
-            
+
             // Add event listeners to pagination buttons
             document.addEventListener('click', function(e) {
                 if (e.target.matches('.page-button') || e.target.closest('.page-button')) {
                     e.preventDefault();
                     const button = e.target.matches('.page-button') ? e.target : e.target.closest('.page-button');
                     const page = parseInt(button.dataset.page);
-                    
+
                     if (!button.classList.contains('cursor-not-allowed')) {
                         loadData(page);
                     }
                 }
             });
-            
+
             // Handle back/forward browser navigation
             window.addEventListener('popstate', function(e) {
                 if (e.state) {
@@ -821,11 +847,31 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                     loadData(1);
                 }
             });
-            
+
             // Initialize state for current page
             history.replaceState({page: <?= $page ?>, search: currentSearch}, '', window.location.href);
         });
-        
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('mobileOverlay');
+            const hamburger = document.querySelector('.hamburger');
+
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('active');
+            hamburger.classList.toggle('open');
+        }
+
+        function closeSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('mobileOverlay');
+            const hamburger = document.querySelector('.hamburger');
+
+            sidebar.classList.remove('open');
+            overlay.classList.remove('active');
+            hamburger.classList.remove('open');
+        }
+
         // Function to download current inventory report (optional category filter)
         function downloadInventoryReport() {
             const select = document.getElementById('inventoryCategories');
@@ -848,8 +894,10 @@ if (isset($_GET['export_pdf']) && $_GET['export_pdf'] == 'true') {
                 alert('Please select a date with receiving data.');
                 return;
             }
-            
+
             // Open PDF download link
             window.location.href = `?export_pdf=true&report_type=stock_receiving&receiving_date=${receivingDate}`;
         }
     </script>
+</body>
+</html>

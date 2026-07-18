@@ -43,7 +43,7 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
     <script src="../lucide.js"></script>
 
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <!-- Toast Notification Container -->
     <div id="toast" class="fixed top-4 right-4 z-50 hidden max-w-xs w-full bg-white rounded-lg shadow-lg border-l-4 p-4 transition-transform duration-300 transform translate-x-full">
         <div class="flex items-center justify-between">
@@ -63,8 +63,8 @@ $users = $db->query("SELECT * FROM users WHERE role IN ('cashier', 'manager', 'w
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 ml-64 content">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <div class="flex justify-between items-center mb-8">
                     <h1 class="text-3xl font-bold">Account Management</h1>
 

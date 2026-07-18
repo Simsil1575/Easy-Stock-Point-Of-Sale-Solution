@@ -15,3 +15,7 @@ debug-*.log
 # Archives
 *.rar
 *.zip
+
+# App updater local state / optional GitHub token
+app_updater_settings.json
+.update_tmp/

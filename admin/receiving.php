@@ -27,7 +27,9 @@ $db = new PDO('sqlite:../pos.db');
 require_once __DIR__ . '/../recipe_stock_helper.php';
 require_once __DIR__ . '/../purchase_order_lib.php';
 require_once __DIR__ . '/../ensure_purchase_order_schema.php';
+require_once __DIR__ . '/../ensure_stock_changes_username.php';
 configureSqlitePdo($db);
+ensureStockChangesUsernameColumn($db);
 ensurePurchaseOrderSchema($db);
 $userDb = new PDO('sqlite:../user.db');
 
@@ -140,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($receivingData['items'] as $item) {
                 if (!empty($item['product_id']) && !empty($item['quantity']) && $item['quantity'] > 0) {
                     $productId = $item['product_id'];
-                    $quantity = intval($item['quantity']);
+                    $quantity = floatval($item['quantity']);
                     
                     // Get current product info
                     $stmt = $db->prepare("SELECT name, quantity, price, buying_price FROM products WHERE id = ?");
@@ -148,7 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $product = $stmt->fetch(PDO::FETCH_ASSOC);
                     
                     if ($product) {
-                        $oldQuantity = intval($product['quantity']);
+                        $oldQuantity = floatval($product['quantity']);
                         // For PDF only, calculate what the new quantity would be (don't update)
                         // For AJAX, this is before update so it's correct
                         $newQuantity = $isPdfOnly ? $oldQuantity : ($oldQuantity + $quantity);
@@ -197,8 +199,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             adjustRecipeStockByProductId($db, (int) $productId, (float) $quantity);
                             
                             // Log the stock change (use selected receiving date/time)
-                            $logStmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, changed_at) VALUES (?, ?, ?, ?, ?, ?)");
-                            $logStmt->execute([$productId, 'Restock', $quantity, $oldQuantity, $newQuantity, $selectedDateTime]);
+                            $logStmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, changed_at, username) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                            $logStmt->execute([$productId, 'Restock', $quantity, $oldQuantity, $newQuantity, $selectedDateTime, currentStockChangeUsername()]);
                             
                             // Update or insert daily stock summary - only update received quantity
                             $summaryStmt = $db->prepare("
@@ -747,6 +749,15 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             opacity: 1;
             visibility: visible;
         }
+
+        /* Receiving header: keep one row; hide scrollbar while allowing swipe scroll */
+        .receiving-header-row {
+            flex-wrap: nowrap;
+            scrollbar-width: none;
+        }
+        .receiving-header-row::-webkit-scrollbar {
+            display: none;
+        }
         
         /* Ensure sidebar maintains proper z-index above overlay */
         .sidebar {
@@ -1051,76 +1062,69 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         }
     </style>
 </head>
-<body class="bg-gray-50">
-    <div class="flex">
-        <div class="sidebar fixed h-full">
-            <?php include 'sidebar.php'; ?>
-        </div>
-        <div class="flex-1 content lg:ml-0 ml-0">
-            <!-- Mobile Sidebar Overlay -->
-            <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
-            
-            <!-- Fixed Header -->
-            <div id="receivingFixedHeader" class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 sm:py-4 px-4 lg:px-8 shadow-sm border-b border-gray-200">
-                <div class="w-full max-w-7xl mx-auto space-y-3">
-                    <div class="flex items-center justify-between gap-3">
-                        <div class="flex items-center gap-2 sm:gap-3 min-w-0">
-                            <div class="hamburger lg:hidden bg-[#f3f4f6] p-2 rounded flex-shrink-0" onclick="toggleSidebar()">
-                                <span></span>
-                                <span></span>
-                                <span></span>
-                            </div>
-                            <h1 class="text-lg sm:text-xl lg:text-2xl font-bold whitespace-nowrap">Stock Receiving</h1>
-                        </div>
-                        <a href="inventory" class="inline-flex items-center flex-shrink-0 px-2 sm:px-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-                            </svg>
-                            <span class="hidden sm:inline">Go Back</span>
-                            <span class="sm:hidden">Back</span>
-                        </a>
+<body class="bg-gray-100 overflow-x-hidden" data-server-date="<?= htmlspecialchars(date('Y-m-d'), ENT_QUOTES, 'UTF-8') ?>">
+    <div class="flex min-h-screen">
+        <?php include 'sidebar.php'; ?>
+        
+        <!-- Mobile Overlay -->
+        <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
+        
+        <!-- Main Content -->
+        <div class="content flex-1 lg:ml-64">
+            <!-- Sticky Header — single row, scrolls horizontally on narrow screens -->
+            <div id="receivingFixedHeader" class="sticky top-0 z-50 bg-gray-100 py-2 sm:py-3 px-2 sm:px-4 lg:px-6 shadow-sm border-b border-gray-200">
+                <div class="w-full flex items-center gap-1.5 sm:gap-2 overflow-x-auto receiving-header-row" style="-webkit-overflow-scrolling: touch;">
+                    <div class="hamburger lg:hidden bg-[#f3f4f6] p-1.5 sm:p-2 rounded flex-shrink-0" onclick="toggleSidebar()">
+                        <span></span>
+                        <span></span>
+                        <span></span>
                     </div>
-
-                    <div class="flex flex-wrap items-center gap-2">
-                        <select id="poFilter" class="w-full sm:w-auto sm:min-w-[160px] flex-1 sm:flex-initial px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
-                            <option value="">No PO (ad-hoc)</option>
-                            <?php foreach ($openPurchaseOrders as $opo): ?>
-                                <option value="<?= (int) $opo['id'] ?>" data-supplier-id="<?= (int) $opo['supplier_id'] ?>" <?= $preselectedPoId === (int) $opo['id'] ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars(poFormatNumber((int) $opo['id']) . ' — ' . $opo['supplier_name']) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <select id="supplierFilter" class="w-full sm:w-auto sm:min-w-[140px] flex-1 sm:flex-initial px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
-                            <option value="">Supplier (optional)</option>
-                            <?php foreach ($activeSuppliers as $sup): ?>
-                                <option value="<?= (int) $sup['id'] ?>" <?= $preselectedSupplierId === (int) $sup['id'] && $preselectedPoId < 1 ? 'selected' : '' ?>><?= htmlspecialchars($sup['name']) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <select id="categoryFilter" class="w-full sm:w-auto sm:min-w-[140px] flex-1 sm:flex-initial px-2 sm:px-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
-                            <option value="">All Categories</option>
-                            <?php foreach ($categories as $category): ?>
-                                <option value="<?= htmlspecialchars($category) ?>"><?= htmlspecialchars($category) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <div class="flex items-center gap-2 w-full sm:w-auto flex-1 sm:flex-initial sm:min-w-[200px]">
-                            <label for="receivingDate" class="text-xs sm:text-sm text-gray-700 whitespace-nowrap flex-shrink-0">Receiving date</label>
-                            <input type="datetime-local" id="receivingDate" class="flex-1 min-w-0 px-2 sm:px-3 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm"/>
-                        </div>
-                        <div class="relative w-full sm:w-auto sm:min-w-[180px] flex-1 sm:flex-initial sm:max-w-xs">
-                            <input type="text" id="searchInput" placeholder="Search..." class="w-full pl-8 sm:pl-10 pr-2 sm:pr-4 py-2 text-xs sm:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5 absolute left-2 top-2.5 sm:top-2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
-                        </div>
+                    <h1 class="text-sm sm:text-lg lg:text-xl font-bold whitespace-nowrap flex-shrink-0">
+                        <span class="sm:hidden">Receiving</span>
+                        <span class="hidden sm:inline">Stock Receiving</span>
+                    </h1>
+                    <select id="poFilter" class="flex-shrink-0 w-[7.5rem] sm:w-auto sm:min-w-[9rem] lg:min-w-[11rem] px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                        <option value="">No PO (ad-hoc)</option>
+                        <?php foreach ($openPurchaseOrders as $opo): ?>
+                            <option value="<?= (int) $opo['id'] ?>" data-supplier-id="<?= (int) $opo['supplier_id'] ?>" <?= $preselectedPoId === (int) $opo['id'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars(poFormatNumber((int) $opo['id']) . ' — ' . $opo['supplier_name']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <select id="supplierFilter" class="flex-shrink-0 w-[7rem] sm:w-auto sm:min-w-[8rem] lg:min-w-[9rem] px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                        <option value="">Supplier</option>
+                        <?php foreach ($activeSuppliers as $sup): ?>
+                            <option value="<?= (int) $sup['id'] ?>" <?= $preselectedSupplierId === (int) $sup['id'] && $preselectedPoId < 1 ? 'selected' : '' ?>><?= htmlspecialchars($sup['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <select id="categoryFilter" class="flex-shrink-0 w-[7rem] sm:w-auto sm:min-w-[8rem] lg:min-w-[9rem] px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                        <option value="">Category</option>
+                        <?php foreach ($categories as $category): ?>
+                            <option value="<?= htmlspecialchars($category) ?>"><?= htmlspecialchars($category) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
+                        <label for="receivingDate" class="hidden md:inline text-xs lg:text-sm text-gray-700 whitespace-nowrap">Date</label>
+                        <input type="datetime-local" id="receivingDate" title="Receiving date" class="w-[9.5rem] sm:w-[11rem] lg:w-auto min-w-0 px-1 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white"/>
                     </div>
+                    <div class="relative flex-shrink-0 w-[7rem] sm:w-[9rem] lg:w-[12rem]">
+                        <input type="text" id="searchInput" placeholder="Search..." class="w-full pl-7 sm:pl-8 lg:pl-9 pr-2 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                        <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                    </div>
+                    <a href="inventory" class="inline-flex items-center justify-center flex-shrink-0 ml-auto px-2 sm:px-3 lg:px-4 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
+                        <svg class="w-4 h-4 sm:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                        </svg>
+                        <span class="hidden sm:inline">Back</span>
+                    </a>
                 </div>
             </div>
             
-            <!-- Spacer for fixed header (height synced via JS) -->
-            <div id="receivingHeaderSpacer" class="mb-4" style="height: 9rem;"></div>
             <div id="receivingToastHost" aria-live="polite" aria-atomic="true"></div>
             
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
+            <main class="p-4 lg:p-6">
 
                 <!-- Bulk Actions Panel -->
                 <div id="bulkActionsPanel" class="hidden bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6 bulk-actions">
@@ -1129,7 +1133,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                             <span id="selectedCount" class="text-sm font-medium text-gray-700">0 items selected</span>
                             <div class="flex items-center gap-2">
                                 <label class="text-sm font-medium text-gray-700">Bulk Quantity:</label>
-                                <input type="number" id="bulkQuantity" min="1" class="quantity-input px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Qty">
+                                <input type="number" id="bulkQuantity" min="0" step="any" class="quantity-input px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Qty">
                             </div>
                         </div>
                         <button id="applyBulkBtn" class="inline-flex items-center px-2 sm:px-4 py-1.5 sm:py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm">
@@ -1225,7 +1229,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                                         <span class="current-stock"><?= $product['quantity'] ?></span>
                                     </td>
                                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="number" min="0" class="receiving-quantity quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" placeholder="0">
+                                        <input type="number" min="0" step="any" class="receiving-quantity quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" placeholder="0">
                                     </td>
                                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500">
                                         <span class="new-total"><?= $product['quantity'] ?></span>
@@ -1371,7 +1375,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                         </div>
                     </div>
                 </div>
-            </div>
+            </main>
         </div>
     </div>
     
@@ -1519,16 +1523,88 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             poFilter.addEventListener('change', async () => {
                 updateSupplierFieldState();
                 await loadPoLines(poFilter.value);
+                applyReceivingDraftFromStorage();
             });
         }
         updateSupplierFieldState();
-        if (poFilter && poFilter.value) {
-            loadPoLines(poFilter.value);
-        }
         
         // Cache for better performance
         let itemsBeingAddedCache = [];
         let updateItemsTimeout = null;
+
+        // Draft persistence (same idea as stock taking) — survive refresh / navigation
+        const RECEIVING_DRAFT_PREFIX = 'receiving_qty_draft_';
+        function getReceivingDraftKey() {
+            const serverDate = document.body.dataset.serverDate || new Date().toISOString().slice(0, 10);
+            const poId = (poFilter && poFilter.value) ? String(poFilter.value) : 'adhoc';
+            return RECEIVING_DRAFT_PREFIX + serverDate + '_po_' + poId;
+        }
+        function collectReceivingDraftMap() {
+            const map = {};
+            document.querySelectorAll('.receiving-row').forEach(row => {
+                const id = row.dataset.productId;
+                const qtyInput = row.querySelector('.receiving-quantity');
+                const bpInput = row.querySelector('.buying-price-input');
+                if (!id || !qtyInput) return;
+                const q = qtyInput.value.trim();
+                if (q === '' || !(parseFloat(q) > 0)) return;
+                map[id] = {
+                    q: q,
+                    bp: bpInput ? bpInput.value.trim() : ''
+                };
+            });
+            return map;
+        }
+        let receivingDraftSaveTimer = null;
+        let suppressReceivingDraftSave = false;
+        function saveReceivingDraftToStorage() {
+            try {
+                const map = collectReceivingDraftMap();
+                const key = getReceivingDraftKey();
+                if (Object.keys(map).length === 0) {
+                    localStorage.removeItem(key);
+                } else {
+                    localStorage.setItem(key, JSON.stringify(map));
+                }
+            } catch (e) { /* ignore quota / private mode */ }
+        }
+        function scheduleSaveReceivingDraft() {
+            clearTimeout(receivingDraftSaveTimer);
+            receivingDraftSaveTimer = setTimeout(saveReceivingDraftToStorage, 250);
+        }
+        function applyReceivingDraftFromStorage() {
+            let map = {};
+            try {
+                const raw = localStorage.getItem(getReceivingDraftKey());
+                if (raw) map = JSON.parse(raw) || {};
+            } catch (e) { map = {}; }
+            if (!map || Object.keys(map).length === 0) return;
+            document.querySelectorAll('.receiving-row').forEach(row => {
+                const id = row.dataset.productId;
+                const entry = map[id];
+                if (!entry) return;
+                const qtyInput = row.querySelector('.receiving-quantity');
+                const bpInput = row.querySelector('.buying-price-input');
+                if (qtyInput && entry.q !== undefined && String(entry.q).trim() !== '') {
+                    qtyInput.value = String(entry.q);
+                    updateNewTotal(row);
+                }
+                if (bpInput && entry.bp !== undefined && String(entry.bp).trim() !== '') {
+                    bpInput.value = String(entry.bp);
+                }
+            });
+            scheduleUpdateItems();
+        }
+        function clearCurrentReceivingDraft() {
+            try {
+                localStorage.removeItem(getReceivingDraftKey());
+            } catch (e) { /* ignore */ }
+        }
+        window.addEventListener('beforeunload', () => {
+            clearTimeout(receivingDraftSaveTimer);
+            if (suppressReceivingDraftSave) return;
+            saveReceivingDraftToStorage();
+        });
 
         // Cost calculator next to buying price (same pattern as inventory.php)
         (function initReceivingCostCalculator() {
@@ -1541,7 +1617,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 </div>
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Number of Items</label>
-                    <input type="number" id="receivingCalcItemCount" class="w-full px-3 py-2 border rounded-md" placeholder="Receiving qty" min="0" step="1">
+                    <input type="number" id="receivingCalcItemCount" class="w-full px-3 py-2 border rounded-md" placeholder="Receiving qty" min="0" step="any">
                 </div>
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Cost per Item</label>
@@ -1634,7 +1710,14 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         // Initialize
         showPage(currentPage);
         updateBulkActionsVisibility();
-        updateItemsBeingAdded(); // Initialize the real-time list
+
+        (async function bootReceivingDraft() {
+            if (poFilter && poFilter.value) {
+                await loadPoLines(poFilter.value);
+            }
+            applyReceivingDraftFromStorage();
+            updateItemsBeingAdded();
+        })();
 
         // Search and filter functionality - INSTANT response
         searchInput.addEventListener('input', (e) => {
@@ -1868,6 +1951,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             
             // Single update after all changes
             scheduleUpdateItems();
+            scheduleSaveReceivingDraft();
         });
 
         // Update new total when quantity changes - OPTIMIZED
@@ -1875,8 +1959,10 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             if (e.target.classList.contains('receiving-quantity')) {
                 updateNewTotal(e.target.closest('tr'));
                 scheduleUpdateItems();
+                scheduleSaveReceivingDraft();
             } else if (e.target.classList.contains('buying-price-input')) {
                 scheduleUpdateItems();
+                scheduleSaveReceivingDraft();
             }
         });
         
@@ -1888,10 +1974,10 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
 
 
         function updateNewTotal(row) {
-            const currentStock = parseInt(row.querySelector('.current-stock').textContent) || 0;
-            const receivingQty = parseInt(row.querySelector('.receiving-quantity').value) || 0;
+            const currentStock = parseFloat(row.querySelector('.current-stock').textContent) || 0;
+            const receivingQty = parseFloat(row.querySelector('.receiving-quantity').value) || 0;
             const newTotal = currentStock + receivingQty;
-            row.querySelector('.new-total').textContent = newTotal;
+            row.querySelector('.new-total').textContent = Number.isInteger(newTotal) ? String(newTotal) : String(Math.round(newTotal * 10000) / 10000);
         }
 
         // OPTIMIZED Real-time items being added functionality
@@ -1902,12 +1988,12 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
                 const quantityInput = row.querySelector('.receiving-quantity');
-                const quantity = parseInt(quantityInput.value) || 0;
+                const quantity = parseFloat(quantityInput.value) || 0;
                 
                 if (quantity > 0) {
                     const productId = row.dataset.productId;
                     const productName = row.children[2].textContent.trim();
-                    const currentStock = parseInt(row.querySelector('.current-stock').textContent) || 0;
+                    const currentStock = parseFloat(row.querySelector('.current-stock').textContent) || 0;
                     
                     // Get the product price from the row data
                     const priceElement = row.querySelector('.product-price');
@@ -2045,6 +2131,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 quantityInput.value = '';
                 updateNewTotal(row);
                 scheduleUpdateItems();
+                scheduleSaveReceivingDraft();
             }
         }
 
@@ -2072,6 +2159,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             updateSelectedCount();
             
             // Single update after all changes
+            clearCurrentReceivingDraft();
             scheduleUpdateItems();
         });
 
@@ -2084,7 +2172,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 const quantityInput = row.querySelector('.receiving-quantity');
                 const productId = row.dataset.productId;
                 
-                const quantity = parseInt(quantityInput.value) || 0;
+                const quantity = parseFloat(quantityInput.value) || 0;
                 
                 if (quantity > 0) {
                     const buyingPriceInput = row.querySelector('.buying-price-input');
@@ -2168,6 +2256,8 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 }
                 
                 // Reset form
+                suppressReceivingDraftSave = true;
+                clearCurrentReceivingDraft();
                 rows.forEach(row => {
                     row.querySelector('.receiving-quantity').value = '';
                     updateNewTotal(row);

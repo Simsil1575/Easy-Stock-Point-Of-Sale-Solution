@@ -755,11 +755,11 @@ $selectedDateTotalWithdrawals = $selectedDateTotalWithdrawalsQuery->fetchColumn(
         <div class="sidebar">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
-            <div class="container mx-auto p-6">
+            <div class="w-full p-4 lg:p-6">
                 <!-- Alert Notification Container -->
                 <div id="alertContainer" class="fixed top-4 right-4 z-[100] w-80 transform transition-transform duration-300 translate-x-full"></div>
                 

@@ -544,8 +544,8 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
 <body class="bg-gray-50">
     <div class="flex">
         <div class="sidebar"><?php include 'sidebar.php'; ?></div>
-        <div class="flex-1 content">
-            <div class="container mx-auto p-6">
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full p-4 lg:p-6">
                 <?php if (isset($_SESSION['payment_success'])): ?>
                 <div class="bg-teal-100 border-l-4 border-teal-500 text-teal-700 p-4 mb-4 rounded shadow" role="alert">
                     <p><?= $_SESSION['payment_success'] ?></p>

@@ -94,8 +94,8 @@ if ($activationStatus == 0) {
         <div class="sidebar">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 content">
-            <div class="container mx-auto p-6">
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full p-4 lg:p-6">
                 <div class="flex items-center justify-between mb-6">
                     <a href="settings" class="inline-flex items-center px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors">
                         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -108,63 +108,16 @@ if ($activationStatus == 0) {
 
                 <?php
                 try {
-                    // Connect to pos database
+                    require_once __DIR__ . '/../audit_log_helper.php';
                     $pos_db = new PDO('sqlite:../pos.db');
                     $pos_db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
-                    // Fetch all logs
-                    $stmt = $pos_db->prepare("
-                        SELECT 
-                            'user_log' as source,
-                            COALESCE(CAST(user_id AS TEXT), '') as user_id,
-                            COALESCE(action_type, '') as action_type,
-                            COALESCE(action_time, '') as action_time,
-                            '' as cashier_id,
-                            NULL as amount,
-                            COALESCE(CAST(user_id AS TEXT), '') as username
-                        FROM user_log
-                        
-                        UNION ALL
-                        
-                        SELECT 
-                            'orders' as source,
-                            '' as user_id,
-                            'order' as action_type,
-                            COALESCE(created_at, '') as action_time,
-                            COALESCE(CAST(cashier_id AS TEXT), '') as cashier_id,
-                            COALESCE(CAST(total AS REAL), 0) as amount,
-                            COALESCE(CAST(cashier_id AS TEXT), '') as username
-                        FROM orders
-                        
-                        UNION ALL
-                        
-                        SELECT 
-                            'credit_sales' as source,
-                            '' as user_id,
-                            'credit_sale' as action_type,
-                            COALESCE(created_at, '') as action_time,
-                            COALESCE(CAST(cashier_id AS TEXT), '') as cashier_id,
-                            COALESCE(CAST(total_amount AS REAL), 0) as amount,
-                            COALESCE(CAST(cashier_id AS TEXT), '') as username
-                        FROM credit_sales
-                        
-                        UNION ALL
-                        
-                        SELECT 
-                            'eft_payments' as source,
-                            '' as user_id,
-                            'eft_payment' as action_type,
-                            COALESCE(payment_date, '') as action_time,
-                            COALESCE(CAST(cashier_id AS TEXT), '') as cashier_id,
-                            COALESCE(CAST(amount AS REAL), 0) as amount,
-                            COALESCE(CAST(cashier_id AS TEXT), '') as username
-                        FROM eft_payments
-                        
-                        ORDER BY action_time DESC
-                    ");
-                    $stmt->execute();
-                    $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
+                    $user_db = null;
+                    try {
+                        $user_db = new PDO('sqlite:../user.db');
+                        $user_db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    } catch (PDOException $e) {
+                    }
+                    $logs = buildAuditLogActivityRows($pos_db, $user_db, 5000);
                 } catch (PDOException $e) {
                     $logs = [];
                     $error = "Error fetching logs: " . $e->getMessage();
@@ -206,7 +159,7 @@ if ($activationStatus == 0) {
                                     </th>
                                     <th class="py-4 px-6 text-left cursor-pointer" onclick="sortTable(1)">
                                         <div class="flex items-center">
-                                            <span class="text-gray-700">User/Cashier ID</span>
+                                            <span class="text-gray-700">User</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
                                             </svg>
@@ -220,7 +173,15 @@ if ($activationStatus == 0) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="py-4 px-6 text-left cursor-pointer" onclick="sortTable(3, true)">
+                                    <th class="py-4 px-6 text-left cursor-pointer" onclick="sortTable(3)">
+                                        <div class="flex items-center">
+                                            <span class="text-gray-700">Details</span>
+                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
+                                            </svg>
+                                        </div>
+                                    </th>
+                                    <th class="py-4 px-6 text-left cursor-pointer" onclick="sortTable(4, true)">
                                         <div class="flex items-center">
                                             <span class="text-gray-700">Amount</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -228,17 +189,9 @@ if ($activationStatus == 0) {
                                             </svg>
                                         </div>
                                     </th>
-                                    <th class="py-4 px-6 text-left cursor-pointer" onclick="sortTable(4)">
-                                        <div class="flex items-center">
-                                            <span class="text-gray-700">Time</span>
-                                            <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
-                                            </svg>
-                                        </div>
-                                    </th>
                                     <th class="py-4 px-6 text-left cursor-pointer" onclick="sortTable(5)">
                                         <div class="flex items-center">
-                                            <span class="text-gray-700">Username</span>
+                                            <span class="text-gray-700">Time</span>
                                             <svg class="w-3 h-3 ml-1.5 sort-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path>
                                             </svg>
@@ -249,39 +202,62 @@ if ($activationStatus == 0) {
                             <tbody class="divide-y divide-gray-200" id="logsTableBody">
                                 <?php if (empty($logs)): ?>
                                     <tr>
-                                        <td colspan="5" class="py-6 px-6 text-center text-gray-500 italic">No activity logs found</td>
+                                        <td colspan="6" class="py-6 px-6 text-center text-gray-500 italic">No activity logs found</td>
                                     </tr>
                                 <?php else: ?>
                                     <?php foreach ($logs as $log): ?>
+                                        <?php
+                                        $source = (string) ($log['source'] ?? '');
+                                        if ($source === 'auth') {
+                                            $sourceClass = 'bg-purple-100 text-purple-800';
+                                        } elseif ($source === 'sale') {
+                                            $sourceClass = 'bg-teal-100 text-teal-800';
+                                        } elseif ($source === 'receiving') {
+                                            $sourceClass = 'bg-indigo-100 text-indigo-800';
+                                        } elseif ($source === 'adjustment') {
+                                            $sourceClass = 'bg-orange-100 text-orange-800';
+                                        } elseif ($source === 'opening_stock') {
+                                            $sourceClass = 'bg-green-100 text-green-800';
+                                        } elseif ($source === 'closing_stock') {
+                                            $sourceClass = 'bg-yellow-100 text-yellow-800';
+                                        } else {
+                                            $sourceClass = 'bg-blue-100 text-blue-800';
+                                        }
+                                        $action = (string) ($log['action_type'] ?? '');
+                                        if ($action === 'login' || $action === 'sale') {
+                                            $actionClass = 'bg-teal-100 text-teal-800';
+                                        } elseif ($action === 'logout') {
+                                            $actionClass = 'bg-red-100 text-red-800';
+                                        } elseif ($action === 'receiving') {
+                                            $actionClass = 'bg-indigo-100 text-indigo-800';
+                                        } elseif ($action === 'adjust' || $action === 'damaged') {
+                                            $actionClass = 'bg-orange-100 text-orange-800';
+                                        } else {
+                                            $actionClass = 'bg-blue-100 text-blue-800';
+                                        }
+                                        ?>
                                         <tr class="hover:bg-gray-50 transition-colors">
                                             <td class="py-4 px-6">
-                                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
-                                                    <?= $log['source'] === 'user_log' ? 'bg-purple-100 text-purple-800' : 
-                                                       ($log['source'] === 'orders' ? 'bg-teal-100 text-teal-800' : 
-                                                       ($log['source'] === 'credit_sales' ? 'bg-yellow-100 text-yellow-800' : 
-                                                       'bg-blue-100 text-blue-800')) ?>">
-                                                    <?= ucfirst($log['source']) ?>
+                                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full <?= $sourceClass ?>">
+                                                    <?= htmlspecialchars(ucwords(str_replace('_', ' ', $source))) ?>
                                                 </span>
                                             </td>
                                             <td class="py-4 px-6 text-sm text-gray-500">
-                                                <?= $log['user_id'] ?: ($log['cashier_id'] ?: '-') ?>
+                                                <?= htmlspecialchars($log['username'] ?: ($log['user_id'] ?: '-')) ?>
                                             </td>
                                             <td class="py-4 px-6">
-                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium 
-                                                    <?= $log['action_type'] === 'login' ? 'bg-teal-100 text-teal-800' : 
-                                                       ($log['action_type'] === 'logout' ? 'bg-red-100 text-red-800' : 
-                                                       'bg-blue-100 text-blue-800') ?>">
-                                                    <?= ucfirst(str_replace('_', ' ', $log['action_type'])) ?>
+                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?= $actionClass ?>">
+                                                    <?= htmlspecialchars(ucwords(str_replace('_', ' ', $action))) ?>
                                                 </span>
                                             </td>
                                             <td class="py-4 px-6 text-sm text-gray-500">
-                                                <?= $log['amount'] ? 'N$' . number_format($log['amount'], 2) : '-' ?>
+                                                <?= htmlspecialchars($log['detail'] ?? '-') ?>
                                             </td>
                                             <td class="py-4 px-6 text-sm text-gray-500">
-                                                <?= date('M j, Y g:i A', strtotime($log['action_time'])) ?>
+                                                <?= isset($log['amount']) && $log['amount'] !== null && $log['amount'] !== '' ? 'N$' . number_format((float) $log['amount'], 2) : '-' ?>
                                             </td>
                                             <td class="py-4 px-6 text-sm text-gray-500">
-                                                <?= $log['username'] ?: '-' ?>
+                                                <?= !empty($log['action_time']) ? date('M j, Y g:i A', strtotime($log['action_time'])) : '-' ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>

@@ -36,15 +36,37 @@ if (!in_array($scope, $allowedScopes, true)) {
     exit;
 }
 
-if ($cardIds === []) {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'message' => 'Select at least one card.']);
-    exit;
-}
-
 try {
     $infoDb = new PDO('sqlite:' . __DIR__ . '/info.db');
     $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    if ($action === 'reorder') {
+        if ($cardIds === []) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'No card order provided.']);
+            exit;
+        }
+        $count = uiSaveCardOrder($infoDb, $scope, $cardIds);
+        echo json_encode(['ok' => true, 'message' => 'Card order saved.', 'count' => $count]);
+        exit;
+    }
+
+    if ($action === 'reset') {
+        $result = uiResetCardsToDefault($infoDb, $scope);
+        echo json_encode([
+            'ok' => true,
+            'message' => 'Cards reset to default.',
+            'order_cleared' => $result['order_cleared'],
+            'hidden_cleared' => $result['hidden_cleared'],
+        ]);
+        exit;
+    }
+
+    if ($cardIds === []) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'message' => 'Select at least one card.']);
+        exit;
+    }
 
     if ($action === 'hide') {
         $count = uiHideCards($infoDb, $scope, $cardIds);

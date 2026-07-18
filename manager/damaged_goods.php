@@ -22,6 +22,8 @@ if ($activationStatus == 0) {
 }
 
 $db = new PDO('sqlite:../pos.db');
+require_once __DIR__ . '/../ensure_stock_changes_username.php';
+ensureStockChangesUsernameColumn($db);
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -61,8 +63,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $new_quantity = $stmt->fetchColumn();
         
         // Insert into stock_changes
-        $stmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$product_id, 'damaged', -1, $old_quantity, $new_quantity]);
+        $stmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, username) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$product_id, 'damaged', -1, $old_quantity, $new_quantity, currentStockChangeUsername()]);
         
         $db->commit();
         
@@ -112,14 +114,16 @@ $damagedGoods = $db->query("
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../lucide.js"></script>
+    <script src="../sweetalert2@11.js"></script>
+    <script src="../js/pos-confirm.js"></script>
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 ml-64 content">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <div class="flex justify-between items-center mb-8 border-b border-gray-200 pb-6">
                     <div class="flex items-center gap-3">
                         <a href="manager-center" class="inline-flex items-center px-3 py-2 sm:px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors text-sm flex-shrink-0">
@@ -270,7 +274,7 @@ $damagedGoods = $db->query("
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200"><?= date('M j, Y H:i', strtotime($record['date'])) ?></td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-end text-sm font-medium">
-                                                            <form method="POST" action="delete_damaged.php" class="inline" onsubmit="return confirm('Are you sure you want to delete this record?');">
+                                                            <form method="POST" action="delete_damaged.php" class="inline" onsubmit="return confirmPosFormSubmit(event, { title: 'Delete this record?', text: 'This damaged goods entry will be permanently removed.', confirmButtonText: 'Delete', variant: 'danger' });">
                                                                 <input type="hidden" name="id" value="<?= $record['id'] ?>">
                                                                 <button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-600 hover:text-red-800 disabled:opacity-50 disabled:pointer-events-none dark:text-red-500 dark:hover:text-red-400" title="Delete">
                                                                     <i data-lucide="trash-2" class="w-4 h-4"></i>

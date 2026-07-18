@@ -2038,7 +2038,7 @@ if (!$businessInfo) {
                 <button class="bg-orange-600 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-orange-700 transition-colors duration-300 mb-2 text-sm" onclick="addCash(50)">N$50</button>
                 <button class="bg-neutral-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-neutral-800 transition-colors duration-300 mb-2 text-sm" onclick="addCash(100)">N$100</button>
                 <button class="bg-lime-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-lime-800 transition-colors duration-300 mb-2 text-sm"  onclick="addCash(200)">N$200</button>
-                <button class="bg-teal-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-teal-800 transition-colors duration-300 mb-2 text-sm" onclick="handleMixedPayment()">Cash/EFT</button>
+                <button class="bg-teal-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-teal-800 transition-colors duration-300 mb-2 text-sm" onclick="handleMixedPayment()">Mixed</button>
                 <button id="toggleExtraButtons" class="bg-teal-700 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-teal-800 transition-colors duration-300 mb-2 text-sm" onclick="toggleExtraButtons()">
                     <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
@@ -2881,7 +2881,8 @@ if (!$businessInfo) {
             const input = document.createElement('input');
             input.type = 'number';
             input.value = currentQuantity;
-            input.min = '1';
+            input.min = '0.001';
+            input.step = 'any';
             input.className = 'w-16 px-2 py-1 text-center border border-gray-300 rounded text-sm quantity-input js-kioskboard-input js-kioskboard-decimal';
             input.setAttribute('data-pos-kb-placement', 'bottom');
             input.style.backgroundColor = '#dbeafe';
@@ -2911,9 +2912,9 @@ if (!$businessInfo) {
                 if (window.PosKioskBoard) {
                     window.PosKioskBoard.close();
                 }
-                const newQuantity = parseInt(input.value);
+                const newQuantity = parseFloat(input.value);
                 
-                if (newQuantity && newQuantity > 0) {
+                if (!Number.isNaN(newQuantity) && newQuantity > 0) {
                     // Check available stock unless skip stock checks is enabled
                     if (!skipStockChecks) {
                         const availableQuantity = getStockQuantityForName(cart[index].name);
@@ -2932,9 +2933,10 @@ if (!$businessInfo) {
                             return;
                         }
                     }
-                    // Update cart with new quantity and recalculate price
-                    cart[index].quantity = newQuantity;
-                    cart[index].price = unitPrice * newQuantity;
+                    // Update cart with new quantity and recalculate price (keep up to 3 decimal places)
+                    const qty = Math.round(newQuantity * 1000) / 1000;
+                    cart[index].quantity = qty;
+                    cart[index].price = unitPrice * qty;
                     sound.play();
                 } else {
                     // Invalid quantity, restore original
@@ -3210,6 +3212,9 @@ if (!$businessInfo) {
             // Get today's date as default
             const today = new Date().toISOString().split('T')[0];
             const currentUser = '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>';
+
+            // Open drawer so cashier can count cash on hand
+            openCashDrawer().catch(function() {});
             
             // Show date selection modal first
             Swal.fire({
@@ -3431,14 +3436,17 @@ if (!$businessInfo) {
                             .then(printResult => {
                                 if (printResult.success) {
                                     cashSound.play();
-                                    Swal.fire({
+                                    return Swal.fire({
                                         icon: 'success',
                                         title: 'Cash Up Complete',
-                                        text: difference === 0 ?
+                                        text: (difference === 0 ?
                                             'Cash till balanced successfully' :
-                                            `Cash till ${difference > 0 ? 'surplus' : 'shortage'} of N$${Math.abs(difference).toFixed(2)} recorded`,
+                                            `Cash till ${difference > 0 ? 'surplus' : 'shortage'} of N$${Math.abs(difference).toFixed(2)} recorded`) +
+                                            '. You will be logged out.',
                                         timer: 2000,
                                         showConfirmButton: false
+                                    }).then(() => {
+                                        window.location.href = 'logout.php';
                                     });
                                 } else {
                                     Swal.fire({

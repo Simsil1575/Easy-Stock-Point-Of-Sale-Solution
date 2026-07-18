@@ -81,8 +81,10 @@ try {
             $newQty = $oldQty - $quantity;
             $hasStockChanges = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='stock_changes'")->fetch();
             if ($hasStockChanges) {
-                $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity) VALUES (?, ?, ?, ?, ?)")
-                    ->execute([$productId, 'tip', -$quantity, $oldQty, $newQty]);
+                require_once __DIR__ . '/ensure_stock_changes_username.php';
+                ensureStockChangesUsernameColumn($db);
+                $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, username) VALUES (?, ?, ?, ?, ?, ?)")
+                    ->execute([$productId, 'tip', -$quantity, $oldQty, $newQty, currentStockChangeUsername()]);
             }
             
             $db->commit();

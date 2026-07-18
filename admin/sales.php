@@ -715,7 +715,7 @@ try {
         .chart-container {
             position: relative;
             width: 100%;
-            height: 600px;
+            height: 260px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -725,35 +725,35 @@ try {
             position: relative;
             width: 100%;
             height: 100%;
-            max-width: 600px;
-            max-height: 600px;
+            max-width: 100%;
+            max-height: 260px;
         }
 
         /* Responsive adjustments */
         @media (max-width: 1024px) {
             .chart-container {
-                height: 500px;
+                height: 240px;
             }
             .chart-wrapper {
-                max-width: 500px;
-                max-height: 500px;
+                max-width: 100%;
+                max-height: 240px;
             }
         }
 
         @media (max-width: 768px) {
             .chart-container {
-                height: 400px;
+                height: 220px;
             }
             .chart-wrapper {
-                max-width: 400px;
-                max-height: 400px;
+                max-width: 100%;
+                max-height: 220px;
             }
             .flex-container {
                 flex-direction: column !important;
             }
             .chart-section {
                 width: 100% !important;
-                margin-bottom: 2rem;
+                margin-bottom: 1rem;
             }
             .table-section {
                 width: 100% !important;
@@ -763,11 +763,11 @@ try {
 
         @media (max-width: 640px) {
             .chart-container {
-                height: 300px;
+                height: 200px;
             }
             .chart-wrapper {
-                max-width: 300px;
-                max-height: 300px;
+                max-width: 100%;
+                max-height: 200px;
             }
         }
 
@@ -873,13 +873,13 @@ try {
 <body class="bg-gray-100 overflow-x-hidden">
     <div class="flex min-h-screen">
         <?php include 'sidebar.php'; ?>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <!-- Fixed Header Row -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-4 flex items-center justify-between gap-4 px-4 lg:px-8 shadow-sm">
-                <div class="w-full max-w-7xl mx-auto flex items-center justify-between gap-4 px-4 lg:px-8">
+            <div class="sticky top-0 z-50 bg-gray-100 py-4 flex items-center justify-between gap-4 px-4 lg:px-6 shadow-sm">
+                <div class="w-full flex items-center justify-between gap-4">
                     <!-- Mobile Controls Row -->
                     <div class="flex items-center gap-3">
                         <!-- Mobile Hamburger Menu Button -->
@@ -892,10 +892,8 @@ try {
                     </div>
                 </div>
             </div>
-            <!-- Spacer for fixed header -->
-            <div class="h-20 mb-4"></div>
             
-            <div class="container mx-auto p-4 md:p-6">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <!-- Date Selection Card -->
 
                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 lg:gap-6 mb-8">
@@ -956,12 +954,14 @@ try {
                 </div>
 
 
-                <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 mb-8">
-                    <form method="POST" id="dateSelectionForm">
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-6 mb-8 items-stretch">
+                <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 h-full flex flex-col order-2 xl:order-2">
+                    <form method="POST" id="dateSelectionForm" class="flex flex-col flex-1">
                         <input type="hidden" name="view" id="view_type_input" value="<?php echo htmlspecialchars($view); ?>">
                         <!-- View Type Tabs -->
                         <div class="mb-6">
-                            <div class="flex flex-wrap gap-2 mb-4">
+                            <div class="flex flex-wrap gap-2 mb-4 items-center justify-between">
+                                <div class="flex flex-wrap gap-2">
                                 <button type="button" onclick="switchView('daily')" id="tab-daily" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'daily' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                                     <i class="fas fa-calendar-day mr-2"></i>Daily
                                 </button>
@@ -970,6 +970,13 @@ try {
                                 </button>
                                 <button type="button" onclick="switchView('monthly')" id="tab-monthly" class="view-tab px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 <?php echo $view === 'monthly' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'; ?> focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
                                     <i class="fas fa-calendar-alt mr-2"></i>Monthly
+                                </button>
+                                </div>
+                                <button type="button" onclick="downloadPDF()" class="ml-auto px-4 py-2 bg-gray-600 text-white rounded-md shadow-md hover:bg-gray-700 transition-all duration-200 font-medium flex items-center gap-2 text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                    Download PDF
                                 </button>
                             </div>
                         </div>
@@ -1011,7 +1018,7 @@ try {
                                 
                                 <!-- Date Badge Grid for Selected Month -->
                                 <div class="mb-4">
-                                    <div class="grid grid-cols-7 sm:grid-cols-10 md:grid-cols-14 lg:grid-cols-31 gap-1.5 md:gap-2" id="daily-dates-grid">
+                                    <div class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-7 gap-1.5 md:gap-2" id="daily-dates-grid">
                                         <?php
                                         // Show dates for current month
                                         $datesToShow = isset($datesByMonth[$currentMonthKey]) ? $datesByMonth[$currentMonthKey] : [];
@@ -1229,23 +1236,11 @@ try {
                             </div>
                         </div>
 
-                        <!-- Action Buttons Row -->
-                        <div class="mt-6 pt-6 border-t border-gray-200 flex flex-wrap gap-3 justify-between items-center">
-                            <div class="flex flex-wrap gap-3">
-                             
-                            </div>
-                            <button type="button" onclick="downloadPDF()" class="px-4 py-2 bg-gray-600 text-white rounded-md shadow-md hover:bg-gray-700 transition-all duration-200 font-medium flex items-center gap-2 text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                </svg>
-                                Download PDF
-                            </button>
-                        </div>
                     </form>
                 </div>
                 
                 
-                <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 mb-8" style="min-height: 550px;">
+                <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 h-full flex flex-col min-h-0 order-1 xl:order-1">
                     <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-4">
                         <h2 class="text-xl lg:text-2xl font-bold text-gray-800">Top Selling Products</h2>
                         <div class="flex flex-wrap gap-2">
@@ -1254,20 +1249,20 @@ try {
                             <button type="button" onclick="updateView('monthly', event); return false;" class="px-3 py-2 text-sm font-medium rounded-md <?php echo $view === 'monthly' ? 'bg-gray-100 text-gray-700' : 'bg-gray-100 text-gray-700'; ?> hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" id="monthlyBtn">Monthly</button>
                         </div>
                     </div>
-                    <div class="flex flex-container">
-                        <div class="w-1/2 chart-section">
+                    <div class="flex flex-col gap-4 flex-1 min-h-0">
+                        <div class="w-full chart-section">
                             <div class="chart-container">
                                 <div class="chart-wrapper">
                                     <canvas id="topProductsChart"></canvas>
                                 </div>
                             </div>
                         </div>
-                        <div class="w-1/2 pl-2 table-section">
-                            <div class="bg-white rounded-lg shadow-lg overflow-hidden">
-                                <div class="flex justify-between items-center px-6 py-4 border-b">
+                        <div class="w-full table-section">
+                            <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                                <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 px-4 sm:px-6 py-4 border-b">
                                     <h3 class="text-lg font-semibold text-gray-800">Product Sales</h3>
                                     <div class="flex items-center space-x-4">
-                                        <div class="relative">
+                                        <div class="relative w-full sm:w-auto">
                                             <input type="text" id="searchInput" placeholder="Search products..." class="block appearance-none w-full bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:border-gray-500">
                                         </div>
                                     </div>
@@ -1276,19 +1271,19 @@ try {
                                     <table class="min-w-full divide-y divide-gray-200 table-fixed">
                                         <thead class="bg-gray-50">
                                             <tr>
-                                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="name" onclick="sortTable('name')">
+                                                <th scope="col" class="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="name" onclick="sortTable('name')">
                                                     Product <span id="nameSortArrow"></span>
                                                 </th>
-                                                <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="quantity" onclick="sortTable('quantity')">
-                                                    Quantity Sold <span id="quantitySortArrow"></span>
+                                                <th scope="col" class="px-4 sm:px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="quantity" onclick="sortTable('quantity')">
+                                                    Qty Sold <span id="quantitySortArrow"></span>
                                                 </th>
-                                                <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="total_sales" onclick="sortTable('total_sales')">
+                                                <th scope="col" class="px-4 sm:px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="total_sales" onclick="sortTable('total_sales')">
                                                     Revenue <span id="totalSalesSortArrow"></span>
                                                 </th>
-                                                <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="profit" onclick="sortTable('profit')">
+                                                <th scope="col" class="px-4 sm:px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="profit" onclick="sortTable('profit')">
                                                     Profit
                                                 </th>
-                                                <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="margin" onclick="sortTable('margin')">
+                                                <th scope="col" class="px-4 sm:px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 sortable" data-sort="margin" onclick="sortTable('margin')">
                                                     Margin %
                                                 </th>
                                             </tr>
@@ -1301,17 +1296,17 @@ try {
                                                 $marginPct = $revenue > 0 ? ($profit / $revenue) * 100 : 0;
                                             ?>
                                             <tr class="hover:bg-gray-50 transition-colors">
-                                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"><?php echo $product['product_name']; ?></td>
-                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right"><?php echo number_format($product['total_quantity']); ?></td>
-                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">N$<?php echo number_format($revenue, 2); ?></td>
-                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">N$<?php echo number_format($profit, 2); ?></td>
-                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right"><?php echo number_format($marginPct, 1); ?>%</td>
+                                                <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"><?php echo $product['product_name']; ?></td>
+                                                <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right"><?php echo number_format($product['total_quantity']); ?></td>
+                                                <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">N$<?php echo number_format($revenue, 2); ?></td>
+                                                <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">N$<?php echo number_format($profit, 2); ?></td>
+                                                <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right"><?php echo number_format($marginPct, 1); ?>%</td>
                                             </tr>
                                             <?php endforeach; ?>
                                         </tbody>
                                     </table>
                                 </div>
-                                <div class="px-6 py-4 border-t flex items-center justify-between">
+                                <div class="px-4 sm:px-6 py-4 border-t flex items-center justify-between">
                                     <div class="text-sm text-gray-500">
                                         Showing <span id="currentPage">1</span> of <span id="totalPages"><?php echo ceil(count($topSellingProducts) / 10); ?></span>
                                     </div>
@@ -1327,6 +1322,7 @@ try {
                             </div>
                         </div>
                     </div>
+                </div>
                 </div>
 
                 <div class="bg-white rounded-lg shadow-lg p-4 lg:p-6 mb-8">
@@ -1446,11 +1442,11 @@ try {
                             display: true,
                             text: 'Top 10 Selling Products (<?php echo addslashes($dateDisplay); ?>)',
                             font: {
-                                size: 18
+                                size: 14
                             },
                             padding: {
-                                top: 10,
-                                bottom: 20
+                                top: 4,
+                                bottom: 8
                             }
                         },
                         legend: {
@@ -2003,8 +1999,8 @@ try {
                         title: {
                             display: true,
                             text: `Top 10 Selling Products (${dateDisplay})`,
-                            font: { size: 18 },
-                            padding: { top: 10, bottom: 20 }
+                            font: { size: 14 },
+                            padding: { top: 4, bottom: 8 }
                         },
                         legend: { display: false }
                     },

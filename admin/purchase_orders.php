@@ -395,12 +395,12 @@ function poStatusBadgeClass(string $status): string
         .bulk-actions-bar { transition: all 0.2s ease; }
     </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body class="bg-gray-100 min-h-screen">
     <?php include 'sidebar.php'; ?>
     <div class="mobile-overlay lg:hidden fixed inset-0 bg-black/50 z-[80] hidden" id="mobileOverlay" onclick="closeSidebar()"></div>
     <div class="content flex-1 lg:ml-64">
-        <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 sm:py-4 px-4 lg:px-8 shadow-sm border-b border-gray-100">
-            <div class="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center gap-3">
+        <div class="sticky top-0 z-50 bg-gray-100 py-3 sm:py-4 px-4 lg:px-6 shadow-sm border-b border-gray-100">
+            <div class="w-full flex flex-col sm:flex-row sm:items-center gap-3">
                 <div class="flex items-center gap-3 min-w-0 flex-1">
                     <button type="button" class="hamburger lg:hidden p-2 rounded bg-gray-100" onclick="toggleSidebar()" aria-label="Open menu"><span></span><span></span><span></span></button>
                     <div class="min-w-0">
@@ -414,8 +414,7 @@ function poStatusBadgeClass(string $status): string
                 </a>
             </div>
         </div>
-        <div class="h-20 sm:h-24"></div>
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
+        <main class="p-4 lg:p-6">
         <?php if ($flash !== ''): ?>
             <div class="mb-4 p-3 rounded-lg bg-teal-50 text-teal-800 text-sm"><?= htmlspecialchars($flash) ?></div>
         <?php endif; ?>
@@ -1337,7 +1336,7 @@ function poStatusBadgeClass(string $status): string
             });
 
         </script>
-        </div>
+        </main>
     </div>
 </body>
 </html>

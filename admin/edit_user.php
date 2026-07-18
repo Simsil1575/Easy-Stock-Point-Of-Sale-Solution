@@ -119,13 +119,13 @@ if (!$user) {
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="3.4.16"></script>
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-100">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 ml-64 content">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="content flex-1 lg:ml-64">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <div class="flex gap-3">
                     <a href="users" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out">
                         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">

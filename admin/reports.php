@@ -326,34 +326,6 @@ $topProductsQuery->bindParam(':nextDay', $nextDay);
 $topProductsQuery->execute();
 $topProducts = $topProductsQuery->fetchAll(PDO::FETCH_ASSOC);
 
-// Damaged stock for selected business day (same window as sales)
-$damagedStockRowsQuery = $db->prepare("
-    SELECT dg.id,
-           dg.product_id,
-           p.name AS product_name,
-           dg.quantity,
-           dg.reason,
-           dg.date AS damaged_at,
-           (CAST(dg.quantity AS REAL) * COALESCE(p.price, 0)) AS line_value
-    FROM damaged_goods dg
-    INNER JOIN products p ON p.id = dg.product_id
-    WHERE (
-        (DATE(dg.date) = :selectedDateDamaged AND strftime('%H:%M', dg.date) >= '$closingTime') OR
-        (DATE(dg.date) = :nextDayDamaged AND strftime('%H:%M', dg.date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
-    ORDER BY dg.date DESC
-");
-$damagedStockRowsQuery->bindParam(':selectedDateDamaged', $selectedDate);
-$damagedStockRowsQuery->bindParam(':nextDayDamaged', $nextDay);
-$damagedStockRowsQuery->execute();
-$damagedStockRows = $damagedStockRowsQuery->fetchAll(PDO::FETCH_ASSOC);
-$damagedStockTotalQty = 0.0;
-$damagedStockTotalValue = 0.0;
-foreach ($damagedStockRows as $dr) {
-    $damagedStockTotalQty += (float) $dr['quantity'];
-    $damagedStockTotalValue += (float) $dr['line_value'];
-}
-
 // Fetch sales data with business day logic
 $ordersQuery = $db->prepare("
     WITH order_sums AS (
@@ -1077,16 +1049,16 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
         }
     </style>
 </head>
-<body style="background-color:rgb(249 250 251 / var(--tw-bg-opacity, 1))" class="overflow-x-hidden">
+<body class="bg-gray-100 overflow-x-hidden">
 
     <div class="flex min-h-screen">
         <?php include 'sidebar.php'; ?>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <!-- Fixed Header -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 lg:py-4 flex items-center px-3 sm:px-4 lg:px-8 shadow-sm">
+            <div class="sticky top-0 z-50 bg-gray-100 py-3 lg:py-4 flex items-center px-3 sm:px-4 lg:px-6 shadow-sm">
                 <div class="w-full flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 sm:gap-4">
                     <div class="flex items-center gap-2 sm:gap-3 lg:gap-4 flex-shrink-0 min-w-0">
                         <!-- Mobile Hamburger Menu Button -->
@@ -1137,10 +1109,8 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                 </div>
             </div>
             
-            <!-- Spacer for fixed header -->
-            <div class="h-16 sm:h-20 mb-4"></div>
             
-            <div class="container mx-auto p-6">
+            <div class="w-full px-4 lg:px-6 py-6">
                 <!-- Stats Cards -->
                 <?php if (count($salesData) > 0): ?>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -1639,55 +1609,6 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
-</div>
-
-<div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 bg-rose-100 border-b border-rose-200">
-        <h2 class="text-xl font-bold text-rose-900">
-            <i class="fas fa-exclamation-triangle mr-2" aria-hidden="true"></i>Damaged stock
-        </h2>
-        <div class="flex flex-wrap items-center gap-3 text-sm">
-            <span class="text-rose-800">
-                <span class="font-semibold"><?= count($damagedStockRows) ?></span> record<?= count($damagedStockRows) === 1 ? '' : 's' ?>
-                · <span class="font-semibold"><?= rtrim(rtrim(number_format($damagedStockTotalQty, 4, '.', ''), '0'), '.') ?></span> units
-                · <span class="font-semibold">N$<?= number_format($damagedStockTotalValue, 2) ?></span> at retail
-            </span>
-            <a href="damaged_goods.php" class="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-medium text-white bg-rose-600 hover:bg-rose-700 shadow-sm transition-colors">
-                <i class="fas fa-plus mr-1.5" aria-hidden="true"></i> Record damage
-            </a>
-        </div>
-    </div>
-    <div class="table-container overflow-x-auto">
-        <table class="min-w-full table-auto">
-            <thead>
-                <tr class="bg-gray-100 border-b-2 border-gray-200 text-sm">
-                    <th class="py-2 px-3 text-left text-gray-700">Product</th>
-                    <th class="py-2 px-3 text-right text-gray-700">Qty</th>
-                    <th class="py-2 px-3 text-left text-gray-700">Reason</th>
-                    <th class="py-2 px-3 text-left text-gray-700">Recorded</th>
-                    <th class="py-2 px-3 text-right text-gray-700">Retail value</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-200">
-                <?php if (count($damagedStockRows) > 0): ?>
-                    <?php foreach ($damagedStockRows as $drow): ?>
-                        <tr class="hover:bg-gray-50">
-                            <td class="py-2 px-3 text-sm font-medium text-gray-900"><?= htmlspecialchars($drow['product_name']) ?></td>
-                            <td class="py-2 px-3 text-sm text-right text-gray-800"><?= htmlspecialchars((string) $drow['quantity']) ?></td>
-                            <td class="py-2 px-3 text-sm text-gray-600"><?= htmlspecialchars((string) ($drow['reason'] ?? '')) ?: '—' ?></td>
-                            <td class="py-2 px-3 text-sm text-gray-600"><?= htmlspecialchars(date('d M Y H:i', strtotime($drow['damaged_at']))) ?></td>
-                            <td class="py-2 px-3 text-sm text-right font-medium text-rose-800">N$<?= number_format((float) $drow['line_value'], 2) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="5" class="py-8 px-4 text-center text-gray-500">No damaged stock for this business day.</td>
-                    </tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-    <p class="px-4 py-2 text-xs text-gray-500 bg-gray-50 border-t border-gray-200">Uses the same business-day window as transactions (closing time from business settings).</p>
 </div>
 
 <script>

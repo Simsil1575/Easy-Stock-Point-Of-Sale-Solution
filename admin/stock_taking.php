@@ -25,6 +25,8 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 $userDb = new PDO('sqlite:../user.db');
+require_once __DIR__ . '/../ensure_stock_changes_username.php';
+ensureStockChangesUsernameColumn($db);
 
 // Get user email from user database
 $userEmail = '';
@@ -60,303 +62,6 @@ function ensureDailyStockSummary($db, $productId, $date) {
 
 // Set the default timezone to Namibian time
 
-// Handle date range report download requests
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && ($_POST['action'] === 'download_opening_report' || $_POST['action'] === 'download_closing_report')) {
-    try {
-        $startDate = $_POST['start_date'] ?? date('Y-m-d');
-        $endDate = $_POST['end_date'] ?? date('Y-m-d');
-        $reportType = $_POST['action'] === 'download_opening_report' ? 'opening' : 'closing';
-        
-        // Validate dates
-        if (empty($startDate) || empty($endDate)) {
-            throw new Exception('Start date and end date are required');
-        }
-        
-        if (strtotime($startDate) > strtotime($endDate)) {
-            throw new Exception('Start date cannot be after end date');
-        }
-        
-        // Include FPDF library
-        require('../fpdf/fpdf.php');
-        
-        if ($reportType === 'opening') {
-            // Generate opening stock report for date range
-            class OpeningStockRangePDF extends FPDF {
-                private $startDate;
-                private $endDate;
-                
-                function __construct($startDate, $endDate) {
-                    parent::__construct('L'); // Landscape
-                    $this->startDate = $startDate;
-                    $this->endDate = $endDate;
-                }
-                
-                function Header() {
-                    $this->SetFont('Arial', 'B', 16);
-                    $this->Cell(0, 10, 'OPENING STOCK REPORT', 0, 1, 'C');
-                    $this->SetFont('Arial', '', 10);
-                    $this->Cell(0, 8, 'Date Range: ' . $this->startDate . ' to ' . $this->endDate, 0, 1, 'C');
-                    $this->Cell(0, 8, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
-                    $this->Ln(3);
-                }
-                
-                function Footer() {
-                    $this->SetY(-15);
-                    $this->SetFont('Arial', 'I', 8);
-                    $this->Cell(0, 10, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
-                }
-            }
-            
-            $pdf = new OpeningStockRangePDF($startDate, $endDate);
-            $pdf->AliasNbPages();
-            $pdf->AddPage();
-            $pdf->SetFont('Arial', '', 9);
-            
-            // Column widths for A4 landscape (297mm total width)
-            // Adjusted to fit: 20+55+28+28+28+38 = 197mm (leaves margin)
-            $colWidths = [
-                'id' => 20,
-                'name' => 55,
-                'date' => 28,
-                'quantity' => 28,
-                'unit_price' => 28,
-                'total_value' => 38
-            ];
-            
-            // Table header
-            $pdf->SetFont('Arial', 'B', 9);
-            $pdf->Cell($colWidths['id'], 10, 'ID', 1, 0, 'C');
-            $pdf->Cell($colWidths['name'], 10, 'Product Name', 1, 0, 'C');
-            $pdf->Cell($colWidths['date'], 10, 'Date', 1, 0, 'C');
-            $pdf->Cell($colWidths['quantity'], 10, 'Opening Quantity', 1, 0, 'C');
-            $pdf->Cell($colWidths['unit_price'], 10, 'Unit Price', 1, 0, 'C');
-            $pdf->Cell($colWidths['total_value'], 10, 'Total Value', 1, 1, 'C');
-            
-            $pdf->SetFont('Arial', '', 9);
-            
-            // Get opening stock records for date range
-            $stmt = $db->prepare("
-                SELECT 
-                    os.product_id,
-                    p.name,
-                    p.price,
-                    DATE(os.recorded_at) as record_date,
-                    os.opening_quantity
-                FROM opening_stock os
-                JOIN products p ON os.product_id = p.id
-                WHERE DATE(os.recorded_at) BETWEEN ? AND ?
-                ORDER BY os.recorded_at ASC, p.name ASC
-            ");
-            $stmt->execute([$startDate, $endDate]);
-            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            $totalValue = 0;
-            foreach ($records as $record) {
-                $totalValuePerProduct = (float)$record['price'] * (int)$record['opening_quantity'];
-                $totalValue += $totalValuePerProduct;
-                
-                $pdf->Cell($colWidths['id'], 8, $record['product_id'], 1, 0, 'C');
-                $pdf->Cell($colWidths['name'], 8, substr($record['name'], 0, 30), 1, 0, 'L');
-                $pdf->Cell($colWidths['date'], 8, $record['record_date'], 1, 0, 'C');
-                $pdf->Cell($colWidths['quantity'], 8, $record['opening_quantity'], 1, 0, 'C');
-                $pdf->Cell($colWidths['unit_price'], 8, number_format($record['price'], 2), 1, 0, 'R');
-                $pdf->Cell($colWidths['total_value'], 8, number_format($totalValuePerProduct, 2), 1, 1, 'R');
-            }
-            
-            // Add total
-            $pdf->Ln(5);
-            $pdf->SetFont('Arial', 'B', 12);
-            $pdf->Cell(0, 10, 'TOTAL VALUE: N$' . number_format($totalValue, 2), 0, 1, 'L');
-            
-            $fileName = 'Opening_Stock_Report_' . $startDate . '_to_' . $endDate . '.pdf';
-            
-        } else {
-            // Generate closing stock report for date range
-            class ClosingStockRangePDF extends FPDF {
-                private $startDate;
-                private $endDate;
-                
-                function __construct($startDate, $endDate) {
-                    parent::__construct('L'); // Landscape
-                    $this->startDate = $startDate;
-                    $this->endDate = $endDate;
-                }
-                
-                function Header() {
-                    $this->SetFont('Arial', 'B', 16);
-                    $this->Cell(0, 10, 'CLOSING STOCK REPORT', 0, 1, 'C');
-                    $this->SetFont('Arial', '', 10);
-                    $this->Cell(0, 8, 'Date Range: ' . $this->startDate . ' to ' . $this->endDate, 0, 1, 'C');
-                    $this->Cell(0, 8, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
-                    $this->Ln(3);
-                }
-                
-                function Footer() {
-                    $this->SetY(-15);
-                    $this->SetFont('Arial', 'I', 8);
-                    $this->Cell(0, 10, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
-                }
-            }
-            
-            $pdf = new ClosingStockRangePDF($startDate, $endDate);
-            $pdf->AliasNbPages();
-            $pdf->AddPage();
-            $pdf->SetFont('Arial', '', 9);
-            
-            // Column widths for A4 landscape (297mm total width)
-            // Adjusted to fit: 18+50+25+26+26+24+22+28 = 219mm (leaves margin)
-            $colWidths = [
-                'id' => 18,
-                'name' => 50,
-                'date' => 25,
-                'unit_price' => 26,
-                'system_qty' => 26,
-                'physical_qty' => 24,
-                'difference' => 22,
-                'value_diff' => 28
-            ];
-            
-            // Table header
-            $pdf->SetFont('Arial', 'B', 9);
-            $pdf->Cell($colWidths['id'], 10, 'ID', 1, 0, 'C');
-            $pdf->Cell($colWidths['name'], 10, 'Product Name', 1, 0, 'C');
-            $pdf->Cell($colWidths['date'], 10, 'Date', 1, 0, 'C');
-            $pdf->Cell($colWidths['unit_price'], 10, 'Unit Price', 1, 0, 'C');
-            $pdf->Cell($colWidths['system_qty'], 10, 'System Qty (Exp)', 1, 0, 'C');
-            $pdf->Cell($colWidths['physical_qty'], 10, 'Physical (Act)', 1, 0, 'C');
-            $pdf->Cell($colWidths['difference'], 10, 'Difference', 1, 0, 'C');
-            $pdf->Cell($colWidths['value_diff'], 10, 'Value Diff', 1, 1, 'C');
-            
-            $pdf->SetFont('Arial', '', 9);
-            
-            // Get closing stock records for date range with expected quantities
-            // Expected = Opening Stock + Received Stock - Sales
-            $stmt = $db->prepare("
-                SELECT 
-                    cs.product_id,
-                    p.name,
-                    p.price,
-                    p.quantity as system_quantity,
-                    DATE(cs.recorded_at) as record_date,
-                    cs.closing_quantity as physical_count,
-                    COALESCE(
-                        (SELECT os.opening_quantity
-                         FROM opening_stock os 
-                         WHERE os.product_id = cs.product_id 
-                         AND DATE(os.recorded_at) = DATE(cs.recorded_at)
-                         ORDER BY os.recorded_at ASC 
-                         LIMIT 1),
-                        (SELECT dss.opening_quantity
-                         FROM daily_stock_summary dss 
-                         WHERE dss.product_id = cs.product_id 
-                         AND dss.date = DATE(cs.recorded_at)),
-                        (SELECT closing_quantity
-                         FROM closing_stock 
-                         WHERE product_id = cs.product_id 
-                         AND DATE(recorded_at) = DATE(cs.recorded_at, '-1 day')
-                         ORDER BY recorded_at DESC 
-                         LIMIT 1),
-                        0
-                    ) as opening_stock,
-                    COALESCE(
-                        (SELECT SUM(sc.quantity_change)
-                         FROM stock_changes sc 
-                         WHERE sc.product_id = cs.product_id 
-                         AND sc.action = 'Restock'
-                         AND DATE(sc.changed_at) = DATE(cs.recorded_at)),
-                        0
-                    ) as received_stock,
-                    COALESCE(
-                        (SELECT SUM(oi.quantity)
-                         FROM order_items oi
-                         JOIN orders o ON oi.order_id = o.id
-                         WHERE oi.product_name = p.name
-                         AND DATE(o.created_at) = DATE(cs.recorded_at)),
-                        0
-                    ) + COALESCE(
-                        (SELECT SUM(csi.quantity)
-                         FROM credit_sale_items csi
-                         JOIN credit_sales crs ON csi.sale_id = crs.id
-                         WHERE csi.product_name = p.name
-                         AND DATE(crs.created_at) = DATE(cs.recorded_at)),
-                        0
-                    ) as total_sales
-                FROM closing_stock cs
-                JOIN products p ON cs.product_id = p.id
-                WHERE DATE(cs.recorded_at) BETWEEN ? AND ?
-                ORDER BY cs.recorded_at ASC, p.name ASC
-            ");
-            $stmt->execute([$startDate, $endDate]);
-            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            $totalValueDifference = 0;
-            foreach ($records as $record) {
-                // Use system quantity from products table
-                $systemQty = (int)$record['system_quantity'];
-                $physicalQty = (int)$record['physical_count'];
-                $difference = $physicalQty - $systemQty;
-                $valueDifference = $difference * (float)$record['price'];
-                $totalValueDifference += $valueDifference;
-                
-                $differenceFormatted = $difference > 0 ? '+' . $difference : (string)$difference;
-                $valueDifferenceFormatted = $valueDifference > 0 ? '+' . number_format($valueDifference, 2) : number_format($valueDifference, 2);
-                
-                $pdf->Cell($colWidths['id'], 8, $record['product_id'], 1, 0, 'C');
-                $pdf->Cell($colWidths['name'], 8, substr($record['name'], 0, 28), 1, 0, 'L');
-                $pdf->Cell($colWidths['date'], 8, $record['record_date'], 1, 0, 'C');
-                $pdf->Cell($colWidths['unit_price'], 8, number_format($record['price'], 2), 1, 0, 'R');
-                $pdf->Cell($colWidths['system_qty'], 8, $systemQty, 1, 0, 'C');
-                $pdf->Cell($colWidths['physical_qty'], 8, $physicalQty, 1, 0, 'C');
-                $pdf->Cell($colWidths['difference'], 8, $differenceFormatted, 1, 0, 'C');
-                $pdf->Cell($colWidths['value_diff'], 8, $valueDifferenceFormatted, 1, 1, 'R');
-            }
-            
-            // Add empty row
-            $pdf->Cell($colWidths['id'], 8, '', 1, 0, 'C');
-            $pdf->Cell($colWidths['name'], 8, '', 1, 0, 'L');
-            $pdf->Cell($colWidths['date'], 8, '', 1, 0, 'C');
-            $pdf->Cell($colWidths['unit_price'], 8, '', 1, 0, 'R');
-            $pdf->Cell($colWidths['system_qty'], 8, '', 1, 0, 'C');
-            $pdf->Cell($colWidths['physical_qty'], 8, '', 1, 0, 'C');
-            $pdf->Cell($colWidths['difference'], 8, '', 1, 0, 'C');
-            $pdf->Cell($colWidths['value_diff'], 8, '', 1, 1, 'R');
-            
-            // Add total
-            $pdf->Ln(5);
-            $pdf->SetFont('Arial', 'B', 12);
-            $totalValueDiffFormatted = $totalValueDifference > 0 ? '+' . number_format($totalValueDifference, 2) : number_format($totalValueDifference, 2);
-            $pdf->Cell(0, 10, 'TOTAL VALUE DIFFERENCE: ' . $totalValueDiffFormatted, 0, 1, 'L');
-            
-            $fileName = 'Closing_Stock_Report_' . $startDate . '_to_' . $endDate . '.pdf';
-        }
-        
-        // Generate PDF content
-        $pdfContent = $pdf->Output('S');
-        
-        // Clean output buffers
-        while (ob_get_level()) {
-            ob_end_clean();
-        }
-        
-        // Set headers for PDF download
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: attachment; filename="' . $fileName . '"');
-        header('Content-Length: ' . strlen($pdfContent));
-        header('Cache-Control: private, max-age=0, must-revalidate');
-        header('Pragma: public');
-        header('Expires: 0');
-        
-        // Output PDF
-        echo $pdfContent;
-        exit;
-        
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Error: ' . $e->getMessage()]);
-        exit;
-    }
-}
-
 // Handle form submission for stock taking
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
@@ -380,7 +85,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($stockTakingData['items'] as $item) {
                 if (!empty($item['product_id']) && isset($item['actual_quantity'])) {
                     $productId = $item['product_id'];
-                    $actualQuantity = intval($item['actual_quantity']);
+                    $actualQuantity = floatval($item['actual_quantity']);
                     
                     // Get opening stock for today
                     $openingStmt = $db->prepare("
@@ -478,10 +183,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $action = $stockType === 'opening' ? 'Opening Stock Adjustment' : 'Closing Stock Adjustment';
                             $logStmt = $db->prepare("
                                 INSERT INTO stock_changes 
-                                (product_id, action, quantity_change, old_quantity, new_quantity, is_stock_taken) 
-                                VALUES (?, ?, ?, ?, ?, 1)
+                                (product_id, action, quantity_change, old_quantity, new_quantity, is_stock_taken, username) 
+                                VALUES (?, ?, ?, ?, ?, 1, ?)
                             ");
-                            $logStmt->execute([$productId, $action, $variance, $currentQuantity, $actualQuantity]);
+                            $logStmt->execute([$productId, $action, $variance, $currentQuantity, $actualQuantity, currentStockChangeUsername()]);
                         }
                         
                         // Mark restocks as taken only for closing stock
@@ -868,7 +573,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $productName = $item['product_name'];
                         $unitPrice = $item['price'];
                         $systemQuantity = (int)$item['expected_quantity'];
-                        $physicalCount = (int)$item['actual_quantity'];
+                        $physicalCount = (float)$item['actual_quantity'];
                         $difference = $physicalCount - $systemQuantity;
                         $valueDifference = $difference * $unitPrice;
                         $totalValueDifference += $valueDifference;
@@ -1402,12 +1107,12 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             
             table th:nth-child(6),
             table td:nth-child(6) {
-                width: 15%; /* Actual Count */
+                width: 13%; /* Actual Count */
             }
             
             table th:nth-child(7),
             table td:nth-child(7) {
-                width: 15%; /* Sold (Income) */
+                width: 12%; /* Difference */
             }
             
             /* Make buttons smaller on mobile */
@@ -1683,18 +1388,18 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
         }
     </style>
 </head>
-<body class="bg-gray-50" data-server-date="<?= htmlspecialchars(date('Y-m-d'), ENT_QUOTES, 'UTF-8') ?>">
+<body class="bg-gray-100" data-server-date="<?= htmlspecialchars(date('Y-m-d'), ENT_QUOTES, 'UTF-8') ?>">
     <div class="flex">
         <div class="sidebar fixed h-full">
             <?php include 'sidebar.php'; ?>
         </div>
-        <div class="flex-1 content lg:ml-0 ml-0">
+        <div class="content flex-1 lg:ml-64">
             <!-- Mobile Sidebar Overlay -->
             <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
             
             <!-- Fixed Header -->
-            <div class="fixed top-0 left-0 lg:left-64 right-0 z-50 bg-gray-50 py-3 sm:py-4 px-4 lg:px-8 shadow-sm">
-                <div class="w-full max-w-7xl mx-auto">
+            <div class="sticky top-0 z-50 bg-gray-100 py-3 sm:py-4 px-4 lg:px-6 shadow-sm">
+                <div class="w-full">
                     <!-- Row 1: Title, Navigation, and Controls (same row on desktop) -->
                     <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-4 lg:gap-6 mb-2 sm:mb-0">
                         <!-- Left side: Hamburger, Title, Go Back -->
@@ -1742,42 +1447,12 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                             </div>
                         </div>
                     </div>
-                    
-                    <!-- Row 2: Compact Date Range Report Download Section -->
-                    <div class="mt-2 pt-2 border-t border-gray-200">
-                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 text-xs sm:text-sm">
-                            <span class="hidden sm:inline font-medium text-gray-700 whitespace-nowrap">Reports:</span>
-                            <div class="flex items-center gap-2 flex-1">
-                                <input type="date" id="reportStartDate" class="flex-1 sm:flex-initial px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-xs sm:text-sm min-w-0">
-                                <span class="text-gray-500 whitespace-nowrap">to</span>
-                                <input type="date" id="reportEndDate" class="flex-1 sm:flex-initial px-2 py-1.5 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-xs sm:text-sm min-w-0">
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button id="downloadOpeningReportBtn" class="inline-flex items-center px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm transition-colors whitespace-nowrap">
-                                    <svg class="w-3 h-3 sm:w-4 sm:h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                    </svg>
-                                    <span class="hidden sm:inline">Opening</span>
-                                    <span class="sm:hidden">Open</span>
-                                </button>
-                                <button id="downloadClosingReportBtn" class="inline-flex items-center px-2 sm:px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm transition-colors whitespace-nowrap">
-                                    <svg class="w-3 h-3 sm:w-4 sm:h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                    </svg>
-                                    <span class="hidden sm:inline">Closing</span>
-                                    <span class="sm:hidden">Close</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
             
-            <!-- Spacer for fixed header (increased height to accommodate report section) -->
-            <div class="h-28 sm:h-24 mb-4"></div>
             <div id="stockToastHost" aria-live="polite" aria-atomic="true"></div>
             
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div class="w-full px-4 lg:px-6 py-6">
 
                 <!-- Stock Type Selection -->
                 <div class="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -1807,7 +1482,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                             <span id="selectedCount" class="text-sm font-medium text-gray-700">0 items selected</span>
                             <div class="flex items-center gap-2">
                                 <label class="text-sm font-medium text-gray-700">Bulk Quantity:</label>
-                                <input type="number" id="bulkQuantity" min="0" class="quantity-input px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Qty">
+                                <input type="number" id="bulkQuantity" min="0" step="any" class="quantity-input px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Qty">
                             </div>
                         </div>
                         <button id="applyBulkBtn" class="inline-flex items-center px-2 sm:px-4 py-1.5 sm:py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm">
@@ -1863,6 +1538,10 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                                     <span class="hidden sm:inline">Actual Count</span>
                                     <span class="sm:hidden">Actual</span>
                                 </th>
+                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
+                                    <span class="hidden sm:inline">Difference</span>
+                                    <span class="sm:hidden">Diff</span>
+                                </th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
@@ -1891,7 +1570,10 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                                     
                                     </td>
                                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="number" min="0" class="actual-quantity quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" placeholder="0" value="">
+                                        <input type="number" min="0" step="any" class="actual-quantity quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" placeholder="0" value="">
+                                    </td>
+                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm font-semibold">
+                                        <span class="count-difference text-gray-400">—</span>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -2062,102 +1744,6 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 }
             }, 100);
         });
-        // Date range report download handlers
-        const downloadOpeningReportBtn = document.getElementById('downloadOpeningReportBtn');
-        const downloadClosingReportBtn = document.getElementById('downloadClosingReportBtn');
-        const reportStartDate = document.getElementById('reportStartDate');
-        const reportEndDate = document.getElementById('reportEndDate');
-        
-        // Set default dates (last 30 days)
-        const today = new Date();
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(today.getDate() - 30);
-        reportStartDate.value = thirtyDaysAgo.toISOString().split('T')[0];
-        reportEndDate.value = today.toISOString().split('T')[0];
-        
-        downloadOpeningReportBtn.addEventListener('click', function() {
-            const startDate = reportStartDate.value;
-            const endDate = reportEndDate.value;
-            
-            if (!startDate || !endDate) {
-                showToast('Please select both start and end dates', 'error');
-                return;
-            }
-            
-            if (new Date(startDate) > new Date(endDate)) {
-                showToast('Start date cannot be after end date', 'error');
-                return;
-            }
-            
-            // Create form and submit
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '';
-            
-            const actionInput = document.createElement('input');
-            actionInput.type = 'hidden';
-            actionInput.name = 'action';
-            actionInput.value = 'download_opening_report';
-            form.appendChild(actionInput);
-            
-            const startDateInput = document.createElement('input');
-            startDateInput.type = 'hidden';
-            startDateInput.name = 'start_date';
-            startDateInput.value = startDate;
-            form.appendChild(startDateInput);
-            
-            const endDateInput = document.createElement('input');
-            endDateInput.type = 'hidden';
-            endDateInput.name = 'end_date';
-            endDateInput.value = endDate;
-            form.appendChild(endDateInput);
-            
-            document.body.appendChild(form);
-            form.submit();
-            document.body.removeChild(form);
-        });
-        
-        downloadClosingReportBtn.addEventListener('click', function() {
-            const startDate = reportStartDate.value;
-            const endDate = reportEndDate.value;
-            
-            if (!startDate || !endDate) {
-                showToast('Please select both start and end dates', 'error');
-                return;
-            }
-            
-            if (new Date(startDate) > new Date(endDate)) {
-                showToast('Start date cannot be after end date', 'error');
-                return;
-            }
-            
-            // Create form and submit
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '';
-            
-            const actionInput = document.createElement('input');
-            actionInput.type = 'hidden';
-            actionInput.name = 'action';
-            actionInput.value = 'download_closing_report';
-            form.appendChild(actionInput);
-            
-            const startDateInput = document.createElement('input');
-            startDateInput.type = 'hidden';
-            startDateInput.name = 'start_date';
-            startDateInput.value = startDate;
-            form.appendChild(startDateInput);
-            
-            const endDateInput = document.createElement('input');
-            endDateInput.type = 'hidden';
-            endDateInput.name = 'end_date';
-            endDateInput.value = endDate;
-            form.appendChild(endDateInput);
-            
-            document.body.appendChild(form);
-            form.submit();
-            document.body.removeChild(form);
-        });
         
         const searchInput = document.getElementById('searchInput');
         const categoryFilter = document.getElementById('categoryFilter');
@@ -2219,6 +1805,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 }
             });
             updateItemsBeingCounted();
+            document.querySelectorAll('.stock-taking-row').forEach(updateCountDifference);
         }
         function clearCurrentStockTakingDraft() {
             try {
@@ -2231,7 +1818,61 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             document.querySelectorAll('.stock-taking-row .actual-quantity').forEach(input => {
                 input.value = '';
             });
+            document.querySelectorAll('.stock-taking-row').forEach(updateCountDifference);
             updateItemsBeingCounted();
+        }
+
+        function getExpectedForRow(row) {
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
+            if (stockType === 'opening') {
+                return parseQty(row.querySelector('.expected-stock')?.textContent) || 0;
+            }
+            return parseQty(row.querySelector('.expected-closing-stock')?.textContent) || parseQty(row.dataset.quantity) || 0;
+        }
+
+        function parseQty(value) {
+            if (value === null || value === undefined) return NaN;
+            const s = String(value).trim().replace(',', '.');
+            if (s === '') return NaN;
+            const n = parseFloat(s);
+            return Number.isFinite(n) ? n : NaN;
+        }
+
+        function formatQty(n) {
+            if (!Number.isFinite(n)) return '0';
+            const rounded = Math.round(n * 10000) / 10000;
+            return Object.is(rounded, -0) ? '0' : String(rounded);
+        }
+
+        function updateCountDifference(row) {
+            if (!row) return;
+            const diffEl = row.querySelector('.count-difference');
+            const actualInput = row.querySelector('.actual-quantity');
+            if (!diffEl || !actualInput) return;
+            const raw = actualInput.value.trim();
+            if (raw === '') {
+                diffEl.textContent = '—';
+                diffEl.className = 'count-difference text-gray-400';
+                return;
+            }
+            const actual = parseQty(raw);
+            if (!Number.isFinite(actual)) {
+                diffEl.textContent = '—';
+                diffEl.className = 'count-difference text-gray-400';
+                return;
+            }
+            const expected = getExpectedForRow(row);
+            const difference = actual - expected;
+            if (difference > 0) {
+                diffEl.textContent = '+' + formatQty(difference);
+                diffEl.className = 'count-difference text-green-600';
+            } else if (difference < 0) {
+                diffEl.textContent = formatQty(difference);
+                diffEl.className = 'count-difference text-red-600';
+            } else {
+                diffEl.textContent = '0';
+                diffEl.className = 'count-difference text-gray-700';
+            }
         }
 
         window.addEventListener('beforeunload', () => {
@@ -2492,12 +2133,14 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 }
             });
             updateItemsBeingCounted();
+            document.querySelectorAll('.stock-taking-row').forEach(updateCountDifference);
             saveStockTakingDraftToStorage();
         });
 
         // Update items being counted when quantity changes; auto-save draft for page reload / return visit
         tableBody.addEventListener('input', (e) => {
             if (e.target.classList.contains('actual-quantity')) {
+                updateCountDifference(e.target.closest('tr'));
                 updateItemsBeingCounted();
                 scheduleSaveStockTakingDraft();
             }
@@ -2512,11 +2155,11 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             let totalOverAmount = 0;
             rows.forEach(row => {
                 const productName = row.children[2].textContent.trim();
-                const openingStock = parseInt(row.querySelector('.expected-stock').textContent) || 0;
+                const openingStock = parseQty(row.querySelector('.expected-stock').textContent) || 0;
                 const actualQuantityInput = row.querySelector('.actual-quantity');
                 const actualQuantityRaw = actualQuantityInput ? actualQuantityInput.value.trim() : '';
                 const hasActualQuantity = actualQuantityRaw !== '';
-                const actualQuantity = hasActualQuantity ? (parseInt(actualQuantityRaw, 10) || 0) : 0;
+                const actualQuantity = hasActualQuantity ? (parseQty(actualQuantityRaw) || 0) : 0;
                 const unitPrice = parseFloat(row.dataset.price) || 0;
                 
                 let expected;
@@ -2524,7 +2167,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                     expected = openingStock;
                 } else {
                     // For closing stock: Expected = Current quantity from products table
-                    expected = parseInt(row.querySelector('.expected-closing-stock')?.textContent) || parseInt(row.dataset.quantity) || 0;
+                    expected = parseQty(row.querySelector('.expected-closing-stock')?.textContent) || parseQty(row.dataset.quantity) || 0;
                 }
                 
                 // Include any entered count, including zero, so shortages are reflected.
@@ -2581,11 +2224,11 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             tbody.innerHTML = items.map((it, index) => `
                 <tr class="hover:bg-gray-50 transition-colors" data-product-id="${it.productId}">
                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 text-[10px] sm:text-xs lg:text-sm font-medium text-gray-900 break-words">${it.productName}</td>
-                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-700">${it.expected}</td>
-                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-700">${it.actualQuantity}</td>
+                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-700">${formatQty(it.expected)}</td>
+                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-700">${formatQty(it.actualQuantity)}</td>
                     <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm">
                         <div class="font-semibold ${it.difference < 0 ? 'text-red-600' : it.difference > 0 ? 'text-green-600' : 'text-gray-700'}">
-                            ${it.difference > 0 ? '+' : ''}${it.difference}
+                            ${it.difference > 0 ? '+' : ''}${formatQty(it.difference)}
                         </div>
                         <div class="text-[9px] sm:text-[11px] text-gray-500">
                             ${it.amountDifference >= 0 ? '+' : '-'}N$${Math.abs(it.amountDifference).toFixed(2)}
@@ -2612,6 +2255,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 if (actualQuantityInput) {
                     actualQuantityInput.value = '';
                 }
+                updateCountDifference(mainTableRow);
             }
             
             // Update the items being counted list
@@ -2630,8 +2274,11 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             rows.forEach(row => {
                 const actualQuantityInput = row.querySelector('.actual-quantity');
                 const productId = row.dataset.productId;
+                const raw = actualQuantityInput ? actualQuantityInput.value.trim() : '';
+                if (raw === '') return;
                 
-                const actualQuantity = parseInt(actualQuantityInput.value) || 0;
+                const actualQuantity = parseQty(raw);
+                if (!Number.isFinite(actualQuantity)) return;
                 
                 items.push({
                     product_id: productId,
@@ -2640,7 +2287,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             });
             
             if (items.length === 0) {
-                showToast('No products to process', 'error');
+                showToast('Please enter quantities for at least one product', 'error');
                 return;
             }
             
