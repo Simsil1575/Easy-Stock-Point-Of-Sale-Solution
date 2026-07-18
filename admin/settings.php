@@ -1498,7 +1498,6 @@ $settingsSectionTitles = [
                             Export Product Images
                         </button>
                     </div>
-                    <p class="text-sm text-gray-500 mt-4">Product images are copied to the <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">product_image_exports</code> folder using each product name, for example <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">castle_lite_750ml.png</code>. Products without a custom image are skipped.
 
                     <!-- App updater (GitHub) -->
                     <div class="mt-8 pt-6 border-t border-gray-200">
@@ -1508,15 +1507,7 @@ $settingsSectionTitles = [
                                     <i class="fas fa-cloud-download-alt text-indigo-600"></i>
                                     App updater
                                 </h3>
-                                <p class="text-sm text-gray-500 mt-1">
-                                    Downloads only files that changed since your last update (much faster).
-                                    Falls back to a full package download on first update or very large changes.
-                                    Local data is protected: <code class="text-xs bg-gray-100 px-1 rounded">pos.db</code>,
-                                    <code class="text-xs bg-gray-100 px-1 rounded">active.db</code>,
-                                    <code class="text-xs bg-gray-100 px-1 rounded">user.db</code>,
-                                    <code class="text-xs bg-gray-100 px-1 rounded">info.db</code>, and the
-                                    <code class="text-xs bg-gray-100 px-1 rounded">products</code> folder.
-                                </p>
+                              
                             </div>
                             <div class="flex flex-wrap gap-2 shrink-0">
                                 <button type="button" id="app_update_check_btn" class="bg-indigo-500 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
