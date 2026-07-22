@@ -12,12 +12,34 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Get parameters
 $reportType = $_GET['report_type'] ?? '';
-$startDate = $_GET['start_date'] ?? date('Y-m-d');
-$endDate = $_GET['end_date'] ?? date('Y-m-d');
+$startDateRaw = $_GET['start_date'] ?? date('Y-m-d') . 'T00:00';
+$endDateRaw = $_GET['end_date'] ?? date('Y-m-d') . 'T23:59';
 $cashierId = $_GET['cashier_id'] ?? '';
 $creditorId = $_GET['creditor_id'] ?? '';
 $category = $_GET['category'] ?? '';
 $supplierId = $_GET['supplier_id'] ?? '';
+
+function parseReportDateTime($input, $isEnd = false) {
+    $input = trim(str_replace('T', ' ', urldecode((string) $input)));
+    if ($input === '') {
+        return date('Y-m-d') . ($isEnd ? ' 23:59:59' : ' 00:00:00');
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $input)) {
+        return $input . ($isEnd ? ' 23:59:59' : ' 00:00:00');
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $input)) {
+        return $input . ($isEnd ? ':59' : ':00');
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $input)) {
+        return $input;
+    }
+    return date('Y-m-d') . ($isEnd ? ' 23:59:59' : ' 00:00:00');
+}
+
+$startDateTime = parseReportDateTime($startDateRaw, false);
+$endDateTime = parseReportDateTime($endDateRaw, true);
+$startDate = substr($startDateTime, 0, 10);
+$endDate = substr($endDateTime, 0, 10);
 
 require_once __DIR__ . '/../purchase_order_lib.php';
 require_once __DIR__ . '/../ensure_purchase_order_schema.php';
@@ -53,7 +75,15 @@ $closingTime = $businessInfo['closing_time'] ?? '00:00';
 $closingHour = (int)substr($closingTime, 0, 2);
 $isAfterMidnight = $closingHour < 12;
 
-// Business day WHERE clause generator
+// Date/time WHERE clause generator
+function getDateTimeWhereClause($dateField, $startDateTime, $endDateTime) {
+    if (empty($startDateTime) || empty($endDateTime)) {
+        return "1=1";
+    }
+    return "$dateField >= '$startDateTime' AND $dateField <= '$endDateTime'";
+}
+
+// Legacy business day WHERE clause (kept for getCashDataForDate)
 function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     // Safety check - if dates are invalid, use simple date range
     if (empty($startDate) || empty($endDate)) {
@@ -80,9 +110,9 @@ function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTim
     } else {
         $whereClauses = [];
         $currentDate = new DateTime($startDate);
-        $endDateTime = new DateTime($endDate);
+        $endDateObj = new DateTime($endDate);
         
-        while ($currentDate <= $endDateTime) {
+        while ($currentDate <= $endDateObj) {
             $dateStr = $currentDate->format('Y-m-d');
             $nextDay = clone $currentDate;
             $nextDay->modify('+1 day');
@@ -448,7 +478,6 @@ function getReportTitle($type) {
         'voids' => 'Voids Report',
         'cashier_sales' => 'Cashier Sales Report',
         'gratuity' => 'Gratuity Report',
-        'tips' => 'Tips Report',
         'shift' => 'Shift Report',
         'profit_loss' => 'Profit & Loss Report',
         'audit_log' => 'Audit Log Report',
@@ -458,19 +487,34 @@ function getReportTitle($type) {
     return $titles[$type] ?? 'Report';
 }
 
+function formatReportDateRange($startDateTime, $endDateTime) {
+    $startTs = strtotime($startDateTime);
+    $endTs = strtotime($endDateTime);
+    $startDay = date('Y-m-d', $startTs);
+    $endDay = date('Y-m-d', $endTs);
+
+    if ($startDateTime === $endDateTime) {
+        return date('F j, Y g:i A', $startTs);
+    }
+    if ($startDay === $endDay) {
+        return date('F j, Y', $startTs) . ' ' . date('g:i A', $startTs) . ' - ' . date('g:i A', $endTs);
+    }
+    return date('M j, Y g:i A', $startTs) . ' - ' . date('M j, Y g:i A', $endTs);
+}
+
 // Generate report data based on type
 $reportData = [];
 $reportTitle = getReportTitle($reportType);
-$dateRange = ($startDate === $endDate) ? date('F j, Y', strtotime($startDate)) : date('M j, Y', strtotime($startDate)) . ' - ' . date('M j, Y', strtotime($endDate));
+$dateRange = formatReportDateRange($startDateTime, $endDateTime);
 
-$whereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+$whereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
 
 switch ($reportType) {
     case 'sales':
     case 'daily_sales':
     case 'monthly_sales':
         // Get orders
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE(o.cashier_id, 'Unknown') as cashier_name
@@ -547,7 +591,7 @@ switch ($reportType) {
         }
 
         // Get credit sales
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT cs.*, c.name as creditor_name
             FROM credit_sales cs
@@ -653,8 +697,8 @@ switch ($reportType) {
         // Note: order_items.price and credit_sale_items.price store LINE TOTAL (already multiplied by qty)
         // So we should NOT multiply by quantity again
         $categoryCondition = $category ? " AND p.category = " . $db->quote($category) : "";
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         
         $itemsQuery = $db->prepare("
             SELECT 
@@ -698,7 +742,7 @@ switch ($reportType) {
         
     case 'cash_sales':
         // Get cash sales only
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0) as eft_amount
@@ -738,7 +782,7 @@ switch ($reportType) {
         
     case 'card_sales':
         // Get card/EFT sales only
-        $whereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $whereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT ep.*, o.total as order_total, o.created_at as order_date
             FROM eft_payments ep
@@ -774,7 +818,7 @@ switch ($reportType) {
         
     case 'payment_summary':
         // Get payment summary by method
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         
         // Cash sales
         $cashQuery = $db->prepare("
@@ -786,7 +830,7 @@ switch ($reportType) {
         $cashTotal = $cashQuery->fetchColumn();
         
         // EFT sales
-        $eftWhereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $eftWhereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total FROM eft_payments ep WHERE ($eftWhereClause)
         ");
@@ -794,7 +838,7 @@ switch ($reportType) {
         $eftTotal = $eftQuery->fetchColumn();
         
         // Credit sales
-        $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT COALESCE(SUM(total_amount), 0) as total, COALESCE(SUM(paid_amount), 0) as paid
             FROM credit_sales WHERE ($creditWhereClause)
@@ -803,7 +847,7 @@ switch ($reportType) {
         $creditRow = $creditQuery->fetch(PDO::FETCH_ASSOC);
         
         // Tab payments
-        $tabWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabWhereClause = getDateTimeWhereClause('payment_date', $startDateTime, $endDateTime);
         $tabCashQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) FROM tab_payments WHERE payment_method = 'cash' AND ($tabWhereClause)
         ");
@@ -854,7 +898,7 @@ switch ($reportType) {
             $current->modify('+1 day');
         }
         // Get all cash-out transactions (withdrawals) for the period
-        $withdrawalsWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $withdrawalsWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $withdrawalsCashierCondition = $cashierId ? " AND cashier_id = " . $db->quote($cashierId) : "";
         $withdrawalsQuery = $db->prepare("
             SELECT * FROM cash_transactions
@@ -893,7 +937,7 @@ switch ($reportType) {
     case 'credit_sales':
         // Credit balances grouped by creditor (one row per customer)
         $creditorCondition = $creditorId ? " AND cs.creditor_id = " . $db->quote($creditorId) : "";
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT
                 cs.creditor_id,
@@ -969,7 +1013,7 @@ switch ($reportType) {
     case 'tabs':
         // Get tabs
         $creditorCondition = $creditorId ? " AND t.creditor_id = " . $db->quote($creditorId) : "";
-        $tabsWhereClause = getBusinessDayWhereClause('t.opened_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabsWhereClause = getDateTimeWhereClause('t.opened_at', $startDateTime, $endDateTime);
         $tabsQuery = $db->prepare("
             SELECT t.*, c.name as creditor_name
             FROM tabs t
@@ -1008,7 +1052,7 @@ switch ($reportType) {
         
     case 'expenses':
         // Get expenses (cash-out transactions)
-        $expWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $expWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $expensesQuery = $db->prepare("
             SELECT * FROM cash_transactions
             WHERE type = 'cash-out' AND ($expWhereClause)
@@ -1065,10 +1109,10 @@ switch ($reportType) {
             SELECT sc.*, p.name as product_name
             FROM stock_changes sc
             JOIN products p ON sc.product_id = p.id
-            WHERE DATE(sc.changed_at) BETWEEN :start AND :end
+            WHERE sc.changed_at >= :start AND sc.changed_at <= :end
             ORDER BY sc.changed_at DESC
         ");
-        $movementQuery->execute([':start' => $startDate, ':end' => $endDate]);
+        $movementQuery->execute([':start' => $startDateTime, ':end' => $endDateTime]);
         $movements = $movementQuery->fetchAll(PDO::FETCH_ASSOC);
         
         $totalIn = 0;
@@ -1134,7 +1178,7 @@ switch ($reportType) {
         
     case 'refunds':
         // Get refunds - cashier_id now stores username directly
-        $refundsWhereClause = getBusinessDayWhereClause('r.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $refundsWhereClause = getDateTimeWhereClause('r.created_at', $startDateTime, $endDateTime);
         $refundsQuery = $db->prepare("
             SELECT r.*, COALESCE(r.cashier_id, 'Unknown') as cashier_name
             FROM refunds r
@@ -1164,7 +1208,7 @@ switch ($reportType) {
         
     case 'voids':
         // Get void transactions
-        $voidsWhereClause = getBusinessDayWhereClause('voided_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $voidsWhereClause = getDateTimeWhereClause('voided_at', $startDateTime, $endDateTime);
         $voidsQuery = $db->prepare("
             SELECT * FROM void_transactions
             WHERE ($voidsWhereClause)
@@ -1192,7 +1236,7 @@ switch ($reportType) {
     case 'cashier_sales':
         // Get cashier sales - cashier_id now stores username directly
         $cashierCondition = $cashierId ? " AND o.cashier_id = " . $db->quote($cashierId) : "";
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         
         // Get all cashiers from user.db
         $cashiersQuery = $userDb->query("SELECT id, username, role FROM users");
@@ -1213,7 +1257,7 @@ switch ($reportType) {
             $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC);
             
             // Get credit sales - match by username
-            $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+            $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
             $creditQuery = $db->prepare("
                 SELECT COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
                 FROM credit_sales
@@ -1273,7 +1317,7 @@ switch ($reportType) {
         }
         unset($ot);
 
-        $creditDetailWhere = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditDetailWhere = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         if ($cashierId) {
             $creditDetailQuery = $db->prepare("
                 SELECT cs.*, c.name as creditor_name
@@ -1313,35 +1357,202 @@ switch ($reportType) {
         break;
 
     case 'gratuity':
-        require_once __DIR__ . '/../gratuity_report_helper.php';
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $reportData = buildGratuityReportData(
-            $db,
-            $userDb,
-            $ordersWhereClause,
-            $cashierId,
-            resolveGratuityReportRate($db, 7.0)
-        );
-        break;
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $selectedCashierUserId = '';
+        if ($cashierId !== '') {
+            try {
+                $uStmt = $userDb->prepare('SELECT id FROM users WHERE username = ? LIMIT 1');
+                $uStmt->execute([$cashierId]);
+                $uid = $uStmt->fetchColumn();
+                if ($uid !== false) {
+                    $selectedCashierUserId = (string) $uid;
+                }
+            } catch (PDOException $e) {
+            }
+        }
 
-    case 'tips':
-        require_once __DIR__ . '/../tips_report_helper.php';
-        $tipsWhereClause = getBusinessDayWhereClause('t.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $reportData = buildTipsReportData($db, $userDb, $tipsWhereClause, $ordersWhereClause, $cashierId);
+        $gratuityItemsJoin = '
+LEFT JOIN (
+    SELECT order_id, SUM(price) AS gratuity_from_items
+    FROM order_items
+    WHERE LOWER(TRIM(COALESCE(product_name, \'\'))) = \'gratuity\'
+    GROUP BY order_id
+) grat_items ON grat_items.order_id = o.id';
+        $effectiveGratuitySql = '(CASE WHEN COALESCE(o.gratuity_amount, 0) > 0.005 THEN COALESCE(o.gratuity_amount, 0) ELSE COALESCE(grat_items.gratuity_from_items, 0) END)';
+
+        if ($cashierId !== '') {
+            $sumStmt = $db->prepare("
+                SELECT 
+                    COALESCE(SUM($effectiveGratuitySql), 0) AS total_gratuity,
+                    SUM(CASE WHEN ($effectiveGratuitySql) > 0.005 THEN 1 ELSE 0 END) AS orders_with_gratuity,
+                    COUNT(*) AS total_orders,
+                    COALESCE(SUM(o.total), 0) AS total_sales
+                FROM orders o
+                $gratuityItemsJoin
+                WHERE ($ordersWhereClause)
+                  AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
+            ");
+            $sumStmt->execute([$cashierId, $selectedCashierUserId]);
+            $byCashierStmt = $db->prepare("
+                SELECT COALESCE(o.cashier_id, 'Unknown') AS cashier_name,
+                       COALESCE(SUM($effectiveGratuitySql), 0) AS gratuity_total,
+                       COALESCE(SUM(o.total), 0) AS total_sales
+                FROM orders o
+                $gratuityItemsJoin
+                WHERE ($ordersWhereClause)
+                  AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
+                GROUP BY o.cashier_id
+                ORDER BY gratuity_total DESC
+            ");
+            $byCashierStmt->execute([$cashierId, $selectedCashierUserId]);
+        } else {
+            $sumStmt = $db->prepare("
+                SELECT 
+                    COALESCE(SUM($effectiveGratuitySql), 0) AS total_gratuity,
+                    SUM(CASE WHEN ($effectiveGratuitySql) > 0.005 THEN 1 ELSE 0 END) AS orders_with_gratuity,
+                    COUNT(*) AS total_orders,
+                    COALESCE(SUM(o.total), 0) AS total_sales
+                FROM orders o
+                $gratuityItemsJoin
+                WHERE ($ordersWhereClause)
+            ");
+            $sumStmt->execute();
+            $byCashierStmt = $db->prepare("
+                SELECT COALESCE(o.cashier_id, 'Unknown') AS cashier_name,
+                       COALESCE(SUM($effectiveGratuitySql), 0) AS gratuity_total,
+                       COALESCE(SUM(o.total), 0) AS total_sales
+                FROM orders o
+                $gratuityItemsJoin
+                WHERE ($ordersWhereClause)
+                GROUP BY o.cashier_id
+                ORDER BY gratuity_total DESC
+            ");
+            $byCashierStmt->execute();
+        }
+        $sumRow = $sumStmt->fetch(PDO::FETCH_ASSOC);
+        $byCashier = $byCashierStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $eftTableExists = false;
+        $mixedTableExists = false;
+        try {
+            $eftTableExists = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'")->fetchColumn() !== false;
+            $mixedTableExists = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='mixed_payments'")->fetchColumn() !== false;
+        } catch (PDOException $e) {
+        }
+
+        $detailWhere = "$ordersWhereClause AND ($effectiveGratuitySql) > 0.005";
+        $detailParams = [];
+        if ($cashierId !== '') {
+            $detailWhere .= ' AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)';
+            $detailParams[] = $cashierId;
+            $detailParams[] = $selectedCashierUserId;
+        }
+
+        $mixedJoin = '';
+        $mixedSelect = ', 0 AS has_mixed, 0.0 AS mixed_cash, 0.0 AS mixed_eft';
+        if ($mixedTableExists) {
+            $mixedJoin = '
+                LEFT JOIN (
+                    SELECT order_id, SUM(cash_amount) AS mc, SUM(eft_amount) AS me
+                    FROM mixed_payments GROUP BY order_id
+                ) mx ON mx.order_id = o.id';
+            $mixedSelect = ',
+                    CASE WHEN mx.order_id IS NOT NULL THEN 1 ELSE 0 END AS has_mixed,
+                    COALESCE(mx.mc, 0) AS mixed_cash,
+                    COALESCE(mx.me, 0) AS mixed_eft';
+        }
+
+        $eftJoin = '';
+        $eftSelect = ', 0.0 AS eft_total';
+        if ($eftTableExists) {
+            $eftJoin = '
+                LEFT JOIN (
+                    SELECT order_id, SUM(amount) AS eft_total FROM eft_payments GROUP BY order_id
+                ) ep ON ep.order_id = o.id';
+            $eftSelect = ', COALESCE(ep.eft_total, 0) AS eft_total';
+        }
+
+        $detailSql = "
+            SELECT o.id AS order_id,
+                   o.created_at,
+                   COALESCE(o.cashier_id, 'Unknown') AS cashier_name,
+                   o.total AS order_total,
+                   ($effectiveGratuitySql) AS gratuity_amount
+                   $mixedSelect
+                   $eftSelect
+            FROM orders o
+            $gratuityItemsJoin
+            $mixedJoin
+            $eftJoin
+            WHERE ($detailWhere)
+            ORDER BY o.created_at DESC
+        ";
+        $detailStmt = $db->prepare($detailSql);
+        $detailStmt->execute($detailParams);
+        $detailLines = $detailStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $sumDetailCash = 0.0;
+        $sumDetailCard = 0.0;
+        foreach ($detailLines as &$dl) {
+            $hasMixed = !empty($dl['has_mixed']);
+            if ($mixedTableExists && $hasMixed) {
+                $cashAmt = round(floatval($dl['mixed_cash']), 2);
+                $cardAmt = round(floatval($dl['mixed_eft']), 2);
+            } else {
+                $eft = round(floatval($dl['eft_total']), 2);
+                $tot = round(floatval($dl['order_total']), 2);
+                $cardAmt = $eft;
+                $cashAmt = round(max(0.0, $tot - $eft), 2);
+            }
+            $dl['cash_amount'] = $cashAmt;
+            $dl['card_amount'] = $cardAmt;
+            $sumDetailCash += $cashAmt;
+            $sumDetailCard += $cardAmt;
+            unset($dl['has_mixed'], $dl['mixed_cash'], $dl['mixed_eft'], $dl['eft_total']);
+        }
+        unset($dl);
+
+        $cashCardByCashier = [];
+        foreach ($detailLines as $dl) {
+            $key = (string) ($dl['cashier_name'] ?? 'Unknown');
+            if (!isset($cashCardByCashier[$key])) {
+                $cashCardByCashier[$key] = ['cash_total' => 0.0, 'card_total' => 0.0];
+            }
+            $cashCardByCashier[$key]['cash_total'] += (float) ($dl['cash_amount'] ?? 0);
+            $cashCardByCashier[$key]['card_total'] += (float) ($dl['card_amount'] ?? 0);
+        }
+        foreach ($byCashier as &$bcRow) {
+            $key = (string) ($bcRow['cashier_name'] ?? 'Unknown');
+            $bcRow['cash_total'] = round($cashCardByCashier[$key]['cash_total'] ?? 0.0, 2);
+            $bcRow['card_total'] = round($cashCardByCashier[$key]['card_total'] ?? 0.0, 2);
+        }
+        unset($bcRow);
+
+        $reportData = [
+            'summary' => [
+                'total_gratuity' => (float) ($sumRow['total_gratuity'] ?? 0),
+                'orders_with_gratuity' => (int) ($sumRow['orders_with_gratuity'] ?? 0),
+                'total_orders' => (int) ($sumRow['total_orders'] ?? 0),
+                'total_sales' => (float) ($sumRow['total_sales'] ?? 0),
+                'detail_cash_total' => round($sumDetailCash, 2),
+                'detail_card_total' => round($sumDetailCard, 2),
+            ],
+            'by_cashier' => $byCashier,
+        ];
         break;
 
     case 'shift':
-        // Get shift/login data (user_log.user_id stores username, not numeric id)
+        // Get shift/login data
         $cashierCondition = $cashierId ? " AND ul.user_id = " . $db->quote($cashierId) : "";
         $shiftQuery = $db->prepare("
-            SELECT ul.*, CAST(ul.user_id AS TEXT) AS username
+            SELECT ul.*, u.username
             FROM user_log ul
-            WHERE DATE(ul.action_time) BETWEEN :start AND :end $cashierCondition
+            LEFT JOIN users u ON ul.user_id = u.id
+            WHERE ul.action_time >= :start AND ul.action_time <= :end $cashierCondition
             ORDER BY ul.action_time DESC
         ");
         try {
-            $shiftQuery->execute([':start' => $startDate, ':end' => $endDate]);
+            $shiftQuery->execute([':start' => $startDateTime, ':end' => $endDateTime]);
             $shifts = $shiftQuery->fetchAll(PDO::FETCH_ASSOC);
         } catch (Exception $e) {
             // If user_log table doesn't exist or query fails
@@ -1362,8 +1573,8 @@ switch ($reportType) {
         
     case 'profit_loss':
         // Get profit and loss data
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         
         // Revenue from orders
         $revenueQuery = $db->prepare("SELECT COALESCE(SUM(total), 0) FROM orders o WHERE ($ordersWhereClause)");
@@ -1398,13 +1609,13 @@ switch ($reportType) {
         $creditCogs = $creditCogsQuery->fetchColumn();
         
         // Expenses
-        $expWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $expWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $expQuery = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out' AND ($expWhereClause)");
         $expQuery->execute();
         $expenses = $expQuery->fetchColumn();
         
         // Refunds
-        $refundWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $refundWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $refundQuery = $db->prepare("SELECT COALESCE(SUM(total_amount), 0) FROM refunds WHERE ($refundWhereClause)");
         $refundQuery->execute();
         $refunds = $refundQuery->fetchColumn();
@@ -1433,8 +1644,28 @@ switch ($reportType) {
         break;
         
     case 'audit_log':
-        require_once __DIR__ . '/../audit_log_helper.php';
-        $reportData = buildAuditLogReportData($db, $userDb, $startDate, $endDate, 1000);
+        // Get user log/audit data
+        $logQuery = $db->prepare("
+            SELECT ul.*, u.username
+            FROM user_log ul
+            LEFT JOIN users u ON ul.user_id = u.id
+            WHERE ul.action_time >= :start AND ul.action_time <= :end
+            ORDER BY ul.action_time DESC
+            LIMIT 500
+        ");
+        try {
+            $logQuery->execute([':start' => $startDateTime, ':end' => $endDateTime]);
+            $logs = $logQuery->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            $logs = [];
+        }
+        
+        $reportData = [
+            'logs' => $logs,
+            'summary' => [
+                'total_entries' => count($logs)
+            ]
+        ];
         break;
 
     case 'supplier_receiving':
@@ -1473,7 +1704,7 @@ switch ($reportType) {
         break;
         
     case 'vat': {
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $cashQuery = $db->prepare("
             SELECT COALESCE(SUM(o.total - COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)), 0) as total
             FROM orders o
@@ -1481,20 +1712,20 @@ switch ($reportType) {
         ");
         $cashQuery->execute();
         $cashTotal = (float) $cashQuery->fetchColumn();
-        $eftWhereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $eftWhereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total FROM eft_payments ep WHERE ($eftWhereClause)
         ");
         $eftQuery->execute();
         $eftTotal = (float) $eftQuery->fetchColumn();
-        $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT COALESCE(SUM(total_amount), 0) as total
             FROM credit_sales WHERE ($creditWhereClause)
         ");
         $creditQuery->execute();
         $creditTotal = (float) $creditQuery->fetchColumn();
-        $tabWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabWhereClause = getDateTimeWhereClause('payment_date', $startDateTime, $endDateTime);
         $tabCashQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) FROM tab_payments WHERE payment_method = 'cash' AND ($tabWhereClause)
         ");
@@ -3128,12 +3359,12 @@ header('Content-Type: text/html; charset=utf-8');
     <?php break; case 'gratuity': ?>
         <div class="summary-cards">
             <div class="summary-card positive">
-                <div class="label">Total gratuity (<?= htmlspecialchars((string) ($reportData['summary']['gratuity_rate_percent'] ?? 7)) ?>% of sales)</div>
+                <div class="label">Total gratuity</div>
                 <div class="value">N$<?= formatCurrency($reportData['summary']['total_gratuity']) ?></div>
             </div>
             <div class="summary-card">
-                <div class="label">Total sales</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['total_sales'] ?? 0) ?></div>
+                <div class="label">Orders with gratuity</div>
+                <div class="value"><?= (int) $reportData['summary']['orders_with_gratuity'] ?></div>
             </div>
             <div class="summary-card">
                 <div class="label">Orders (period)</div>
@@ -3172,118 +3403,6 @@ header('Content-Type: text/html; charset=utf-8');
                     </tr>
                 <?php else: ?>
                     <tr><td colspan="5" class="no-data">No order data for this period</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-        
-    <?php break; case 'tips': ?>
-        <div class="summary-cards">
-            <div class="summary-card positive">
-                <div class="label">Total tips</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['total_tips'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Manual tips</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['manual_tips_total'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Checkout / tab gratuity</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['order_gratuity_total'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Entries</div>
-                <div class="value"><?= (int) ($reportData['summary']['total_entries'] ?? 0) ?></div>
-            </div>
-        </div>
-
-        <h3 class="section-title">Tips by payment method</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Method</th>
-                    <th class="text-right">Amount</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>Cash</td>
-                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['cash'] ?? 0) ?></td>
-                </tr>
-                <tr>
-                    <td>Card / EFT</td>
-                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['card'] ?? 0) ?></td>
-                </tr>
-                <tr>
-                    <td>Inventory</td>
-                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['inventory'] ?? 0) ?></td>
-                </tr>
-                <?php if (($reportData['summary']['by_method']['other'] ?? 0) > 0): ?>
-                <tr>
-                    <td>Other</td>
-                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['other'] ?? 0) ?></td>
-                </tr>
-                <?php endif; ?>
-                <tr class="total-row">
-                    <td><strong>Total</strong></td>
-                    <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_tips'] ?? 0) ?></strong></td>
-                </tr>
-            </tbody>
-        </table>
-
-        <h3 class="section-title">Tips by cashier</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Cashier</th>
-                    <th class="text-right">Cash</th>
-                    <th class="text-right">Card / EFT</th>
-                    <th class="text-right">Inventory</th>
-                    <th class="text-right">Total</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (!empty($reportData['by_cashier'])): ?>
-                    <?php foreach ($reportData['by_cashier'] as $row): ?>
-                    <tr>
-                        <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['cash_total'] ?? 0) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['card_total'] ?? 0) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['inventory_total'] ?? 0) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['total'] ?? 0) ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <tr><td colspan="5" class="no-data">No tips recorded for this period</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-
-        <h3 class="section-title">Tip entries</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Date / time</th>
-                    <th>Source</th>
-                    <th>Cashier</th>
-                    <th>Method</th>
-                    <th class="text-right">Amount</th>
-                    <th>Reference</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (!empty($reportData['entries'])): ?>
-                    <?php foreach ($reportData['entries'] as $row): ?>
-                    <tr>
-                        <td><?= htmlspecialchars((string) ($row['created_at'] ?? '')) ?></td>
-                        <td><?= htmlspecialchars((string) ($row['source'] ?? '')) ?></td>
-                        <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
-                        <td><?= htmlspecialchars((string) ($row['payment_method'] ?? '')) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['amount'] ?? 0) ?></td>
-                        <td><?= htmlspecialchars((string) ($row['reference'] ?? '')) ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <tr><td colspan="6" class="no-data">No tip entries for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
@@ -3464,23 +3583,7 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="summary-cards">
             <div class="summary-card">
                 <div class="label">Total Entries</div>
-                <div class="value"><?= (int) ($reportData['summary']['total_entries'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Sales</div>
-                <div class="value"><?= (int) ($reportData['summary']['sales'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Receiving</div>
-                <div class="value"><?= (int) ($reportData['summary']['receiving'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Adjustments</div>
-                <div class="value"><?= (int) ($reportData['summary']['adjustments'] ?? 0) ?></div>
-            </div>
-            <div class="summary-card">
-                <div class="label">Opening / Closing</div>
-                <div class="value"><?= (int) (($reportData['summary']['opening_stock'] ?? 0) + ($reportData['summary']['closing_stock'] ?? 0)) ?></div>
+                <div class="value"><?= $reportData['summary']['total_entries'] ?></div>
             </div>
         </div>
         
@@ -3490,27 +3593,23 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Date/Time</th>
                     <th>User</th>
                     <th>Action</th>
-                    <th>Details</th>
-                    <th>Amount</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (!empty($reportData['logs'])): ?>
                     <?php foreach ($reportData['logs'] as $log): ?>
                     <tr>
-                        <td><?= !empty($log['action_time']) ? date('M j, Y H:i:s', strtotime($log['action_time'])) : '-' ?></td>
+                        <td><?= date('M j, Y H:i:s', strtotime($log['action_time'])) ?></td>
                         <td><?= htmlspecialchars($log['username'] ?? 'Unknown') ?></td>
                         <td>
-                            <span class="badge <?= auditLogBadgeClass((string) ($log['action_type'] ?? '')) ?>">
-                                <?= htmlspecialchars(ucwords(str_replace('_', ' ', (string) ($log['action_type'] ?? '')))) ?>
+                            <span class="badge <?= $log['action_type'] === 'login' ? 'badge-success' : 'badge-info' ?>">
+                                <?= ucfirst($log['action_type']) ?>
                             </span>
                         </td>
-                        <td><?= htmlspecialchars($log['detail'] ?? '') ?></td>
-                        <td><?= isset($log['amount']) && $log['amount'] !== null ? 'N$' . number_format((float) $log['amount'], 2) : '-' ?></td>
                     </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="5" class="no-data">No audit log entries found for this period</td></tr>
+                    <tr><td colspan="3" class="no-data">No audit log entries found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

@@ -30,12 +30,12 @@ try {
     if ($role === false) {
         throw new Exception('User not found');
     }
-    if (!in_array($role, ['admin', 'cashier', 'manager', 'waitress'], true)) {
+    if (!in_array($role, ['admin', 'cashier', 'manager', 'waitress', 'hubbly'], true)) {
         throw new Exception('This account cannot be deleted here');
     }
 
     // Prepare and execute delete statement
-    $stmt = $db->prepare('DELETE FROM users WHERE id = :id AND role IN (\'admin\', \'cashier\', \'manager\', \'waitress\')');
+    $stmt = $db->prepare('DELETE FROM users WHERE id = :id AND role IN (\'admin\', \'cashier\', \'manager\', \'waitress\', \'hubbly\')');
     $stmt->bindValue(':id', $id, PDO::PARAM_INT);
     $result = $stmt->execute();
 

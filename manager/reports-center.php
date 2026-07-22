@@ -67,6 +67,14 @@ try {
     // Empty array
 }
 
+// Get invoicing customers for statement reports
+$invCustomers = [];
+try {
+    $invCustomers = $db->query("SELECT id, name FROM customers WHERE COALESCE(active, 1) = 1 ORDER BY name COLLATE NOCASE")->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // Empty — customers table may not exist yet
+}
+
 require_once __DIR__ . '/../ensure_purchase_order_schema.php';
 require_once __DIR__ . '/../purchase_order_lib.php';
 ensurePurchaseOrderSchema($db);
@@ -338,7 +346,36 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                 <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6<?= $uiCardsCustomizeMode ? ' ui-cards-customize-mode' : '' ?>">
                     <?php include __DIR__ . '/../includes/ui_cards_toolbar.php'; ?>
                     <div id="reportsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                        
+
+                        <?php
+                        $invReportCards = [
+                            ['quotations', 'Quotation Report', 'All quotations with totals', 'fa-file-lines', 'teal'],
+                            ['invoices', 'Invoices Report', 'All invoices with paid and balances', 'fa-file-invoice-dollar', 'emerald'],
+                            ['outstanding', 'Outstanding Invoices', 'Unpaid invoice balances', 'fa-hourglass-half', 'amber'],
+                            ['overdue', 'Overdue Invoices', 'Invoices past their due date', 'fa-triangle-exclamation', 'rose'],
+                            ['payments', 'Payments Report', 'Payments received in a period', 'fa-money-bill-wave', 'green'],
+                            ['customer_statement', 'Customer Statement', 'Statement of account per customer', 'fa-address-card', 'cyan'],
+                            ['sales_by_customer', 'Sales by Customer', 'Billing totals grouped by customer', 'fa-users', 'orange'],
+                            ['monthly_summary', 'Monthly Invoice Summary', 'Invoice totals grouped by month', 'fa-calendar', 'lime'],
+                            ['conversion', 'Quotation Conversion', 'Quotation to invoice conversion', 'fa-arrows-turn-right', 'fuchsia'],
+                        ];
+                        foreach ($invReportCards as $rc):
+                            [$key, $title, $desc, $icon, $color] = $rc;
+                            $needsCustomer = $key === 'customer_statement' ? 'true' : 'false';
+                        ?>
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="inv_<?= $key ?>" onclick="openInvReportModal('<?= $key ?>', '<?= htmlspecialchars($title, ENT_QUOTES) ?>', '<?= htmlspecialchars($desc, ENT_QUOTES) ?>', <?= $needsCustomer ?>)">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-<?= $color ?>-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas <?= $icon ?> text-<?= $color ?>-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-<?= $color ?>-100 text-<?= $color ?>-700 px-2 py-1 rounded-full">Invoicing</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1"><?= htmlspecialchars($title) ?></h3>
+                            <p class="text-sm text-gray-500"><?= htmlspecialchars($desc) ?></p>
+                        </div>
+                        <?php endforeach; ?>
+
                         <!-- Sales Reports -->
                         <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="daily_sales" onclick="openReportModal('daily_sales', 'Daily Sales Report', 'Detailed sales for a specific day')">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
@@ -620,6 +657,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                 
                 <form id="reportForm" onsubmit="generateReport(event)">
                     <input type="hidden" id="reportType" name="report_type">
+                    <input type="hidden" id="reportSource" name="report_source" value="standard">
                     
                     <!-- Period Selection -->
                     <div class="mb-4">
@@ -685,6 +723,25 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <?php endforeach; ?>
                         </select>
                     </div>
+
+                    <div id="invCustomerFilter" class="mb-4 hidden">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+                        <select id="invCustomerId" name="customer_id" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
+                            <option value="0">All Customers</option>
+                            <?php foreach ($invCustomers as $cust): ?>
+                                <option value="<?= (int) $cust['id'] ?>"><?= htmlspecialchars($cust['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div id="invFormatFilter" class="mb-4 hidden">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Format</label>
+                        <select id="invFormat" name="format" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
+                            <option value="pdf">PDF</option>
+                            <option value="csv">CSV</option>
+                            <option value="excel">Excel</option>
+                        </select>
+                    </div>
                     
                     <!-- Generate Button -->
                     <div class="flex gap-3 mt-6">
@@ -716,21 +773,26 @@ $uiCardsApiUrl = '../ui_cards_api.php';
         }
         
         // Modal functions
-        function openReportModal(type, title, description) {
-            document.getElementById('reportType').value = type;
-            document.getElementById('modalTitle').textContent = title;
-            document.getElementById('modalDescription').textContent = description;
-            
-            // Set default dates to today
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('startDate').value = today;
-            document.getElementById('endDate').value = today;
-            
-            // Show/hide filters based on report type
+        function hideAllReportFilters() {
             document.getElementById('cashierFilter').classList.add('hidden');
             document.getElementById('creditorFilter').classList.add('hidden');
             document.getElementById('categoryFilter').classList.add('hidden');
             document.getElementById('supplierFilter').classList.add('hidden');
+            document.getElementById('invCustomerFilter').classList.add('hidden');
+            document.getElementById('invFormatFilter').classList.add('hidden');
+        }
+
+        function openReportModal(type, title, description) {
+            document.getElementById('reportSource').value = 'standard';
+            document.getElementById('reportType').value = type;
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalDescription').textContent = description;
+            
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('startDate').value = today;
+            document.getElementById('endDate').value = today;
+            
+            hideAllReportFilters();
             
             if (['cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type)) {
                 document.getElementById('cashierFilter').classList.remove('hidden');
@@ -748,12 +810,42 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             if (categoryReportTypes.indexOf(type) !== -1) {
                 document.getElementById('categoryFilter').classList.remove('hidden');
             }
-            
-            // Reset period buttons
+
+            updateGenerateBtnLabel('pdf');
             document.querySelectorAll('.period-btn').forEach(btn => btn.classList.remove('active'));
-            
-            // Show modal
             document.getElementById('reportModal').classList.add('active');
+        }
+
+        function openInvReportModal(report, title, description, needsCustomer) {
+            document.getElementById('reportSource').value = 'invoicing';
+            document.getElementById('reportType').value = report;
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalDescription').textContent = description;
+
+            const today = new Date().toISOString().split('T')[0];
+            const first = today.substring(0, 8) + '01';
+            document.getElementById('startDate').value = first;
+            document.getElementById('endDate').value = today;
+
+            hideAllReportFilters();
+            document.getElementById('invFormatFilter').classList.remove('hidden');
+            document.getElementById('invFormat').value = 'pdf';
+            if (needsCustomer) {
+                document.getElementById('invCustomerFilter').classList.remove('hidden');
+                document.getElementById('invCustomerId').value = '0';
+            }
+
+            updateGenerateBtnLabel('pdf');
+            document.querySelectorAll('.period-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById('reportModal').classList.add('active');
+        }
+
+        function updateGenerateBtnLabel(format) {
+            const btn = document.getElementById('generateBtn');
+            const fmt = (format || 'pdf').toLowerCase();
+            const icon = fmt === 'csv' || fmt === 'excel' ? 'fa-file-excel' : 'fa-file-pdf';
+            const label = fmt === 'csv' ? 'Generate CSV' : (fmt === 'excel' ? 'Generate Excel' : 'Generate PDF');
+            btn.innerHTML = '<i class="fas ' + icon + '"></i> ' + label;
         }
         
         function closeReportModal() {
@@ -810,19 +902,32 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             const originalContent = btn.innerHTML;
             btn.innerHTML = '<div class="spinner"></div> Generating...';
             btn.disabled = true;
-            
-            const formData = new FormData(document.getElementById('reportForm'));
-            const params = new URLSearchParams();
-            
-            for (let [key, value] of formData.entries()) {
-                if (value) params.append(key, value);
+
+            const source = document.getElementById('reportSource').value;
+            let url;
+
+            if (source === 'invoicing') {
+                const params = new URLSearchParams({
+                    report: document.getElementById('reportType').value,
+                    start: document.getElementById('startDate').value,
+                    end: document.getElementById('endDate').value,
+                    format: document.getElementById('invFormat').value || 'pdf',
+                    customer_id: document.getElementById('invCustomerId').value || '0'
+                });
+                url = '../invoicing_reports.php?' + params.toString();
+            } else {
+                const formData = new FormData(document.getElementById('reportForm'));
+                const params = new URLSearchParams();
+                for (let [key, value] of formData.entries()) {
+                    if (value && key !== 'report_source' && key !== 'format' && key !== 'customer_id') {
+                        params.append(key, value);
+                    }
+                }
+                url = 'generate_report_pdf.php?' + params.toString();
             }
             
-            // Open PDF in new window
-            const url = 'generate_report_pdf.php?' + params.toString();
             window.open(url, '_blank');
             
-            // Reset button
             setTimeout(() => {
                 btn.innerHTML = originalContent;
                 btn.disabled = false;
@@ -842,6 +947,11 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             if (e.key === 'Escape') {
                 closeReportModal();
             }
+        });
+    </script>
+    <script>
+        document.getElementById('invFormat')?.addEventListener('change', function() {
+            updateGenerateBtnLabel(this.value);
         });
     </script>
     <?php $reportsSearchInclude = 'script'; include __DIR__ . '/../includes/reports_center_search.php'; ?>

@@ -36,12 +36,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = $_POST['username'];
     $password = $_POST['password'];
     $role = $_POST['role'];
-    $allowedRoles = ['cashier', 'manager', 'admin', 'waitress'];
+    $allowedRoles = ['cashier', 'manager', 'admin', 'waitress', 'hubbly'];
     if (!in_array($role, $allowedRoles, true)) {
         header('Location: users.php?error=' . urlencode('Invalid role selected.'));
         exit;
     }
     $email = $_POST['email'] ?? null;
+    $assignedCategory = isset($_POST['assigned_category']) ? trim((string) $_POST['assigned_category']) : '';
+    if ($role === 'hubbly') {
+        if ($assignedCategory === '') {
+            header('Location: edit_user.php?id=' . urlencode((string) $id) . '&error=' . urlencode('Please select a product category for Hubbly users.'));
+            exit;
+        }
+    } else {
+        $assignedCategory = '';
+    }
 
     $clearFingerprintLogin = isset($_POST['clear_fingerprint_login']) && $_POST['clear_fingerprint_login'] === '1';
     $efIdx = isset($_POST['enrolled_index_finger']) ? trim((string) $_POST['enrolled_index_finger']) : '';
@@ -54,10 +63,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Prepare update query
-    $query = "UPDATE users SET username = :username, role = :role";
+    $query = "UPDATE users SET username = :username, role = :role, assigned_category = :assigned_category";
     $params = [
         ':username' => $username,
         ':role' => $role,
+        ':assigned_category' => $assignedCategory !== '' ? $assignedCategory : null,
         ':id' => $id
     ];
 
@@ -101,6 +111,20 @@ $user = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$user) {
     header('Location: users.php');
     exit;
+}
+
+$productCategories = [];
+try {
+    $posDb = new PDO('sqlite:../pos.db');
+    $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $productCategories = $posDb->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category COLLATE NOCASE")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    // Keep current assigned category in the list even if products no longer use it
+    $currentCat = trim((string) ($user['assigned_category'] ?? ''));
+    if ($currentCat !== '' && !in_array($currentCat, $productCategories, true)) {
+        array_unshift($productCategories, $currentCat);
+    }
+} catch (Throwable $e) {
+    $productCategories = [];
 }
 ?>
 
@@ -177,7 +201,23 @@ if (!$user) {
                                         <option value="manager" <?= $user['role'] === 'manager' ? 'selected' : '' ?>>Manager</option>
                                         <option value="admin" <?= $user['role'] === 'admin' ? 'selected' : '' ?>>Admin</option>
                                         <option value="waitress" <?= $user['role'] === 'waitress' ? 'selected' : '' ?>>Waitress</option>
+                                        <option value="hubbly" <?= $user['role'] === 'hubbly' ? 'selected' : '' ?>>Hubbly</option>
                                     </select>
+                                </div>
+
+                                <div id="hubblyCategoryWrap" class="<?= $user['role'] === 'hubbly' ? '' : 'hidden' ?>">
+                                    <label for="assigned_category" class="block text-sm font-medium text-gray-700 mb-2">Hubbly Product Category</label>
+                                    <select name="assigned_category" id="assigned_category"
+                                        class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm 
+                                        focus:outline-none focus:ring-2 focus:ring-teal-500 
+                                        focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out"
+                                        <?= $user['role'] === 'hubbly' ? 'required' : '' ?>>
+                                        <option value="">Select category…</option>
+                                        <?php foreach ($productCategories as $cat): ?>
+                                            <option value="<?= htmlspecialchars((string) $cat) ?>" <?= (($user['assigned_category'] ?? '') === $cat) ? 'selected' : '' ?>><?= htmlspecialchars((string) $cat) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="mt-1 text-xs text-gray-500">This user will only see products in the selected category on the Hubbly POS.</p>
                                 </div>
 
                                 <div>
@@ -281,5 +321,21 @@ if (!$user) {
         window.FP_ENROLL_API_URL = '../fingerprint_enroll_api.php';
     </script>
     <script src="../add_user_fingerprint.js?v=20260701"></script>
+    <script>
+        (function () {
+            const roleEl = document.getElementById('role');
+            const wrap = document.getElementById('hubblyCategoryWrap');
+            const catEl = document.getElementById('assigned_category');
+            function syncHubblyCategory() {
+                const isHubbly = roleEl && roleEl.value === 'hubbly';
+                if (wrap) wrap.classList.toggle('hidden', !isHubbly);
+                if (catEl) catEl.required = !!isHubbly;
+            }
+            if (roleEl) {
+                roleEl.addEventListener('change', syncHubblyCategory);
+                syncHubblyCategory();
+            }
+        })();
+    </script>
 </body>
 </html>

@@ -65,7 +65,7 @@ try {
 // Get all cashiers and waitresses for cash modal dropdown
 $allCashUpEmployees = [];
 try {
-    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress') ORDER BY username");
+    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress', 'hubbly') ORDER BY username");
     $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     // If query fails, leave empty

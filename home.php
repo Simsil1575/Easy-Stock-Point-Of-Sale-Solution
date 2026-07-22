@@ -1,7 +1,9 @@
 <?php
 
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 // Set timezone to Central Africa Time (CAT)
 date_default_timezone_set('Africa/Harare');
@@ -16,10 +18,15 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 require_once __DIR__ . '/ensure_laybye_schema.php';
 require_once __DIR__ . '/recipe_stock_helper.php';
 
-// Cashier POS: cashiers, admins, and managers may sell; waitresses use their own POS
+// Cashier POS: cashiers, admins, and managers may sell; waitresses / hubbly use their own POS entry
 $userRole = strtolower($_SESSION['role']);
+$isHubblyPos = (defined('HUBBLY_POS') && HUBBLY_POS) || $userRole === 'hubbly';
 if ($userRole === 'waitress') {
     header('Location: waitress/home');
+    exit();
+}
+if ($userRole === 'hubbly' && !(defined('HUBBLY_POS') && HUBBLY_POS)) {
+    header('Location: hubbly/home');
     exit();
 }
 $dashboardHomeUrl = null;
@@ -29,6 +36,17 @@ if ($userRole === 'admin') {
     $dashboardHomeUrl = 'manager/home';
 }
 $sidebarCashierPosOnly = ($dashboardHomeUrl !== null);
+
+// Hubbly users only punch products in their assigned category
+$hubblyCategoryFilter = '';
+if ($isHubblyPos) {
+    require_once __DIR__ . '/ensure_user_role_constraint.php';
+    $hubblyCategoryFilter = trim((string) ($_SESSION['assigned_category'] ?? ''));
+    if ($hubblyCategoryFilter === '') {
+        $hubblyCategoryFilter = getUserAssignedCategory((int) ($_SESSION['user_id'] ?? 0));
+        $_SESSION['assigned_category'] = $hubblyCategoryFilter;
+    }
+}
 
 // Database connection
 $db = new PDO('sqlite:pos.db');
@@ -142,20 +160,34 @@ if (!$show_all_products) {
     $query .= ' WHERE ' . $laybyePosExclude;
 }
 
+if ($hubblyCategoryFilter !== '') {
+    $query .= ' AND LOWER(TRIM(COALESCE(p.category, \'\'))) = LOWER(:hubbly_cat)';
+}
+
 $query .= ' GROUP BY p.id ORDER BY total_sold DESC';
 
-$stmt = $db->query($query);
+if ($hubblyCategoryFilter !== '') {
+    $stmt = $db->prepare($query);
+    $stmt->execute([':hubbly_cat' => $hubblyCategoryFilter]);
+} elseif ($isHubblyPos) {
+    // Hubbly user with no category assigned — empty grid
+    $stmt = null;
+} else {
+    $stmt = $db->query($query);
+}
 
 $products = [];
 $lowStock = [];
 $outOfStock = [];
 
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $products[] = $row;
-    if ($row['quantity'] <= 0) {
-        $outOfStock[] = $row;
-    } else if ($row['quantity'] < 5) {
-        $lowStock[] = $row;
+if ($stmt) {
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $products[] = $row;
+        if ($row['quantity'] <= 0) {
+            $outOfStock[] = $row;
+        } else if ($row['quantity'] < 5) {
+            $lowStock[] = $row;
+        }
     }
 }
 
@@ -170,7 +202,13 @@ while ($stockRow = $stockMapStmt->fetch(PDO::FETCH_ASSOC)) {
 $creditors = $db->query("SELECT * FROM creditors WHERE active = 1")->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch unique categories from products (custom order: Bar, Restaurant, Laundry, Rooms, then others alphabetically)
-$categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND " . laybyePaymentProductWhereExclude('name') . " 
+$categories = [];
+if ($isHubblyPos) {
+    if ($hubblyCategoryFilter !== '') {
+        $categories = [$hubblyCategoryFilter];
+    }
+} else {
+    $categoriesQuery = "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND " . laybyePaymentProductWhereExclude('name') . " 
 ORDER BY 
     CASE 
         WHEN LOWER(category) = 'bar' THEN 1
@@ -180,10 +218,10 @@ ORDER BY
         ELSE 5
     END,
     category";
-$categoriesStmt = $db->query($categoriesQuery);
-$categories = [];
-while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
-    $categories[] = $catRow['category'];
+    $categoriesStmt = $db->query($categoriesQuery);
+    while ($catRow = $categoriesStmt->fetch(PDO::FETCH_ASSOC)) {
+        $categories[] = $catRow['category'];
+    }
 }
 
 // Fetch business info for printing (used by Android native printing)
@@ -1365,7 +1403,13 @@ if (!$businessInfo) {
 
 
     <div class="flex" style="max-width: 100vw; overflow-x: hidden;">
-        <?php include 'sidebar.php'; ?>
+        <?php
+        if ($isHubblyPos) {
+            include __DIR__ . '/hubbly/sidebar.php';
+        } else {
+            include __DIR__ . '/sidebar.php';
+        }
+        ?>
         <div class="flex-1 content lg:ml-0 ml-0" style="min-width: 0; overflow-x: hidden;">
             <div class="container" style="max-width: 100%;">
 
@@ -1450,11 +1494,13 @@ if (!$businessInfo) {
                 
                 <div id="categoryFilterContainer" class="category-filter-container flex-1 overflow-x-auto" style="padding-left: 0; padding-right: 0;">
                     <div class="flex items-center">
+                        <?php if (!$isHubblyPos): ?>
                         <button class="category-badge active" data-category="all" onclick="filterByCategory('all')">
                             All
                         </button>
+                        <?php endif; ?>
                         <?php foreach ($categories as $category): ?>
-                            <button class="category-badge" data-category="<?= htmlspecialchars($category) ?>" onclick="filterByCategory('<?= htmlspecialchars($category) ?>')">
+                            <button class="category-badge <?= $isHubblyPos ? 'active' : '' ?>" data-category="<?= htmlspecialchars($category) ?>" onclick="filterByCategory('<?= htmlspecialchars($category) ?>')">
                                 <?= htmlspecialchars($category) ?>
                             </button>
                         <?php endforeach; ?>
@@ -1572,7 +1618,15 @@ if (!$businessInfo) {
                         </svg>
                     </div>
                     <h3 class="text-2xl font-semibold text-gray-800 mb-2">No Products Available</h3>
-                    <p class="text-gray-500 text-center max-w-md">It looks like there are no products in the database. Please add some products to get started.</p>
+                    <p class="text-gray-500 text-center max-w-md">
+                        <?php if ($isHubblyPos && $hubblyCategoryFilter === ''): ?>
+                            No product category is assigned to this Hubbly user. Ask an admin to set one under Users → Edit User.
+                        <?php elseif ($isHubblyPos): ?>
+                            No products found in category “<?= htmlspecialchars($hubblyCategoryFilter) ?>”. Add products with that category, or change the assigned category for this user.
+                        <?php else: ?>
+                            It looks like there are no products in the database. Please add some products to get started.
+                        <?php endif; ?>
+                    </p>
                 </div>
             </div>
         <?php else: ?>
@@ -3989,11 +4043,38 @@ if (!$businessInfo) {
                     return;
             }
 
+            const total = getPayloadOrderTotal();
+            const cashReceived = parseFloat(document.getElementById('cashReceived')?.value) || 0;
+            // Cash in Cash Received + EFT = mixed; empty cash = plain EFT
+            const isMixedFromCash = cashReceived > 0;
+
+            if (isMixedFromCash && cashReceived >= total) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Cash Covers Total',
+                    text: 'Cash received covers the full amount. Use cash payment instead of EFT.',
+                    allowOutsideClick: false,
+                });
+                return;
+            }
+
+            const cashAmount = isMixedFromCash ? cashReceived : 0;
+            const eftAmount = isMixedFromCash ? Math.round((total - cashAmount) * 100) / 100 : total;
+            const modalTitle = isMixedFromCash ? 'Cash + EFT Payment' : 'E-wallet Payment';
+            const confirmTitle = isMixedFromCash ? 'Confirm Cash + EFT' : 'Confirm EFT Payment';
+            const successTitle = isMixedFromCash ? 'Payment Processed' : 'EFT Payment Processed';
+
             // Show e-wallet payment modal
             Swal.fire({
-                title: '<h1 class="text-2xl font-bold text-teal-700 mb-4">E-wallet Payment</h1>',
+                title: `<h1 class="text-2xl font-bold text-teal-700 mb-4">${modalTitle}</h1>`,
                 html: `
                     <div class="space-y-4">
+                        ${isMixedFromCash ? `
+                        <div class="text-left text-sm text-gray-700 bg-teal-50 border border-teal-100 rounded-xl px-4 py-3">
+                            <div>Total: <span class="font-bold">N$${total.toFixed(2)}</span></div>
+                            <div>Cash: <span class="font-bold">N$${cashAmount.toFixed(2)}</span></div>
+                            <div>EFT: <span class="font-bold">N$${eftAmount.toFixed(2)}</span></div>
+                        </div>` : ''}
                                  <select id="walletProvider" 
                                 class="w-full px-4 py-2 border-2 border-teal-100 rounded-xl 
                                        focus:border-teal-500 focus:ring-2 focus:ring-teal-200 
@@ -4038,8 +4119,8 @@ if (!$businessInfo) {
                         transaction_ref: result.value.transactionRef,
                         wallet_provider: result.value.walletProvider,
                         items: orderItemsForCheckout(),
-                        total: getPayloadOrderTotal(),
-                        payment_method: 'e-wallet',
+                        total: total,
+                        payment_method: isMixedFromCash ? 'mixed' : 'e-wallet',
                         cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>',
                         // Always include business info from info.db
                         business_name: window.businessInfo?.business_name || businessInfo?.business_name,
@@ -4050,13 +4131,18 @@ if (!$businessInfo) {
                         vat_rate: window.businessInfo?.vat_rate || businessInfo?.vat_rate
                     };
 
+                    if (isMixedFromCash) {
+                        saleData.cash_amount = cashAmount;
+                        saleData.eft_amount = eftAmount;
+                    }
+
                     // Store transaction data globally for reverse transaction
                     window.pendingTransactionData = saleData;
 
                     // Ask for final confirmation and optionally receipt printing
                     Swal.fire({
                         icon: 'success',
-                        title: 'Confirm EFT Payment',
+                        title: confirmTitle,
                         confirmButtonText: 'OK',
                         footer: buildPaymentFooterHTML(),
                         allowOutsideClick: false,
@@ -4068,7 +4154,7 @@ if (!$businessInfo) {
                             return;
                         }
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
-                        // Process the e-wallet payment AFTER confirmation
+                        // Process the payment AFTER confirmation
                         fetch('process_order.php', {
                             method: 'POST',
                             headers: {
@@ -4084,6 +4170,9 @@ if (!$businessInfo) {
                                 // Clear pending transaction data after successful checkout
                                 window.pendingTransactionData = null;
                                 
+                                if (isMixedFromCash && cashAmount > 0) {
+                                    openCashDrawer();
+                                }
                                 cashSound.play();
                                 if (printReceipt) {
                                     saleData.print_only = true;
@@ -4092,14 +4181,14 @@ if (!$businessInfo) {
                                 clearCart();
                                 refreshProductQuantities();
                                 closeMobileCart();
-                                Swal.fire({icon:'success', title:'EFT Payment Processed', timer:1200, showConfirmButton:false});
+                                Swal.fire({icon:'success', title: successTitle, timer:1200, showConfirmButton:false});
                             } else {
                                 Swal.fire('Error', result.message || 'Failed to process payment', 'error');
                             }
                         })
                         .catch(error => {
                             console.error('Error:', error);
-                            Swal.fire('Error', 'Could not process e-wallet payment', 'error');
+                            Swal.fire('Error', isMixedFromCash ? 'Could not process mixed payment' : 'Could not process e-wallet payment', 'error');
                         });
                     });
                 }

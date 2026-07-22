@@ -23,7 +23,7 @@ if (!isset($_SESSION['user_id'], $_SESSION['role'])) {
 }
 
 $role = (string) $_SESSION['role'];
-$enrollRoles = ['admin', 'manager', 'cashier', 'waitress'];
+$enrollRoles = ['admin', 'manager', 'cashier', 'waitress', 'hubbly'];
 if (!in_array($role, $enrollRoles, true)) {
     echo json_encode([
         'ok' => false,

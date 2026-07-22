@@ -36,7 +36,7 @@ if ($ids === []) {
     exit;
 }
 
-$allowedRoles = ['admin', 'cashier', 'manager', 'waitress'];
+$allowedRoles = ['admin', 'cashier', 'manager', 'waitress', 'hubbly'];
 
 try {
     $db = new PDO('sqlite:../user.db');
@@ -63,7 +63,7 @@ try {
     $db->beginTransaction();
     $ph = implode(',', array_fill(0, count($toDelete), '?'));
     $del = $db->prepare(
-        "DELETE FROM users WHERE id IN ($ph) AND role IN ('admin', 'cashier', 'manager', 'waitress')"
+        "DELETE FROM users WHERE id IN ($ph) AND role IN ('admin', 'cashier', 'manager', 'waitress', 'hubbly')"
     );
     $del->execute($toDelete);
     $db->commit();

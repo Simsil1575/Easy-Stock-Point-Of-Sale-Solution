@@ -57,7 +57,7 @@ try {
 // Get all cashiers and waitresses for cash modal dropdown
 $allCashUpEmployees = [];
 try {
-    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress') ORDER BY username");
+    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress', 'hubbly') ORDER BY username");
     $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     // If query fails, leave empty
@@ -3360,7 +3360,22 @@ if (!$businessInfo) {
         try {
             const printFn = (typeof window.sendToPrinter === 'function')
                 ? window.sendToPrinter
-                : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+                : async (data) => {
+                    const response = await fetch('../receipt.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    const text = await response.text();
+                    try {
+                        return text ? JSON.parse(text) : { success: false, message: 'Empty response from receipt.php' };
+                    } catch (parseError) {
+                        return {
+                            success: false,
+                            message: 'Invalid JSON from receipt.php: ' + (text || 'Empty response')
+                        };
+                    }
+                };
             const result = await printFn(receiptData);
             if (result && result.success) {
                 const saveData = {
@@ -3396,11 +3411,18 @@ if (!$businessInfo) {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(saveData)
                     });
-                    const saveResult = await saveResponse.json();
+                    const saveText = await saveResponse.text();
+                    let saveResult = null;
+                    try {
+                        saveResult = saveText ? JSON.parse(saveText) : null;
+                    } catch (parseError) {
+                        showCashUpNotification('Printed but save response was invalid: ' + (saveText || 'Empty response'), 'error');
+                        return;
+                    }
                     if (saveResult && saveResult.success) {
                         showCashUpNotification('Cash-up printed and saved successfully!', 'success');
                     } else {
-                        showCashUpNotification('Printed but failed to save: ' + (saveResult.error || 'Unknown error'), 'error');
+                        showCashUpNotification('Printed but failed to save: ' + ((saveResult && (saveResult.error || saveResult.message)) || 'Unknown error'), 'error');
                     }
                 } catch (saveError) {
                     showCashUpNotification('Printed but failed to save to database', 'error');

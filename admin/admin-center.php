@@ -345,6 +345,32 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <p class="text-sm text-gray-500">Plans, deposits, and payments</p>
                         </div>
                         
+                        <!-- Quotations -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="quotations" onclick="window.location.href='quotations'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-file-lines text-blue-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Sales</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Quotations</h3>
+                            <p class="text-sm text-gray-500">Create, send and convert customer quotes</p>
+                        </div>
+
+                        <!-- Invoices -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="invoices" onclick="window.location.href='invoices'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-file-invoice-dollar text-emerald-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Sales</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Invoices</h3>
+                            <p class="text-sm text-gray-500">Issue invoices, record payments, track balances</p>
+                        </div>
+
                         <!-- Credit Book -->
                         <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_book" onclick="window.location.href='credit-book'">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
@@ -1623,9 +1649,24 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Printing...';
             try {
-                const printFn = (typeof window.sendToPrinter === 'function')
-                    ? window.sendToPrinter
-                    : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+            const printFn = (typeof window.sendToPrinter === 'function')
+                ? window.sendToPrinter
+                : async (data) => {
+                    const response = await fetch('../receipt.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    const text = await response.text();
+                    try {
+                        return text ? JSON.parse(text) : { success: false, message: 'Empty response from receipt.php' };
+                    } catch (parseError) {
+                        return {
+                            success: false,
+                            message: 'Invalid JSON from receipt.php: ' + (text || 'Empty response')
+                        };
+                    }
+                };
                 const result = await printFn(receiptData);
                 if (result && result.success) {
                     const reportSnapshot = {
@@ -1689,16 +1730,23 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                         total_items_sold: cashUpSystemData.total_items_sold || 0
                     };
                     try {
-                        const saveResponse = await fetch('save_cashup.php', {
+                    const saveResponse = await fetch('save_cashup.php', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(saveData)
                         });
-                        const saveResult = await saveResponse.json();
+                    const saveText = await saveResponse.text();
+                    let saveResult = null;
+                    try {
+                        saveResult = saveText ? JSON.parse(saveText) : null;
+                    } catch (parseError) {
+                        showCashUpNotification('Printed but save response was invalid: ' + (saveText || 'Empty response'), 'error');
+                        return;
+                    }
                         if (saveResult && saveResult.success) {
                             showCashUpNotification('Cash-up printed and saved successfully!', 'success');
                         } else {
-                            showCashUpNotification('Printed but failed to save: ' + (saveResult.error || 'Unknown error'), 'error');
+                        showCashUpNotification('Printed but failed to save: ' + ((saveResult && (saveResult.error || saveResult.message)) || 'Unknown error'), 'error');
                         }
                     } catch (saveError) {
                         showCashUpNotification('Printed but failed to save to database', 'error');

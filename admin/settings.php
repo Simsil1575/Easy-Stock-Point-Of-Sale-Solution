@@ -351,12 +351,12 @@ $settingsSectionTitles = [
                             </a>
                             <a href="business_settings" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
                                 <div class="flex items-start justify-between mb-3">
-                                    <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
-                                        <i class="fas fa-store text-indigo-600 text-xl"></i>
+                                    <div class="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-store text-gray-600 text-xl"></i>
                                     </div>
-                                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Business</span>
+                                    <span class="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">Business</span>
                                 </div>
-                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-indigo-900">Business info</h3>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-gray-900">Business info</h3>
                                 <p class="text-sm text-gray-500">Name, VAT, receipts logo/footer</p>
                             </a>
                             <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
@@ -1491,7 +1491,7 @@ $settingsSectionTitles = [
                             Export Transactions
                         </button>
 
-                        <button type="button" id="export_product_images_btn" class="bg-indigo-500 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
+                        <button type="button" id="export_product_images_btn" class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
                             <svg class="w-5 h-8 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                             </svg>
@@ -1504,13 +1504,13 @@ $settingsSectionTitles = [
                         <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                             <div>
                                 <h3 class="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                                    <i class="fas fa-cloud-download-alt text-indigo-600"></i>
+                                    <i class="fas fa-cloud-download-alt text-gray-600"></i>
                                     App updater
                                 </h3>
                               
                             </div>
                             <div class="flex flex-wrap gap-2 shrink-0">
-                                <button type="button" id="app_update_check_btn" class="bg-indigo-500 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
+                                <button type="button" id="app_update_check_btn" class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded flex items-center transition duration-200">
                                     <i class="fas fa-sync-alt mr-2"></i>
                                     Check for updates
                                 </button>
@@ -1531,7 +1531,7 @@ $settingsSectionTitles = [
                             <p id="app_update_message" class="mt-3 text-gray-500"></p>
                             <div id="app_update_progress" class="hidden mt-3">
                                 <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                                    <div class="bg-indigo-500 h-2 rounded-full animate-pulse" style="width: 70%"></div>
+                                    <div class="bg-gray-500 h-2 rounded-full animate-pulse" style="width: 70%"></div>
                                 </div>
                                 <p class="text-xs text-gray-500 mt-1">Applying update — only changed files when possible. Keep this page open…</p>
                             </div>
@@ -1699,7 +1699,7 @@ $settingsSectionTitles = [
                                     availableEl.className = 'text-green-700 font-semibold';
                                 } else {
                                     availableEl.textContent = 'Up to date';
-                                    availableEl.className = 'text-indigo-700 font-semibold';
+                                    availableEl.className = 'text-gray-700 font-semibold';
                                 }
                                 installBtn.disabled = !updateAvailable;
                                 if (extraMessage) {

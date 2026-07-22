@@ -20,7 +20,7 @@ $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 userdb_ensure_fingerprint_columns($db);
 
 // Fetch staff accounts including administrators
-$users = $db->query("SELECT * FROM users WHERE role IN ('admin', 'cashier', 'manager', 'waitress') ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+$users = $db->query("SELECT * FROM users WHERE role IN ('admin', 'cashier', 'manager', 'waitress', 'hubbly') ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 ?>
 
@@ -114,6 +114,7 @@ $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
                                                 <option value="cashier">Cashier</option>
                                                 <option value="manager">Manager</option>
                                                 <option value="waitress">Waitress</option>
+                                                <option value="hubbly">Hubbly</option>
                                             </select>
                                         </div>
                                     </div>
@@ -170,7 +171,8 @@ $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
                                                                 $user['role'] === 'admin' ? 'bg-gray-800 text-white' :
                                                                 ($user['role'] === 'manager' ? 'bg-purple-100 text-purple-800' :
                                                                 ($user['role'] === 'waitress' ? 'bg-pink-100 text-pink-800' :
-                                                                'bg-blue-100 text-blue-800')) ?>">
+                                                                ($user['role'] === 'hubbly' ? 'bg-teal-100 text-teal-800' :
+                                                                'bg-blue-100 text-blue-800'))) ?>">
                                                                 <?= ucfirst($user['role']) ?>
                                                             </span>
                                                         </td>

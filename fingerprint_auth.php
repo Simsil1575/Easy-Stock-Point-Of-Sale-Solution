@@ -87,6 +87,8 @@ function fp_complete_login(array $user): void {
         $redirect = 'manager/home';
     } elseif ($user['role'] === 'waitress') {
         $redirect = 'waitress/home';
+    } elseif ($user['role'] === 'hubbly') {
+        $redirect = 'hubbly/home';
     } else {
         $redirect = 'home';
     }
@@ -132,6 +134,8 @@ if (!empty($_SESSION['user_id']) && !empty($_SESSION['role'])) {
         $redirect = 'manager/home';
     } elseif ($role === 'waitress') {
         $redirect = 'waitress/home';
+    } elseif ($role === 'hubbly') {
+        $redirect = 'hubbly/home';
     } else {
         $redirect = 'home';
     }

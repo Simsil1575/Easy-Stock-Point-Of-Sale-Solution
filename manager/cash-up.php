@@ -121,7 +121,7 @@ $allCashierIds = [];
 
 // Get all cashier and waitress IDs/usernames from users table for faster lookup
 try {
-    $cashiersQuery = $userDb->query("SELECT id, username FROM users WHERE role IN ('cashier', 'waitress')");
+    $cashiersQuery = $userDb->query("SELECT id, username FROM users WHERE role IN ('cashier', 'waitress', 'hubbly')");
     $cashiers = $cashiersQuery->fetchAll(PDO::FETCH_ASSOC);
     foreach ($cashiers as $cashier) {
         $allCashierIds[$cashier['id']] = true;
@@ -194,7 +194,7 @@ foreach ($employeeSales as $emp) {
 // Get all cashiers and waitresses for filter dropdown
 $allEmployees = [];
 try {
-    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress') ORDER BY username");
+    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress', 'hubbly') ORDER BY username");
     $allEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     // If query fails, use cashier_ids from sales data

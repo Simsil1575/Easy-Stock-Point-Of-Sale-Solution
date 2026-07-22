@@ -273,6 +273,8 @@ try {
     exit;
 }
 
+require_once __DIR__ . '/receipt_payment_helper.php';
+
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
@@ -1136,6 +1138,9 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
             $spaces = $receiptWidth - strlen($label) - strlen($amountStr);
             if ($spaces < 1) $spaces = 1;
             return $label . str_repeat(' ', $spaces) . $amountStr . "\n";
+        };
+        $separatorLine = function($style = 'thin') use ($receiptWidth) {
+            return str_repeat($style === 'heavy' ? '=' : '-', $receiptWidth) . "\n";
         };
         
         // Print header

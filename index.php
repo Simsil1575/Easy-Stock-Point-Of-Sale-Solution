@@ -13,6 +13,9 @@ if ($_SERVER["REQUEST_METHOD"] == "GET" && isset($_SESSION['user_id']) && isset(
     } elseif ($role === 'waitress') {
         header("Location: waitress/home");
         exit();
+    } elseif ($role === 'hubbly') {
+        header("Location: hubbly/home");
+        exit();
     } else {
         header("Location: home");
         exit();
@@ -66,6 +69,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     header("Location: manager/home");
                 } elseif ($user['role'] === 'waitress') {
                     header("Location: waitress/home");
+                } elseif ($user['role'] === 'hubbly') {
+                    header("Location: hubbly/home");
                 } else {
                     header("Location: home");
                 }
@@ -87,8 +92,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     }
 }
 
-// Check if there are any waitress accounts in the database
+// Check if there are any waitress / hubbly accounts in the database
 $has_waitress_accounts = false;
+$has_hubbly_accounts = false;
 try {
     $db_file = realpath(dirname(__FILE__) . '/user.db');
     $userDb = new PDO("sqlite:$db_file");
@@ -98,9 +104,14 @@ try {
     $waitressCheckStmt->execute();
     $waitressResult = $waitressCheckStmt->fetch(PDO::FETCH_ASSOC);
     $has_waitress_accounts = ($waitressResult['count'] > 0);
-} catch(PDOException $e) {
-    // If database error, default to false (don't show waitress option)
+
+    $hubblyCheckStmt = $userDb->prepare("SELECT COUNT(*) as count FROM users WHERE role = 'hubbly'");
+    $hubblyCheckStmt->execute();
+    $hubblyResult = $hubblyCheckStmt->fetch(PDO::FETCH_ASSOC);
+    $has_hubbly_accounts = ((int) ($hubblyResult['count'] ?? 0) > 0);
+} catch (PDOException $e) {
     $has_waitress_accounts = false;
+    $has_hubbly_accounts = false;
 }
 ?>
 <!DOCTYPE html>
@@ -482,6 +493,58 @@ try {
                     
                     
                                 <div class="mb-8 grid grid-cols-2 sm:flex sm:justify-center gap-2 sm:gap-4 sm:space-x-0">
+                                    <?php if ($has_hubbly_accounts): ?>
+                                    <button id="hubblyBtn" type="button" class="user-role-btn w-full sm:w-28 px-2 sm:px-3 py-2 sm:py-1.5 flex items-center justify-between border-2 border-transparent bg-white rounded-xl shadow-md hover:shadow-lg scale-100 transition-all duration-100">
+                                        <div class="flex items-center">
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" class="w-5 h-5 sm:w-6 sm:h-6 mr-1 sm:mr-2 flex-shrink-0 text-gray-500" width="100%" height="100%" aria-hidden="true" fill="currentColor" stroke="currentColor">
+                                              <!-- Charcoal Tray & Top Bowl -->
+                                              <path d="M44,15 L56,15 L58,8 L42,8 Z" fill="currentColor" stroke="none"/>
+                                              <ellipse cx="50" cy="15" rx="12" ry="3" fill="currentColor" stroke="none" opacity="0.75"/>
+                                              <ellipse cx="50" cy="8" rx="8" ry="2" fill="currentColor" stroke="none"/>
+
+                                              <!-- Upper Stem / Shaft -->
+                                              <rect x="48" y="15" width="4" height="25" fill="currentColor" stroke="none" opacity="0.65"/>
+                                              
+                                              <!-- Decorative Stem Ornaments -->
+                                              <circle cx="50" cy="22" r="4" fill="currentColor" stroke="none" opacity="0.85"/>
+                                              <circle cx="50" cy="32" r="5" fill="currentColor" stroke="none" opacity="0.85"/>
+
+                                              <!-- Heart / Base Ring Connection -->
+                                              <path d="M42,40 L58,40 L55,45 L45,45 Z" fill="currentColor" stroke="none" opacity="0.75"/>
+
+                                              <!-- Water Base (Glass Vase) -->
+                                              <path d="M45,45 L55,45 L68,75 A18,18 0 0,1 32,75 Z" fill="currentColor" stroke="none" opacity="0.45"/>
+                                              <!-- Water Level Inside Vase -->
+                                              <path d="M35,68 Q50,66 65,68 L67,73 A18,18 0 0,1 33,73 Z" fill="currentColor" stroke="none" opacity="0.2"/>
+                                              
+                                              <!-- Hose Grommet / Port -->
+                                              <path d="M43,42 L35,46 L37,49 L44,44 Z" fill="currentColor" stroke="none" opacity="0.85"/>
+
+                                              <!-- Flexible Hose Pipe -->
+                                              <path d="M36,48 C20,55 15,75 28,85 C38,92 52,90 60,82" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+
+                                              <!-- Hose Handle & Mouthpiece -->
+                                              <g transform="translate(60,82) rotate(-30)">
+                                                <rect x="-3" y="0" width="6" height="20" rx="2" fill="currentColor" stroke="none" opacity="0.85"/>
+                                                <path d="M-1,20 L1,20 L2,25 L-2,25 Z" fill="currentColor" stroke="none"/>
+                                              </g>
+
+                                              <!-- Purge Valve -->
+                                              <circle cx="56" cy="43" r="2" fill="currentColor" stroke="none" opacity="0.85"/>
+
+                                              <!-- Rising Smoke Clouds -->
+                                              <path d="M25,25 A5,5 0 0,1 35,25 A5,5 0 0,1 40,32 A4,4 0 0,1 32,35 A5,5 0 0,1 25,25 Z" fill="currentColor" stroke="none" opacity="0.2"/>
+                                              <path d="M60,18 A6,6 0 0,1 72,20 A6,6 0 0,1 75,28 A5,5 0 0,1 65,30 A6,6 0 0,1 60,18 Z" fill="currentColor" stroke="none" opacity="0.15"/>
+                                            </svg>
+                                            <span class="text-xs font-semibold text-gray-700">Hubbly</span>
+                                        </div>
+                                        <div class="checkmark opacity-0 transition-opacity duration-100">
+                                            <svg class="w-3 h-3 sm:w-4 sm:h-4 text-teal-500" fill="currentColor" viewBox="0 0 20 20">
+                                                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                                            </svg>
+                                        </div>
+                                    </button>
+                                    <?php endif; ?>
                                     <?php if ($has_waitress_accounts): ?>
                                     <button id="waitressBtn" type="button" class="user-role-btn w-full sm:w-28 px-2 sm:px-3 py-2 sm:py-1.5 flex items-center justify-between border-2 border-transparent bg-white rounded-xl shadow-md hover:shadow-lg scale-100 transition-all duration-100">
                                         <div class="flex items-center">
@@ -564,7 +627,11 @@ try {
                                         <a href="resetpass/requestReset" class="text-sm text-gray-600 hover:text-gray-900">Forgot your password?</a>
                                     </div>
                     
-                                    <input type="hidden" id="userType" name="userType" value="<?php echo $has_waitress_accounts ? 'waitress' : 'cashier'; ?>">
+                                    <input type="hidden" id="userType" name="userType" value="<?php
+                                        if ($has_hubbly_accounts) echo 'hubbly';
+                                        elseif ($has_waitress_accounts) echo 'waitress';
+                                        else echo 'cashier';
+                                    ?>">
                     
                                     <button type="submit" 
                                             class="flex w-full items-center justify-center rounded-lg border-2 border-gray-400 bg-transparent px-4 py-2.5 text-sm/6 font-semibold text-gray-700 hover:border-gray-600 hover:text-gray-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-300 transition duration-200">
@@ -637,20 +704,20 @@ try {
     <script>
         // Execute code as soon as possible without waiting for DOMContentLoaded
         (function() {
+            const hubblyBtn = document.getElementById('hubblyBtn');
             const waitressBtn = document.getElementById('waitressBtn');
             const cashierBtn = document.getElementById('cashierBtn');
             const managerBtn = document.getElementById('managerBtn');
             const adminBtn = document.getElementById('adminBtn');
             const userType = document.getElementById('userType');
             
-            // Build buttons array, excluding null elements (waitressBtn might not exist)
-            const buttons = [waitressBtn, cashierBtn, managerBtn, adminBtn].filter(btn => btn !== null);
+            const buttons = [hubblyBtn, waitressBtn, cashierBtn, managerBtn, adminBtn].filter(btn => btn !== null);
 
             if (!cashierBtn || !managerBtn || !adminBtn || !userType) return;
 
-            // CSS classes for transition states
             const baseClasses = "user-role-btn w-full sm:w-28 px-2 sm:px-3 py-2 sm:py-1.5 flex items-center justify-between border-2 rounded-xl shadow-md hover:shadow-lg transition-all duration-100";
             const activeClasses = {
+                hubbly: "border-teal-500 bg-teal-50 scale-105",
                 waitress: "border-teal-400 bg-teal-50 scale-105",
                 cashier: "border-teal-500 bg-teal-50 scale-105",
                 manager: "border-teal-700 bg-teal-100 scale-105",
@@ -659,20 +726,16 @@ try {
             const inactiveClasses = "border-transparent bg-white scale-100";
 
             function selectButton(selectedBtn, role) {
-                // Update userType value immediately
                 userType.value = role;
                 
-                // Optimize button updates by only changing what's necessary
                 buttons.forEach(btn => {
                     const checkmark = btn.querySelector('.checkmark');
                     const isActive = btn === selectedBtn;
                     
-                    // Only update if state changed
                     if ((checkmark.style.opacity === '1') !== isActive) {
                         checkmark.style.opacity = isActive ? '1' : '0';
                     }
                     
-                    // Update only buttons that need to change
                     const shouldBeActive = isActive;
                     const isCurrentlyActive = btn.classList.contains('scale-105');
                     
@@ -686,14 +749,17 @@ try {
                 });
             }
 
-            // Set initial state - use waitress if available, otherwise cashier
-            if (waitressBtn) {
+            if (hubblyBtn) {
+                selectButton(hubblyBtn, 'hubbly');
+            } else if (waitressBtn) {
                 selectButton(waitressBtn, 'waitress');
             } else {
                 selectButton(cashierBtn, 'cashier');
             }
 
-            // Use event delegation for better performance
+            if (hubblyBtn) {
+                hubblyBtn.onclick = () => selectButton(hubblyBtn, 'hubbly');
+            }
             if (waitressBtn) {
                 waitressBtn.onclick = () => selectButton(waitressBtn, 'waitress');
             }

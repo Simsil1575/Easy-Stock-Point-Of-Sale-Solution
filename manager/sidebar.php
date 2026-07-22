@@ -558,6 +558,8 @@
             currentPage === 'cash-up' || currentPage.startsWith('cash-up') ||
             currentPage.startsWith('damaged_goods') ||
             currentPage.startsWith('create_creditor') ||
+            currentPage.startsWith('quotation') || currentPage.startsWith('quotations') ||
+            currentPage.startsWith('invoice') || currentPage.startsWith('invoices') ||
             currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders')
         );
         

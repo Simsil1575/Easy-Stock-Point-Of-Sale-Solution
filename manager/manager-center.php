@@ -346,6 +346,32 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                         </div>
                         
                         <!-- Credit Book -->
+                        <!-- Quotations -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="quotations" onclick="window.location.href='quotations'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-file-lines text-blue-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Sales</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Quotations</h3>
+                            <p class="text-sm text-gray-500">Create, send and convert customer quotes</p>
+                        </div>
+
+                        <!-- Invoices -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="invoices" onclick="window.location.href='invoices'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-file-invoice-dollar text-emerald-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Sales</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Invoices</h3>
+                            <p class="text-sm text-gray-500">Issue invoices, record payments, track balances</p>
+                        </div>
+
                         <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_book" onclick="window.location.href='credit-book'">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">

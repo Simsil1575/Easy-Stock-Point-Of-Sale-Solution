@@ -520,6 +520,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../sweetalert2@11.js"></script>
+    <script src="../receipt.php?js=true"></script>
     
     <style>
         .sidebar { position: fixed; height: 100%; }
@@ -836,6 +837,68 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
     const INTEREST_ENABLED = <?= $creditInterestSettings['enabled'] ? 'true' : 'false' ?>;
     const INTEREST_RATE = <?= json_encode($creditInterestSettings['rate_decimal']) ?>;
     const INTEREST_LABEL = <?= json_encode(creditInterestProductLabel($creditInterestSettings)) ?>;
+    const BALANCE_RECEIPT_TRANSACTIONS = <?= json_encode($transactions, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE) ?>;
+    const BALANCE_RECEIPT_CREDITOR_NAME = <?= json_encode($creditor['name'] ?? '') ?>;
+    const BALANCE_RECEIPT_TOTAL = <?= json_encode(array_sum(array_column($transactions, 'balance'))) ?>;
+    const SESSION_CASHIER_USERNAME = <?= json_encode($_SESSION['username'] ?? 'Unknown') ?>;
+
+    if (typeof sendToPrinter === 'undefined') {
+        window.sendToPrinter = function(receiptData) {
+            if (!receiptData.is_balance_receipt && !receiptData.is_payment_receipt && !receiptData.print_only) {
+                receiptData.print_only = true;
+            }
+            return fetch('../receipt.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(receiptData)
+            }).then(function(r) { return r.json(); });
+        };
+    }
+
+    window.printTotalBalanceReceipt = function printTotalBalanceReceipt() {
+        const receiptData = {
+            creditor_id: CREDITOR_ID,
+            total_balance: BALANCE_RECEIPT_TOTAL,
+            creditor_name: BALANCE_RECEIPT_CREDITOR_NAME,
+            is_balance_receipt: true,
+            transactions: (BALANCE_RECEIPT_TRANSACTIONS || []).filter(function(t) {
+                return parseFloat(t.balance || 0) > 0;
+            }).map(function(t) {
+                return {
+                    items: t.items,
+                    balance: t.balance,
+                    date: t.created_at
+                };
+            })
+        };
+
+        sendToPrinter(receiptData)
+            .then(function(response) {
+                if (response && response.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Receipt Printed',
+                        text: 'The total balance receipt has been printed successfully.',
+                        confirmButtonColor: '#3B82F6',
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Printing Failed',
+                        text: (response && response.message) ? response.message : 'Could not print receipt.',
+                        confirmButtonColor: '#3B82F6',
+                    });
+                }
+            })
+            .catch(function(error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Printing Failed',
+                    text: (error && error.message) ? error.message : 'An error occurred while trying to print the receipt.',
+                    confirmButtonColor: '#3B82F6',
+                });
+            });
+    };
 
     function formatMoney(n) {
         return parseFloat(n || 0).toFixed(2);
@@ -873,7 +936,10 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
 
         document.getElementById('bulkSelectedCount').textContent = count;
         document.getElementById('bulkSelectedBalance').textContent = formatMoney(totalBalance);
-        document.getElementById('bulkSelectedWithInterest')?.textContent = formatMoney(withInterest);
+        const bulkWithInterestEl = document.getElementById('bulkSelectedWithInterest');
+        if (bulkWithInterestEl) {
+            bulkWithInterestEl.textContent = formatMoney(withInterest);
+        }
 
         const bar = document.getElementById('bulkSelectionBar');
         if (count > 0) {
@@ -1184,7 +1250,7 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
     function openCashDrawer() {
         const drawerData = {
             open_drawer_only: true,
-            cashier_username: '<?php echo $_SESSION['username'] ?? 'Unknown'; ?>'
+            cashier_username: SESSION_CASHIER_USERNAME
         };
 
         console.log('Opening cash drawer');
@@ -1546,71 +1612,6 @@ $walletProviders = ['Account(Swipe)', 'E-wallet', 'BlueWallet', 'PayPulse', 'Ban
         }).then((result) => {
             if (result.isConfirmed) {
                 window.location = `../delete-transaction.php?id=${saleId}`;
-            }
-        });
-    }
-
-    function printTotalBalanceReceipt() {
-        const creditorId = <?= $creditorId ?>;
-        const totalBalance = <?= array_sum(array_column($transactions, 'balance')) ?>;
-        
-        // Get all unpaid transactions with their items
-        const transactions = <?= json_encode($transactions) ?>;
-        
-        const receiptData = {
-            creditor_id: creditorId,
-            total_balance: totalBalance,
-            creditor_name: "<?= htmlspecialchars($creditor['name']) ?>",
-            is_balance_receipt: true,
-            transactions: transactions.filter(t => t.balance > 0).map(t => ({
-                items: t.items,
-                balance: t.balance,
-                date: t.created_at
-            }))
-        };
-
-        $.ajax({
-            url: 'receipt.php',
-            method: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify(receiptData),
-            success: function(response) {
-                if (response.success) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Receipt Printed',
-                        text: 'The total balance receipt has been printed successfully.',
-                        confirmButtonColor: '#3B82F6',
-                    });
-                } else {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Printing Failed',
-                        text: response.message + (response.details ? '\n\n' + response.details : ''),
-                        confirmButtonColor: '#3B82F6',
-                    });
-                }
-            },
-            error: function(xhr, status, error) {
-                let errorMessage = 'An error occurred while trying to print the receipt.';
-                try {
-                    const response = JSON.parse(xhr.responseText);
-                    if (response.message) {
-                        errorMessage = response.message;
-                    }
-                    if (response.details) {
-                        errorMessage += '\n\n' + response.details;
-                    }
-                } catch (e) {
-                    console.error('Error parsing response:', e);
-                }
-                
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Printing Failed',
-                    text: errorMessage,
-                    confirmButtonColor: '#3B82F6',
-                });
             }
         });
     }
