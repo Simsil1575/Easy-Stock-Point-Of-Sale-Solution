@@ -15,6 +15,7 @@ $reportType = $_GET['report_type'] ?? '';
 $startDateRaw = $_GET['start_date'] ?? date('Y-m-d') . 'T00:00';
 $endDateRaw = $_GET['end_date'] ?? date('Y-m-d') . 'T23:59';
 $cashierId = $_GET['cashier_id'] ?? '';
+$terminalMac = $_GET['terminal_mac'] ?? '';
 $creditorId = $_GET['creditor_id'] ?? '';
 $category = $_GET['category'] ?? '';
 $supplierId = $_GET['supplier_id'] ?? '';
@@ -43,6 +44,7 @@ $endDate = substr($endDateTime, 0, 10);
 
 require_once __DIR__ . '/../purchase_order_lib.php';
 require_once __DIR__ . '/../ensure_purchase_order_schema.php';
+require_once __DIR__ . '/../terminal_helper.php';
 
 // Database connections
 try {
@@ -70,10 +72,11 @@ $businessName = $businessInfo['name'] ?? 'POS System';
 $businessAddress = $businessInfo['address'] ?? '';
 $businessPhone = $businessInfo['phone'] ?? '';
 
+require_once __DIR__ . '/../business_day_helper.php';
+
 // Get closing time for business day calculations
 $closingTime = $businessInfo['closing_time'] ?? '00:00';
-$closingHour = (int)substr($closingTime, 0, 2);
-$isAfterMidnight = $closingHour < 12;
+$isAfterMidnight = bdIsOvernightClosing($closingTime);
 
 // Date/time WHERE clause generator
 function getDateTimeWhereClause($dateField, $startDateTime, $endDateTime) {
@@ -85,54 +88,20 @@ function getDateTimeWhereClause($dateField, $startDateTime, $endDateTime) {
 
 // Legacy business day WHERE clause (kept for getCashDataForDate)
 function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
-    // Safety check - if dates are invalid, use simple date range
     if (empty($startDate) || empty($endDate)) {
         return "1=1";
     }
-    
-    // For date ranges longer than 7 days, use simple date filtering to avoid performance issues
+
     $start = new DateTime($startDate);
     $end = new DateTime($endDate);
     $daysDiff = $start->diff($end)->days;
-    
+
     if ($daysDiff > 7) {
-        // Simple date range for longer periods
         $endPlusOne = date('Y-m-d', strtotime($endDate . ' +1 day'));
         return "DATE($dateField) >= '$startDate' AND DATE($dateField) <= '$endPlusOne'";
     }
-    
-    if ($startDate === $endDate) {
-        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-        return "
-            (DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-            (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-        ";
-    } else {
-        $whereClauses = [];
-        $currentDate = new DateTime($startDate);
-        $endDateObj = new DateTime($endDate);
-        
-        while ($currentDate <= $endDateObj) {
-            $dateStr = $currentDate->format('Y-m-d');
-            $nextDay = clone $currentDate;
-            $nextDay->modify('+1 day');
-            $nextDayStr = $nextDay->format('Y-m-d');
-            
-            $whereClauses[] = "
-                (DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-            ";
-            
-            $currentDate->modify('+1 day');
-        }
-        
-        // Safety check - ensure we have at least one clause
-        if (empty($whereClauses)) {
-            return "DATE($dateField) >= '$startDate' AND DATE($dateField) <= '$endDate'";
-        }
-        
-        return "(" . implode(") OR (", $whereClauses) . ")";
-    }
+
+    return bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, (bool) $isAfterMidnight);
 }
 
 // Format currency
@@ -477,6 +446,7 @@ function getReportTitle($type) {
         'refunds' => 'Refunds Report',
         'voids' => 'Voids Report',
         'cashier_sales' => 'Cashier Sales Report',
+        'terminal_sales' => 'Terminal Sales Report',
         'gratuity' => 'Gratuity Report',
         'shift' => 'Shift Report',
         'profit_loss' => 'Profit & Loss Report',
@@ -1356,6 +1326,104 @@ switch ($reportType) {
         ];
         break;
 
+    case 'terminal_sales':
+        ensureTerminalSchema($db);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
+        $terminalFilterSql = '';
+        $terminalFilterParams = [];
+        if ($terminalMac !== '') {
+            $normalizedTerminalMac = normalizeMacAddress($terminalMac);
+            if ($normalizedTerminalMac !== null) {
+                $terminalFilterSql = ' AND terminal_mac = ?';
+                $terminalFilterParams[] = $normalizedTerminalMac;
+            }
+        }
+
+        $orderAggSql = "
+            SELECT terminal_mac,
+                   MAX(terminal_name) as terminal_name,
+                   COUNT(*) as order_count,
+                   COALESCE(SUM(total), 0) as total_sales,
+                   COALESCE(SUM(
+                       total - COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)
+                   ), 0) as cash_sales,
+                   COALESCE(SUM(
+                       COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)
+                   ), 0) as card_sales
+            FROM orders o
+            WHERE ($ordersWhereClause) $terminalFilterSql
+            GROUP BY terminal_mac
+        ";
+        $orderAggStmt = $db->prepare($orderAggSql);
+        $orderAggStmt->execute($terminalFilterParams);
+        $orderRows = $orderAggStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $creditAggSql = "
+            SELECT terminal_mac,
+                   MAX(terminal_name) as terminal_name,
+                   COUNT(*) as credit_count,
+                   COALESCE(SUM(total_amount), 0) as credit_total
+            FROM credit_sales cs
+            WHERE ($creditWhereClause) $terminalFilterSql
+            GROUP BY terminal_mac
+        ";
+        $creditAggStmt = $db->prepare($creditAggSql);
+        $creditAggStmt->execute($terminalFilterParams);
+        $creditRows = $creditAggStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $terminalMap = [];
+        foreach ($orderRows as $row) {
+            $key = $row['terminal_mac'] ?? '__unknown__';
+            $terminalMap[$key] = [
+                'terminal_mac' => $row['terminal_mac'],
+                'terminal_name' => formatTerminalLabel($row['terminal_name'] ?? null, $row['terminal_mac'] ?? null),
+                'order_count' => (int) $row['order_count'],
+                'total_sales' => (float) $row['total_sales'],
+                'cash_sales' => (float) $row['cash_sales'],
+                'card_sales' => (float) $row['card_sales'],
+                'credit_count' => 0,
+                'credit_total' => 0.0,
+            ];
+        }
+        foreach ($creditRows as $row) {
+            $key = $row['terminal_mac'] ?? '__unknown__';
+            if (!isset($terminalMap[$key])) {
+                $terminalMap[$key] = [
+                    'terminal_mac' => $row['terminal_mac'],
+                    'terminal_name' => formatTerminalLabel($row['terminal_name'] ?? null, $row['terminal_mac'] ?? null),
+                    'order_count' => 0,
+                    'total_sales' => 0.0,
+                    'cash_sales' => 0.0,
+                    'card_sales' => 0.0,
+                    'credit_count' => 0,
+                    'credit_total' => 0.0,
+                ];
+            }
+            $terminalMap[$key]['credit_count'] = (int) $row['credit_count'];
+            $terminalMap[$key]['credit_total'] = (float) $row['credit_total'];
+        }
+
+        $terminalSales = [];
+        foreach ($terminalMap as $entry) {
+            $entry['grand_total'] = $entry['total_sales'] + $entry['credit_total'];
+            $terminalSales[] = $entry;
+        }
+        usort($terminalSales, fn($a, $b) => $b['grand_total'] <=> $a['grand_total']);
+        $totalSales = array_sum(array_column($terminalSales, 'grand_total'));
+
+        $reportData = [
+            'terminals' => $terminalSales,
+            'summary' => [
+                'total_terminals' => count($terminalSales),
+                'total_cash' => array_sum(array_column($terminalSales, 'cash_sales')),
+                'total_card' => array_sum(array_column($terminalSales, 'card_sales')),
+                'total_credit' => array_sum(array_column($terminalSales, 'credit_total')),
+                'total_sales' => $totalSales,
+            ],
+        ];
+        break;
+
     case 'gratuity':
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $selectedCashierUserId = '';
@@ -1542,12 +1610,11 @@ LEFT JOIN (
         break;
 
     case 'shift':
-        // Get shift/login data
+        // user_log.user_id stores username, not numeric id
         $cashierCondition = $cashierId ? " AND ul.user_id = " . $db->quote($cashierId) : "";
         $shiftQuery = $db->prepare("
-            SELECT ul.*, u.username
+            SELECT ul.*, CAST(ul.user_id AS TEXT) AS username
             FROM user_log ul
-            LEFT JOIN users u ON ul.user_id = u.id
             WHERE ul.action_time >= :start AND ul.action_time <= :end $cashierCondition
             ORDER BY ul.action_time DESC
         ");
@@ -1644,28 +1711,8 @@ LEFT JOIN (
         break;
         
     case 'audit_log':
-        // Get user log/audit data
-        $logQuery = $db->prepare("
-            SELECT ul.*, u.username
-            FROM user_log ul
-            LEFT JOIN users u ON ul.user_id = u.id
-            WHERE ul.action_time >= :start AND ul.action_time <= :end
-            ORDER BY ul.action_time DESC
-            LIMIT 500
-        ");
-        try {
-            $logQuery->execute([':start' => $startDateTime, ':end' => $endDateTime]);
-            $logs = $logQuery->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Exception $e) {
-            $logs = [];
-        }
-        
-        $reportData = [
-            'logs' => $logs,
-            'summary' => [
-                'total_entries' => count($logs)
-            ]
-        ];
+        require_once __DIR__ . '/../audit_log_helper.php';
+        $reportData = buildAuditLogReportData($db, $userDb, $startDate, $endDate, 1000);
         break;
 
     case 'supplier_receiving':
@@ -3356,6 +3403,67 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="no-data">No credit sales in this period</div>
         <?php endif; ?>
         
+    <?php break; case 'terminal_sales': ?>
+        <div class="summary-cards">
+            <div class="summary-card">
+                <div class="label">Total Terminals</div>
+                <div class="value"><?= $reportData['summary']['total_terminals'] ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Order Cash</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_cash']) ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Order Card/EFT</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_card']) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Credit Sales</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_credit']) ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Grand Total</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></div>
+            </div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Terminal</th>
+                    <th class="text-right">Orders</th>
+                    <th class="text-right">Cash</th>
+                    <th class="text-right">Card/EFT</th>
+                    <th class="text-right">Credit</th>
+                    <th class="text-right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['terminals'])): ?>
+                    <?php foreach ($reportData['terminals'] as $terminal): ?>
+                    <?php if ($terminal['grand_total'] > 0): ?>
+                    <tr>
+                        <td><?= htmlspecialchars($terminal['terminal_name']) ?></td>
+                        <td class="text-right"><?= $terminal['order_count'] ?></td>
+                        <td class="text-right">N$<?= formatCurrency($terminal['cash_sales']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($terminal['card_sales']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($terminal['credit_total']) ?></td>
+                        <td class="text-right font-bold">N$<?= formatCurrency($terminal['grand_total']) ?></td>
+                    </tr>
+                    <?php endif; ?>
+                    <?php endforeach; ?>
+                    <tr class="total-row">
+                        <td colspan="2">Total</td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_cash']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_card']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_credit']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></td>
+                    </tr>
+                <?php else: ?>
+                    <tr><td colspan="6" class="no-data">No terminal sales found for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+
     <?php break; case 'gratuity': ?>
         <div class="summary-cards">
             <div class="summary-card positive">
@@ -3583,7 +3691,23 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="summary-cards">
             <div class="summary-card">
                 <div class="label">Total Entries</div>
-                <div class="value"><?= $reportData['summary']['total_entries'] ?></div>
+                <div class="value"><?= (int) ($reportData['summary']['total_entries'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Sales</div>
+                <div class="value"><?= (int) ($reportData['summary']['sales'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Receiving</div>
+                <div class="value"><?= (int) ($reportData['summary']['receiving'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Adjustments</div>
+                <div class="value"><?= (int) ($reportData['summary']['adjustments'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Opening / Closing</div>
+                <div class="value"><?= (int) (($reportData['summary']['opening_stock'] ?? 0) + ($reportData['summary']['closing_stock'] ?? 0)) ?></div>
             </div>
         </div>
         
@@ -3593,23 +3717,27 @@ header('Content-Type: text/html; charset=utf-8');
                     <th>Date/Time</th>
                     <th>User</th>
                     <th>Action</th>
+                    <th>Details</th>
+                    <th>Amount</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (!empty($reportData['logs'])): ?>
                     <?php foreach ($reportData['logs'] as $log): ?>
                     <tr>
-                        <td><?= date('M j, Y H:i:s', strtotime($log['action_time'])) ?></td>
+                        <td><?= !empty($log['action_time']) ? date('M j, Y H:i:s', strtotime($log['action_time'])) : '-' ?></td>
                         <td><?= htmlspecialchars($log['username'] ?? 'Unknown') ?></td>
                         <td>
-                            <span class="badge <?= $log['action_type'] === 'login' ? 'badge-success' : 'badge-info' ?>">
-                                <?= ucfirst($log['action_type']) ?>
+                            <span class="badge <?= auditLogBadgeClass((string) ($log['action_type'] ?? '')) ?>">
+                                <?= htmlspecialchars(ucwords(str_replace('_', ' ', (string) ($log['action_type'] ?? '')))) ?>
                             </span>
                         </td>
+                        <td><?= htmlspecialchars($log['detail'] ?? '') ?></td>
+                        <td><?= isset($log['amount']) && $log['amount'] !== null ? 'N$' . number_format((float) $log['amount'], 2) : '-' ?></td>
                     </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="3" class="no-data">No audit log entries found for this period</td></tr>
+                    <tr><td colspan="5" class="no-data">No audit log entries found for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

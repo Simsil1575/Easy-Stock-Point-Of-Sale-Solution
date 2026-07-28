@@ -12,15 +12,23 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Get parameters
 $reportType = $_GET['report_type'] ?? '';
-$startDate = $_GET['start_date'] ?? date('Y-m-d');
-$endDate = $_GET['end_date'] ?? date('Y-m-d');
+$startDateRaw = $_GET['start_date'] ?? date('Y-m-d') . 'T00:00';
+$endDateRaw = $_GET['end_date'] ?? date('Y-m-d') . 'T23:59';
 $cashierId = $_GET['cashier_id'] ?? '';
+$terminalMac = $_GET['terminal_mac'] ?? '';
 $creditorId = $_GET['creditor_id'] ?? '';
 $category = $_GET['category'] ?? '';
 $supplierId = $_GET['supplier_id'] ?? '';
 
+require_once __DIR__ . '/../includes/report_datetime_filter.php';
+$startDateTime = parseReportDateTime($startDateRaw, false);
+$endDateTime = parseReportDateTime($endDateRaw, true);
+$startDate = substr($startDateTime, 0, 10);
+$endDate = substr($endDateTime, 0, 10);
+
 require_once __DIR__ . '/../purchase_order_lib.php';
 require_once __DIR__ . '/../ensure_purchase_order_schema.php';
+require_once __DIR__ . '/../terminal_helper.php';
 
 // Database connections
 try {
@@ -54,7 +62,7 @@ $closingHour = (int)substr($closingTime, 0, 2);
 $isAfterMidnight = $closingHour < 12;
 
 // Business day WHERE clause generator
-function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+function getDateTimeWhereClause($dateField, $startDateTime, $endDateTime) {
     // Safety check - if dates are invalid, use simple date range
     if (empty($startDate) || empty($endDate)) {
         return "1=1";
@@ -442,6 +450,7 @@ function getReportTitle($type) {
         'refunds' => 'Refunds Report',
         'voids' => 'Voids Report',
         'cashier_sales' => 'Cashier Sales Report',
+        'terminal_sales' => 'Terminal Sales Report',
         'gratuity' => 'Gratuity Report',
         'tips' => 'Tips Report',
         'shift' => 'Shift Report',
@@ -456,16 +465,16 @@ function getReportTitle($type) {
 // Generate report data based on type
 $reportData = [];
 $reportTitle = getReportTitle($reportType);
-$dateRange = ($startDate === $endDate) ? date('F j, Y', strtotime($startDate)) : date('M j, Y', strtotime($startDate)) . ' - ' . date('M j, Y', strtotime($endDate));
+$dateRange = formatReportDateRange($startDateTime, $endDateTime);
 
-$whereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+$whereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
 
 switch ($reportType) {
     case 'sales':
     case 'daily_sales':
     case 'monthly_sales':
         // Get orders
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE(o.cashier_id, 'Unknown') as cashier_name
@@ -542,7 +551,7 @@ switch ($reportType) {
         }
 
         // Get credit sales
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT cs.*, c.name as creditor_name
             FROM credit_sales cs
@@ -648,8 +657,8 @@ switch ($reportType) {
         // Note: order_items.price and credit_sale_items.price store LINE TOTAL (already multiplied by qty)
         // So we should NOT multiply by quantity again
         $categoryCondition = $category ? " AND p.category = " . $db->quote($category) : "";
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         
         $itemsQuery = $db->prepare("
             SELECT 
@@ -693,7 +702,7 @@ switch ($reportType) {
         
     case 'cash_sales':
         // Get cash sales only
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0) as eft_amount
@@ -733,7 +742,7 @@ switch ($reportType) {
         
     case 'card_sales':
         // Get card/EFT sales only
-        $whereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $whereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT ep.*, o.total as order_total, o.created_at as order_date
             FROM eft_payments ep
@@ -769,7 +778,7 @@ switch ($reportType) {
         
     case 'payment_summary':
         // Get payment summary by method
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         
         // Cash sales
         $cashQuery = $db->prepare("
@@ -781,7 +790,7 @@ switch ($reportType) {
         $cashTotal = $cashQuery->fetchColumn();
         
         // EFT sales
-        $eftWhereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $eftWhereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total FROM eft_payments ep WHERE ($eftWhereClause)
         ");
@@ -789,7 +798,7 @@ switch ($reportType) {
         $eftTotal = $eftQuery->fetchColumn();
         
         // Credit sales
-        $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT COALESCE(SUM(total_amount), 0) as total, COALESCE(SUM(paid_amount), 0) as paid
             FROM credit_sales WHERE ($creditWhereClause)
@@ -798,7 +807,7 @@ switch ($reportType) {
         $creditRow = $creditQuery->fetch(PDO::FETCH_ASSOC);
         
         // Tab payments
-        $tabWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabWhereClause = getDateTimeWhereClause('payment_date', $startDateTime, $endDateTime);
         $tabCashQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) FROM tab_payments WHERE payment_method = 'cash' AND ($tabWhereClause)
         ");
@@ -849,7 +858,7 @@ switch ($reportType) {
             $current->modify('+1 day');
         }
         // Get all cash-out transactions (withdrawals) for the period
-        $withdrawalsWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $withdrawalsWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $withdrawalsCashierCondition = $cashierId ? " AND cashier_id = " . $db->quote($cashierId) : "";
         $withdrawalsQuery = $db->prepare("
             SELECT * FROM cash_transactions
@@ -888,7 +897,7 @@ switch ($reportType) {
     case 'credit_sales':
         // Credit balances grouped by creditor (one row per customer)
         $creditorCondition = $creditorId ? " AND cs.creditor_id = " . $db->quote($creditorId) : "";
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT
                 cs.creditor_id,
@@ -964,7 +973,7 @@ switch ($reportType) {
     case 'tabs':
         // Get tabs
         $creditorCondition = $creditorId ? " AND t.creditor_id = " . $db->quote($creditorId) : "";
-        $tabsWhereClause = getBusinessDayWhereClause('t.opened_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabsWhereClause = getDateTimeWhereClause('t.opened_at', $startDateTime, $endDateTime);
         $tabsQuery = $db->prepare("
             SELECT t.*, c.name as creditor_name
             FROM tabs t
@@ -1003,7 +1012,7 @@ switch ($reportType) {
         
     case 'expenses':
         // Get expenses (cash-out transactions)
-        $expWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $expWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $expensesQuery = $db->prepare("
             SELECT * FROM cash_transactions
             WHERE type = 'cash-out' AND ($expWhereClause)
@@ -1129,7 +1138,7 @@ switch ($reportType) {
         
     case 'refunds':
         // Get refunds - cashier_id now stores username directly
-        $refundsWhereClause = getBusinessDayWhereClause('r.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $refundsWhereClause = getDateTimeWhereClause('r.created_at', $startDateTime, $endDateTime);
         $refundsQuery = $db->prepare("
             SELECT r.*, COALESCE(r.cashier_id, 'Unknown') as cashier_name
             FROM refunds r
@@ -1159,7 +1168,7 @@ switch ($reportType) {
         
     case 'voids':
         // Get void transactions
-        $voidsWhereClause = getBusinessDayWhereClause('voided_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $voidsWhereClause = getDateTimeWhereClause('voided_at', $startDateTime, $endDateTime);
         $voidsQuery = $db->prepare("
             SELECT * FROM void_transactions
             WHERE ($voidsWhereClause)
@@ -1187,7 +1196,7 @@ switch ($reportType) {
     case 'cashier_sales':
         // Get cashier sales - cashier_id now stores username directly
         $cashierCondition = $cashierId ? " AND o.cashier_id = " . $db->quote($cashierId) : "";
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         
         // Get all cashiers from user.db
         $cashiersQuery = $userDb->query("SELECT id, username, role FROM users");
@@ -1208,7 +1217,7 @@ switch ($reportType) {
             $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC);
             
             // Get credit sales - match by username
-            $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+            $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
             $creditQuery = $db->prepare("
                 SELECT COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
                 FROM credit_sales
@@ -1268,7 +1277,7 @@ switch ($reportType) {
         }
         unset($ot);
 
-        $creditDetailWhere = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditDetailWhere = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         if ($cashierId) {
             $creditDetailQuery = $db->prepare("
                 SELECT cs.*, c.name as creditor_name
@@ -1307,9 +1316,99 @@ switch ($reportType) {
         ];
         break;
 
+    case 'terminal_sales':
+        ensureTerminalSchema($db);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
+        $terminalFilterSql = '';
+        $terminalFilterParams = [];
+        if ($terminalMac !== '') {
+            $normalizedTerminalMac = normalizeMacAddress($terminalMac);
+            if ($normalizedTerminalMac !== null) {
+                $terminalFilterSql = ' AND terminal_mac = ?';
+                $terminalFilterParams[] = $normalizedTerminalMac;
+            }
+        }
+
+        $orderAggStmt = $db->prepare("
+            SELECT terminal_mac,
+                   MAX(terminal_name) as terminal_name,
+                   COUNT(*) as order_count,
+                   COALESCE(SUM(total), 0) as total_sales,
+                   COALESCE(SUM(
+                       total - COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)
+                   ), 0) as cash_sales,
+                   COALESCE(SUM(
+                       COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)
+                   ), 0) as card_sales
+            FROM orders o
+            WHERE ($ordersWhereClause) $terminalFilterSql
+            GROUP BY terminal_mac
+        ");
+        $orderAggStmt->execute($terminalFilterParams);
+        $orderRows = $orderAggStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $creditAggStmt = $db->prepare("
+            SELECT terminal_mac, MAX(terminal_name) as terminal_name, COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
+            FROM credit_sales cs WHERE ($creditWhereClause) $terminalFilterSql GROUP BY terminal_mac
+        ");
+        $creditAggStmt->execute($terminalFilterParams);
+        $creditRows = $creditAggStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $terminalMap = [];
+        foreach ($orderRows as $row) {
+            $key = $row['terminal_mac'] ?? '__unknown__';
+            $terminalMap[$key] = [
+                'terminal_mac' => $row['terminal_mac'],
+                'terminal_name' => formatTerminalLabel($row['terminal_name'] ?? null, $row['terminal_mac'] ?? null),
+                'order_count' => (int) $row['order_count'],
+                'total_sales' => (float) $row['total_sales'],
+                'cash_sales' => (float) $row['cash_sales'],
+                'card_sales' => (float) $row['card_sales'],
+                'credit_count' => 0,
+                'credit_total' => 0.0,
+            ];
+        }
+        foreach ($creditRows as $row) {
+            $key = $row['terminal_mac'] ?? '__unknown__';
+            if (!isset($terminalMap[$key])) {
+                $terminalMap[$key] = [
+                    'terminal_mac' => $row['terminal_mac'],
+                    'terminal_name' => formatTerminalLabel($row['terminal_name'] ?? null, $row['terminal_mac'] ?? null),
+                    'order_count' => 0,
+                    'total_sales' => 0.0,
+                    'cash_sales' => 0.0,
+                    'card_sales' => 0.0,
+                    'credit_count' => 0,
+                    'credit_total' => 0.0,
+                ];
+            }
+            $terminalMap[$key]['credit_count'] = (int) $row['credit_count'];
+            $terminalMap[$key]['credit_total'] = (float) $row['credit_total'];
+        }
+
+        $terminalSales = [];
+        foreach ($terminalMap as $entry) {
+            $entry['grand_total'] = $entry['total_sales'] + $entry['credit_total'];
+            $terminalSales[] = $entry;
+        }
+        usort($terminalSales, fn($a, $b) => $b['grand_total'] <=> $a['grand_total']);
+
+        $reportData = [
+            'terminals' => $terminalSales,
+            'summary' => [
+                'total_terminals' => count($terminalSales),
+                'total_cash' => array_sum(array_column($terminalSales, 'cash_sales')),
+                'total_card' => array_sum(array_column($terminalSales, 'card_sales')),
+                'total_credit' => array_sum(array_column($terminalSales, 'credit_total')),
+                'total_sales' => array_sum(array_column($terminalSales, 'grand_total')),
+            ],
+        ];
+        break;
+
     case 'gratuity':
         require_once __DIR__ . '/../gratuity_report_helper.php';
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $reportData = buildGratuityReportData(
             $db,
             $userDb,
@@ -1321,8 +1420,8 @@ switch ($reportType) {
 
     case 'tips':
         require_once __DIR__ . '/../tips_report_helper.php';
-        $tipsWhereClause = getBusinessDayWhereClause('t.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tipsWhereClause = getDateTimeWhereClause('t.created_at', $startDateTime, $endDateTime);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $reportData = buildTipsReportData($db, $userDb, $tipsWhereClause, $ordersWhereClause, $cashierId);
         break;
 
@@ -1357,8 +1456,8 @@ switch ($reportType) {
         
     case 'profit_loss':
         // Get profit and loss data
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         
         // Revenue from orders
         $revenueQuery = $db->prepare("SELECT COALESCE(SUM(total), 0) FROM orders o WHERE ($ordersWhereClause)");
@@ -1393,13 +1492,13 @@ switch ($reportType) {
         $creditCogs = $creditCogsQuery->fetchColumn();
         
         // Expenses
-        $expWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $expWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $expQuery = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out' AND ($expWhereClause)");
         $expQuery->execute();
         $expenses = $expQuery->fetchColumn();
         
         // Refunds
-        $refundWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $refundWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $refundQuery = $db->prepare("SELECT COALESCE(SUM(total_amount), 0) FROM refunds WHERE ($refundWhereClause)");
         $refundQuery->execute();
         $refunds = $refundQuery->fetchColumn();
@@ -1468,7 +1567,7 @@ switch ($reportType) {
         break;
         
     case 'vat': {
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $cashQuery = $db->prepare("
             SELECT COALESCE(SUM(o.total - COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)), 0) as total
             FROM orders o
@@ -1476,20 +1575,20 @@ switch ($reportType) {
         ");
         $cashQuery->execute();
         $cashTotal = (float) $cashQuery->fetchColumn();
-        $eftWhereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $eftWhereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total FROM eft_payments ep WHERE ($eftWhereClause)
         ");
         $eftQuery->execute();
         $eftTotal = (float) $eftQuery->fetchColumn();
-        $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT COALESCE(SUM(total_amount), 0) as total
             FROM credit_sales WHERE ($creditWhereClause)
         ");
         $creditQuery->execute();
         $creditTotal = (float) $creditQuery->fetchColumn();
-        $tabWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabWhereClause = getDateTimeWhereClause('payment_date', $startDateTime, $endDateTime);
         $tabCashQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) FROM tab_payments WHERE payment_method = 'cash' AND ($tabWhereClause)
         ");
@@ -3120,6 +3219,67 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="no-data">No credit sales in this period</div>
         <?php endif; ?>
         
+    <?php break; case 'terminal_sales': ?>
+        <div class="summary-cards">
+            <div class="summary-card">
+                <div class="label">Total Terminals</div>
+                <div class="value"><?= $reportData['summary']['total_terminals'] ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Order Cash</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_cash']) ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Order Card/EFT</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_card']) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Credit Sales</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_credit']) ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Grand Total</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></div>
+            </div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Terminal</th>
+                    <th class="text-right">Orders</th>
+                    <th class="text-right">Cash</th>
+                    <th class="text-right">Card/EFT</th>
+                    <th class="text-right">Credit</th>
+                    <th class="text-right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['terminals'])): ?>
+                    <?php foreach ($reportData['terminals'] as $terminal): ?>
+                    <?php if ($terminal['grand_total'] > 0): ?>
+                    <tr>
+                        <td><?= htmlspecialchars($terminal['terminal_name']) ?></td>
+                        <td class="text-right"><?= $terminal['order_count'] ?></td>
+                        <td class="text-right">N$<?= formatCurrency($terminal['cash_sales']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($terminal['card_sales']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($terminal['credit_total']) ?></td>
+                        <td class="text-right font-bold">N$<?= formatCurrency($terminal['grand_total']) ?></td>
+                    </tr>
+                    <?php endif; ?>
+                    <?php endforeach; ?>
+                    <tr class="total-row">
+                        <td colspan="2">Total</td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_cash']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_card']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_credit']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></td>
+                    </tr>
+                <?php else: ?>
+                    <tr><td colspan="6" class="no-data">No terminal sales found for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+
     <?php break; case 'gratuity': ?>
         <div class="summary-cards">
             <div class="summary-card positive">

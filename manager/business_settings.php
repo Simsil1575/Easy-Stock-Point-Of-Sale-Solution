@@ -19,6 +19,7 @@ $errorMessage = '';
 $businessInfo = [];
 $printerPort = 'COM4'; // Default value
 $closingTime = '22:00'; // Default closing time
+$openingTime = '08:00'; // Default opening time
 $vatInclusive = 'exclusive'; // Default VAT setting (exclusive)
 $vatRate = 15.0; // Default Namibian VAT rate (15%)
 
@@ -36,6 +37,7 @@ try {
         footer_text TEXT NOT NULL,
         printer_port TEXT NOT NULL DEFAULT 'COM4',
         closing_time TEXT NOT NULL DEFAULT '22:00',
+        opening_time TEXT NOT NULL DEFAULT '08:00',
         vat_inclusive TEXT NOT NULL DEFAULT 'exclusive',
         vat_rate REAL NOT NULL DEFAULT 15.0
     )");
@@ -46,6 +48,10 @@ try {
     
     if(!in_array('closing_time', $columnNames)) {
         $db->exec("ALTER TABLE business_info ADD COLUMN closing_time TEXT NOT NULL DEFAULT '22:00'");
+    }
+
+    if(!in_array('opening_time', $columnNames)) {
+        $db->exec("ALTER TABLE business_info ADD COLUMN opening_time TEXT NOT NULL DEFAULT '08:00'");
     }
     
     if(!in_array('vat_inclusive', $columnNames)) {
@@ -65,6 +71,7 @@ try {
         $footer_text = trim($_POST['footer_text'] ?? '');
         $printer_port = trim($_POST['printer_port'] ?? 'COM4');
         $closing_time = trim($_POST['closing_time'] ?? '22:00');
+        $opening_time = trim($_POST['opening_time'] ?? '08:00');
         $vat_inclusive = trim($_POST['vat_inclusive'] ?? 'exclusive');
         $vat_rate = floatval($_POST['vat_rate'] ?? 15.0);
         
@@ -91,14 +98,15 @@ try {
                     footer_text = :footer_text,
                     printer_port = :printer_port,
                     closing_time = :closing_time,
+                    opening_time = :opening_time,
                     vat_inclusive = :vat_inclusive,
                     vat_rate = :vat_rate
                     WHERE id = 1");
             } else {
                 // Insert new record
                 $stmt = $db->prepare("INSERT INTO business_info 
-                    (name, location, phone, footer_text, printer_port, closing_time, vat_inclusive, vat_rate) 
-                    VALUES (:name, :location, :phone, :footer_text, :printer_port, :closing_time, :vat_inclusive, :vat_rate)");
+                    (name, location, phone, footer_text, printer_port, closing_time, opening_time, vat_inclusive, vat_rate) 
+                    VALUES (:name, :location, :phone, :footer_text, :printer_port, :closing_time, :opening_time, :vat_inclusive, :vat_rate)");
             }
             
             $stmt->execute([
@@ -108,6 +116,7 @@ try {
                 ':footer_text' => $footer_text,
                 ':printer_port' => $printer_port,
                 ':closing_time' => $closing_time,
+                ':opening_time' => $opening_time,
                 ':vat_inclusive' => $vat_inclusive,
                 ':vat_rate' => $vat_rate
             ]);
@@ -524,12 +533,14 @@ try {
             'footer_text' => 'Thank you for your purchase!',
             'printer_port' => 'COM4',
             'closing_time' => '22:00',
+            'opening_time' => '08:00',
             'vat_inclusive' => 'exclusive',
             'vat_rate' => 15.0
         ];
     } else {
         $printerPort = $businessInfo['printer_port'];
         $closingTime = $businessInfo['closing_time'] ?? '22:00';
+        $openingTime = $businessInfo['opening_time'] ?? '08:00';
         $vatInclusive = $businessInfo['vat_inclusive'] ?? 'exclusive';
         $vatRate = isset($businessInfo['vat_rate']) ? floatval($businessInfo['vat_rate']) : 15.0;
     }
@@ -641,10 +652,16 @@ try {
                                        value="<?php echo htmlspecialchars($businessInfo['phone']); ?>" required>
                             </div>
                             <div>
+                                <label for="opening_time" class="block text-sm font-medium text-gray-700">Business Opening Time</label>
+                                <input type="time" id="opening_time" name="opening_time" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
+                                       value="<?php echo htmlspecialchars($openingTime); ?>">
+                                <p class="mt-1 text-xs text-gray-500">Default start time for reports and cash-up date ranges.</p>
+                            </div>
+                            <div>
                                 <label for="closing_time" class="block text-sm font-medium text-gray-700">Business Closing Time</label>
                                 <input type="time" id="closing_time" name="closing_time" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
                                        value="<?php echo htmlspecialchars($closingTime); ?>">
-                                <p class="mt-1 text-xs text-gray-500">System alerts for transactions after this time.</p>
+                                <p class="mt-1 text-xs text-gray-500">Default end time for reports and cash-up date ranges.</p>
                             </div>
                         </div>
                     </section>

@@ -56,6 +56,16 @@ try {
 } catch (PDOException $e) {
     // Empty array
 }
+
+require_once __DIR__ . '/ui_cards_helper.php';
+require_once __DIR__ . '/business_day_helper.php';
+$menuBusinessHours = bdLoadBusinessHoursContext();
+$menuOpeningTime = htmlspecialchars($menuBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
+$menuClosingTime = htmlspecialchars($menuBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
+$uiCardsState = uiCardsInitPageState($infoDb, 'cashier_menu', (string) $_SESSION['user_id'], true);
+extract($uiCardsState);
+$uiCardsApiUrl = 'ui_cards_api.php';
+$uiCardsPosConfirmUrl = 'js/pos-confirm.js';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -304,11 +314,20 @@ try {
                 </div>
                 
                 <!-- All Operations in One Container -->
-                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6<?= $uiCardsCustomizeMode ? ' ui-cards-customize-mode' : '' ?>">
+                    <?php
+                    ob_start();
+                    $operationsSearchInclude = 'chips';
+                    include __DIR__ . '/includes/operations_center_search.php';
+                    $uiCardsToolbarLeftHtml = ob_get_clean();
+                    include __DIR__ . '/includes/ui_cards_toolbar.php';
+                    unset($uiCardsToolbarLeftHtml);
+                    ?>
                     <div id="operationsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Tabs -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='credit-tabs'">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tabs" onclick="window.location.href='credit-tabs'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-clipboard-list text-indigo-600 text-xl"></i>
@@ -319,7 +338,8 @@ try {
                             <p class="text-sm text-gray-500">Open and manage customer tabs</p>
                         </div>
 
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='laybye'">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="laybye" onclick="window.location.href='laybye'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-violet-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-calendar-check text-violet-600 text-xl"></i>
@@ -331,7 +351,8 @@ try {
                         </div>
                         
                         <!-- Credit Book -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='credit-book'">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_book" onclick="window.location.href='credit-book'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-book text-yellow-600 text-xl"></i>
@@ -343,7 +364,8 @@ try {
                         </div>
                         
                         <!-- Cash In/Out -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='cash'">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cash" onclick="window.location.href='cash'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-money-bill-wave text-green-600 text-xl"></i>
@@ -355,7 +377,8 @@ try {
                         </div>
                         
                         <!-- Add Expenses -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openOperationModal('expense', 'Add Expense', 'Record business expense (cash out)')">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="expense" onclick="openOperationModal('expense', 'Add Expense', 'Record business expense (cash out)')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-file-invoice text-red-600 text-xl"></i>
@@ -367,7 +390,8 @@ try {
                         </div>
                         
                         <!-- Process Cash Back -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="handleCashBack()">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cash_back" onclick="handleCashBack()">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-hand-holding-usd text-green-600 text-xl"></i>
@@ -379,7 +403,8 @@ try {
                         </div>
                         
                         <!-- Cash Up -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openCashUpModal()">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cash_up" onclick="openCashUpModal()">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-cash-register text-teal-600 text-xl"></i>
@@ -391,7 +416,8 @@ try {
                         </div>
                         
                         <!-- Add Damages -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='damaged_goods.php'">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="damages" onclick="window.location.href='damaged_goods.php'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-exclamation-triangle text-orange-600 text-xl"></i>
@@ -403,7 +429,8 @@ try {
                         </div>
                         
                         <!-- Create Creditor Account -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="window.location.href='credit-book.php'">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="create_creditor" onclick="window.location.href='credit-book.php'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-user-plus text-blue-600 text-xl"></i>
@@ -415,7 +442,8 @@ try {
                         </div>
                         
                         <!-- Add Credit -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openOperationModal('addCredit', 'Add Credit', 'Add credit sale (system balance)')">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="add_credit" onclick="openOperationModal('addCredit', 'Add Credit', 'Add credit sale (system balance)')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-book text-yellow-600 text-xl"></i>
@@ -427,7 +455,8 @@ try {
                         </div>
                         
                         <!-- Add Credit Returns (Record Payment) -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openOperationModal('credit_return', 'Record Credit Payment', 'Record payment against creditor balance')">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_return" onclick="openOperationModal('credit_return', 'Record Credit Payment', 'Record payment against creditor balance')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-undo text-purple-600 text-xl"></i>
@@ -439,7 +468,8 @@ try {
                         </div>
                         
                         <!-- Add Tips -->
-                        <div class="operation-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openOperationModal('tips', 'Add Tips', 'Record tips received')">
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tips" onclick="openOperationModal('tips', 'Add Tips', 'Record tips received')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-pink-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-hand-holding-heart text-pink-600 text-xl"></i>
@@ -710,12 +740,13 @@ try {
                             >
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Start Time</label>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Start Time (24h)</label>
                             <input 
                                 type="time" 
                                 id="cashUpStartTime" 
                                 name="start_time" 
-                                value="00:00"
+                                step="60"
+                                value="<?= $menuOpeningTime ?>"
                                 class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-base"
                             >
                         </div>
@@ -733,12 +764,13 @@ try {
                             >
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-2">End Time</label>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">End Time (24h)</label>
                             <input 
                                 type="time" 
                                 id="cashUpEndTime" 
                                 name="end_time" 
-                                value="23:59"
+                                step="60"
+                                value="<?= $menuClosingTime ?>"
                                 class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-base"
                             >
                         </div>
@@ -786,6 +818,7 @@ try {
         </div>
     </div>
     
+    <?php include __DIR__ . '/includes/date_range_time_script.php'; ?>
     <script>
         // Modal functions
         function openOperationModal(type, title, description) {
@@ -1122,9 +1155,8 @@ try {
         function openCashUpModal() {
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('cashUpStartDate').value = today;
-            document.getElementById('cashUpStartTime').value = '00:00';
             document.getElementById('cashUpEndDate').value = today;
-            document.getElementById('cashUpEndTime').value = '23:59';
+            drApplyBusinessTimes('cashUpStartTime', 'cashUpEndTime');
             const coh = document.getElementById('cashUpCashOnHand');
             if (coh) coh.value = '';
             document.getElementById('cashUpModal').classList.add('active');
@@ -1140,9 +1172,9 @@ try {
             event.preventDefault();
             
             const startDate = document.getElementById('cashUpStartDate').value;
-            const startTime = document.getElementById('cashUpStartTime').value || '00:00';
+            const startTime = drNormalizeTime(document.getElementById('cashUpStartTime').value, window.BUSINESS_HOURS.opening);
             const endDate = document.getElementById('cashUpEndDate').value;
-            const endTime = document.getElementById('cashUpEndTime').value || '23:59';
+            const endTime = drNormalizeTime(document.getElementById('cashUpEndTime').value, window.BUSINESS_HOURS.closing);
             
             if (!startDate || !endDate) {
                 Swal.fire({ icon: 'warning', title: 'Required', text: 'Please select start and end date.' });

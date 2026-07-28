@@ -66,6 +66,16 @@ try {
 } catch (PDOException $e) {
     // Empty array
 }
+
+require_once __DIR__ . '/ui_cards_helper.php';
+require_once __DIR__ . '/business_day_helper.php';
+$reportBusinessHours = bdLoadBusinessHoursContext();
+$reportOpeningTime = htmlspecialchars($reportBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
+$reportClosingTime = htmlspecialchars($reportBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
+$uiCardsState = uiCardsInitPageState($infoDb, 'cashier_reports', (string) $_SESSION['user_id'], true);
+extract($uiCardsState);
+$uiCardsApiUrl = 'ui_cards_api.php';
+$uiCardsPosConfirmUrl = 'js/pos-confirm.js';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -336,11 +346,20 @@ try {
                 </div>
                 
                 <!-- Cashier Reports Only -->
-                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6<?= $uiCardsCustomizeMode ? ' ui-cards-customize-mode' : '' ?>">
+                    <?php
+                    ob_start();
+                    $reportsSearchInclude = 'chips';
+                    include __DIR__ . '/includes/reports_center_search.php';
+                    $uiCardsToolbarLeftHtml = ob_get_clean();
+                    include __DIR__ . '/includes/ui_cards_toolbar.php';
+                    unset($uiCardsToolbarLeftHtml);
+                    ?>
                     <div id="reportsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Sales Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('sales', 'Sales Report', 'Complete sales overview with totals and breakdowns')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="sales" onclick="openReportModal('sales', 'Sales Report', 'Complete sales overview with totals and breakdowns')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-receipt text-teal-600 text-xl"></i>
@@ -351,7 +370,8 @@ try {
                             <p class="text-sm text-gray-500">Complete sales overview with totals and breakdowns</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('daily_sales', 'Daily Sales Report', 'Detailed sales for a specific day')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="daily_sales" onclick="openReportModal('daily_sales', 'Daily Sales Report', 'Detailed sales for a specific day')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-calendar-day text-teal-600 text-xl"></i>
@@ -363,7 +383,8 @@ try {
                         </div>
                         
                         <!-- Item Sales Report -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('item_sales', 'Item Sales Report', 'Individual product sales performance')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="item_sales" onclick="openReportModal('item_sales', 'Item Sales Report', 'Individual product sales performance')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-chart-pie text-blue-600 text-xl"></i>
@@ -375,7 +396,8 @@ try {
                         </div>
                         
                         <!-- Payments Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('cash_sales', 'Cash Sales Report', 'All cash transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cash_sales" onclick="openReportModal('cash_sales', 'Cash Sales Report', 'All cash transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-money-bill-wave text-green-600 text-xl"></i>
@@ -386,7 +408,8 @@ try {
                             <p class="text-sm text-gray-500">All cash transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('card_sales', 'Card Sales Report', 'All EFT/card transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="card_sales" onclick="openReportModal('card_sales', 'Card Sales Report', 'All EFT/card transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-credit-card text-green-600 text-xl"></i>
@@ -397,7 +420,8 @@ try {
                             <p class="text-sm text-gray-500">All EFT/card transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('payment_summary', 'Payment Summary Report', 'Overview of all payment methods')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="payment_summary" onclick="openReportModal('payment_summary', 'Payment Summary Report', 'Overview of all payment methods')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-chart-bar text-green-600 text-xl"></i>
@@ -408,7 +432,8 @@ try {
                             <p class="text-sm text-gray-500">Overview of all payment methods</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('gratuity', 'Gratuity Report', 'Gratuity totals and orders by cashier')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="gratuity" onclick="openReportModal('gratuity', 'Gratuity Report', 'Gratuity totals and orders by cashier')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-hand-holding-heart text-teal-600 text-xl"></i>
@@ -419,7 +444,8 @@ try {
                             <p class="text-sm text-gray-500">Totals and breakdown by cashier</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('tips', 'Tips Report', 'Recorded tips and checkout gratuity by cashier')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tips" onclick="openReportModal('tips', 'Tips Report', 'Recorded tips and checkout gratuity by cashier')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-amber-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-coins text-amber-600 text-xl"></i>
@@ -430,7 +456,8 @@ try {
                             <p class="text-sm text-gray-500">Manual tips, checkout and tab gratuity</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('cashup', 'Cash-Up Report', 'Daily cash reconciliation')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cashup" onclick="openReportModal('cashup', 'Cash-Up Report', 'Daily cash reconciliation')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-cash-register text-green-600 text-xl"></i>
@@ -441,7 +468,8 @@ try {
                             <p class="text-sm text-gray-500">Daily cash reconciliation</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="handleCashBack()">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="cash_back" onclick="handleCashBack()">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-hand-holding-usd text-green-600 text-xl"></i>
@@ -453,7 +481,8 @@ try {
                         </div>
                         
                         <!-- Credit & Tabs Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('credit_sales', 'Credit Sales Report', 'All credit transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_sales" onclick="openReportModal('credit_sales', 'Credit Sales Report', 'All credit transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-hand-holding-usd text-yellow-600 text-xl"></i>
@@ -464,7 +493,8 @@ try {
                             <p class="text-sm text-gray-500">All credit transactions</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('outstanding_credit', 'Outstanding Credit Report', 'Unpaid credit balances')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="outstanding_credit" onclick="openReportModal('outstanding_credit', 'Outstanding Credit Report', 'Unpaid credit balances')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-exclamation-triangle text-yellow-600 text-xl"></i>
@@ -475,7 +505,8 @@ try {
                             <p class="text-sm text-gray-500">Unpaid credit balances</p>
                         </div>
                         
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('tabs', 'Tabs Report', 'Open and closed tabs summary')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="tabs" onclick="openReportModal('tabs', 'Tabs Report', 'Open and closed tabs summary')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-clipboard-list text-yellow-600 text-xl"></i>
@@ -487,7 +518,8 @@ try {
                         </div>
                         
                         <!-- Expenses Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('expenses', 'Expenses Report', 'All business expenses')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="expenses" onclick="openReportModal('expenses', 'Expenses Report', 'All business expenses')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-file-invoice text-red-600 text-xl"></i>
@@ -499,7 +531,8 @@ try {
                         </div>
                         
                         <!-- Refunds & Voids Reports -->
-                        <div class="report-card bg-gray-50 rounded-xl p-5 border border-gray-200" onclick="openReportModal('refunds', 'Refunds Report', 'All refund transactions')">
+                        <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="refunds" onclick="openReportModal('refunds', 'Refunds Report', 'All refund transactions')">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
                                 <div class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
                                     <i class="fas fa-undo-alt text-orange-600 text-xl"></i>
@@ -545,15 +578,19 @@ try {
                         </div>
                     </div>
                     
-                    <!-- Date Range -->
-                    <div class="grid grid-cols-2 gap-4 mb-4">
+                    <!-- Date & Time Range (24h) -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
-                            <input type="date" id="startDate" name="start_date" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500" required>
+                            <input type="date" id="startDate" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500" required>
+                            <label class="block text-sm font-medium text-gray-700 mb-1 mt-2">Start Time (24h)</label>
+                            <input type="time" id="startTime" step="60" value="<?= $reportOpeningTime ?>" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500" required>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
-                            <input type="date" id="endDate" name="end_date" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500" required>
+                            <input type="date" id="endDate" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500" required>
+                            <label class="block text-sm font-medium text-gray-700 mb-1 mt-2">End Time (24h)</label>
+                            <input type="time" id="endTime" step="60" value="<?= $reportClosingTime ?>" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500" required>
                         </div>
                     </div>
                     
@@ -603,6 +640,7 @@ try {
         </div>
     </div>
     
+    <?php include __DIR__ . '/includes/date_range_time_script.php'; ?>
     <script>
         // Update current time
         setInterval(() => {
@@ -624,9 +662,8 @@ try {
             document.getElementById('modalDescription').textContent = description;
             
             // Set default dates to today
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('startDate').value = today;
-            document.getElementById('endDate').value = today;
+            const today = drFormatDate(new Date());
+            drSetDateRangeDefaults('startDate', 'endDate', 'startTime', 'endTime', today, today);
             
             // Show/hide filters based on report type
             document.getElementById('cashierFilter').classList.add('hidden');
@@ -660,44 +697,11 @@ try {
         
         // Quick period selection
         function setQuickPeriod(period) {
-            const today = new Date();
-            let startDate, endDate;
-            
-            switch(period) {
-                case 'today':
-                    startDate = endDate = today;
-                    break;
-                case 'yesterday':
-                    const yesterday = new Date(today);
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    startDate = endDate = yesterday;
-                    break;
-                case 'week':
-                    const weekStart = new Date(today);
-                    weekStart.setDate(today.getDate() - today.getDay());
-                    startDate = weekStart;
-                    endDate = today;
-                    break;
-                case 'month':
-                    startDate = new Date(today.getFullYear(), today.getMonth(), 1);
-                    endDate = today;
-                    break;
-                case 'year':
-                    startDate = new Date(today.getFullYear(), 0, 1);
-                    endDate = today;
-                    break;
-            }
-            
-            document.getElementById('startDate').value = formatDate(startDate);
-            document.getElementById('endDate').value = formatDate(endDate);
-            
-            // Update active button
-            document.querySelectorAll('.period-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
+            drSetQuickPeriod(period, 'startDate', 'endDate', 'startTime', 'endTime');
         }
         
         function formatDate(date) {
-            return date.toISOString().split('T')[0];
+            return drFormatDate(date);
         }
         
         // Generate report
@@ -709,11 +713,15 @@ try {
             btn.innerHTML = '<div class="spinner"></div> Generating...';
             btn.disabled = true;
             
+            const range = drReadCombinedRange('startDate', 'endDate', 'startTime', 'endTime');
             const formData = new FormData(document.getElementById('reportForm'));
             const params = new URLSearchParams();
+            params.append('report_type', document.getElementById('reportType').value);
+            params.append('start_date', range.start);
+            params.append('end_date', range.end);
             
             for (let [key, value] of formData.entries()) {
-                if (value) params.append(key, value);
+                if (value && key !== 'report_type') params.append(key, value);
             }
             
             // Open PDF in new window

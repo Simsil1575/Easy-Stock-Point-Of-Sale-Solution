@@ -12,11 +12,17 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Get parameters
 $reportType = $_GET['report_type'] ?? '';
-$startDate = $_GET['start_date'] ?? date('Y-m-d');
-$endDate = $_GET['end_date'] ?? date('Y-m-d');
+$startDateRaw = $_GET['start_date'] ?? date('Y-m-d') . 'T00:00';
+$endDateRaw = $_GET['end_date'] ?? date('Y-m-d') . 'T23:59';
 $cashierId = $_GET['cashier_id'] ?? '';
 $creditorId = $_GET['creditor_id'] ?? '';
 $category = $_GET['category'] ?? '';
+
+require_once __DIR__ . '/includes/report_datetime_filter.php';
+$startDateTime = parseReportDateTime($startDateRaw, false);
+$endDateTime = parseReportDateTime($endDateRaw, true);
+$startDate = substr($startDateTime, 0, 10);
+$endDate = substr($endDateTime, 0, 10);
 
 // Database connections
 try {
@@ -50,7 +56,7 @@ $closingHour = (int)substr($closingTime, 0, 2);
 $isAfterMidnight = $closingHour < 12;
 
 // Business day WHERE clause generator
-function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+function getDateTimeWhereClause($dateField, $startDateTime, $endDateTime) {
     // Safety check - if dates are invalid, use simple date range
     if (empty($startDate) || empty($endDate)) {
         return "1=1";
@@ -455,16 +461,16 @@ function getReportTitle($type) {
 // Generate report data based on type
 $reportData = [];
 $reportTitle = getReportTitle($reportType);
-$dateRange = ($startDate === $endDate) ? date('F j, Y', strtotime($startDate)) : date('M j, Y', strtotime($startDate)) . ' - ' . date('M j, Y', strtotime($endDate));
+$dateRange = formatReportDateRange($startDateTime, $endDateTime);
 
-$whereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+$whereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
 
 switch ($reportType) {
     case 'sales':
     case 'daily_sales':
     case 'monthly_sales':
         // Get orders
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE(o.cashier_id, 'Unknown') as cashier_name
@@ -541,7 +547,7 @@ switch ($reportType) {
         }
 
         // Get credit sales
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT cs.*, c.name as creditor_name
             FROM credit_sales cs
@@ -647,8 +653,8 @@ switch ($reportType) {
         // Note: order_items.price and credit_sale_items.price store LINE TOTAL (already multiplied by qty)
         // So we should NOT multiply by quantity again
         $categoryCondition = $category ? " AND p.category = " . $db->quote($category) : "";
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         
         $itemsQuery = $db->prepare("
             SELECT 
@@ -692,7 +698,7 @@ switch ($reportType) {
         
     case 'cash_sales':
         // Get cash sales only
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0) as eft_amount
@@ -732,7 +738,7 @@ switch ($reportType) {
         
     case 'card_sales':
         // Get card/EFT sales only
-        $whereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $whereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT ep.*, o.total as order_total, o.created_at as order_date
             FROM eft_payments ep
@@ -768,7 +774,7 @@ switch ($reportType) {
         
     case 'payment_summary':
         // Get payment summary by method
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         
         // Cash sales
         $cashQuery = $db->prepare("
@@ -780,7 +786,7 @@ switch ($reportType) {
         $cashTotal = $cashQuery->fetchColumn();
         
         // EFT sales
-        $eftWhereClause = getBusinessDayWhereClause('ep.payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $eftWhereClause = getDateTimeWhereClause('ep.payment_date', $startDateTime, $endDateTime);
         $eftQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total FROM eft_payments ep WHERE ($eftWhereClause)
         ");
@@ -788,7 +794,7 @@ switch ($reportType) {
         $eftTotal = $eftQuery->fetchColumn();
         
         // Credit sales
-        $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT COALESCE(SUM(total_amount), 0) as total, COALESCE(SUM(paid_amount), 0) as paid
             FROM credit_sales WHERE ($creditWhereClause)
@@ -797,7 +803,7 @@ switch ($reportType) {
         $creditRow = $creditQuery->fetch(PDO::FETCH_ASSOC);
         
         // Tab payments
-        $tabWhereClause = getBusinessDayWhereClause('payment_date', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabWhereClause = getDateTimeWhereClause('payment_date', $startDateTime, $endDateTime);
         $tabCashQuery = $db->prepare("
             SELECT COALESCE(SUM(amount), 0) FROM tab_payments WHERE payment_method = 'cash' AND ($tabWhereClause)
         ");
@@ -848,7 +854,7 @@ switch ($reportType) {
             $current->modify('+1 day');
         }
         // Get all cash-out transactions (withdrawals) for the period
-        $withdrawalsWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $withdrawalsWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $withdrawalsCashierCondition = $cashierId ? " AND cashier_id = " . $db->quote($cashierId) : "";
         $withdrawalsQuery = $db->prepare("
             SELECT * FROM cash_transactions
@@ -887,7 +893,7 @@ switch ($reportType) {
     case 'credit_sales':
         // Get credit sales
         $creditorCondition = $creditorId ? " AND cs.creditor_id = " . $db->quote($creditorId) : "";
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT cs.*, c.name as creditor_name, c.phone as creditor_phone
             FROM credit_sales cs
@@ -954,7 +960,7 @@ switch ($reportType) {
     case 'tabs':
         // Get tabs
         $creditorCondition = $creditorId ? " AND t.creditor_id = " . $db->quote($creditorId) : "";
-        $tabsWhereClause = getBusinessDayWhereClause('t.opened_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tabsWhereClause = getDateTimeWhereClause('t.opened_at', $startDateTime, $endDateTime);
         $tabsQuery = $db->prepare("
             SELECT t.*, c.name as creditor_name
             FROM tabs t
@@ -993,7 +999,7 @@ switch ($reportType) {
         
     case 'expenses':
         // Get expenses (cash-out transactions)
-        $expWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $expWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $expensesQuery = $db->prepare("
             SELECT * FROM cash_transactions
             WHERE type = 'cash-out' AND ($expWhereClause)
@@ -1119,7 +1125,7 @@ switch ($reportType) {
         
     case 'refunds':
         // Get refunds - cashier_id now stores username directly
-        $refundsWhereClause = getBusinessDayWhereClause('r.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $refundsWhereClause = getDateTimeWhereClause('r.created_at', $startDateTime, $endDateTime);
         $refundsQuery = $db->prepare("
             SELECT r.*, COALESCE(r.cashier_id, 'Unknown') as cashier_name
             FROM refunds r
@@ -1149,7 +1155,7 @@ switch ($reportType) {
         
     case 'voids':
         // Get void transactions
-        $voidsWhereClause = getBusinessDayWhereClause('voided_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $voidsWhereClause = getDateTimeWhereClause('voided_at', $startDateTime, $endDateTime);
         $voidsQuery = $db->prepare("
             SELECT * FROM void_transactions
             WHERE ($voidsWhereClause)
@@ -1177,7 +1183,7 @@ switch ($reportType) {
     case 'cashier_sales':
         // Get cashier sales - cashier_id now stores username directly
         $cashierCondition = $cashierId ? " AND o.cashier_id = " . $db->quote($cashierId) : "";
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         
         // Get all cashiers from user.db
         $cashiersQuery = $userDb->query("SELECT id, username, role FROM users");
@@ -1198,7 +1204,7 @@ switch ($reportType) {
             $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC);
             
             // Get credit sales - match by username
-            $creditWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+            $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
             $creditQuery = $db->prepare("
                 SELECT COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
                 FROM credit_sales
@@ -1258,7 +1264,7 @@ switch ($reportType) {
         }
         unset($ot);
 
-        $creditDetailWhere = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $creditDetailWhere = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         if ($cashierId) {
             $creditDetailQuery = $db->prepare("
                 SELECT cs.*, c.name as creditor_name
@@ -1299,7 +1305,7 @@ switch ($reportType) {
 
     case 'gratuity':
         require_once __DIR__ . '/gratuity_report_helper.php';
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $reportData = buildGratuityReportData(
             $db,
             $userDb,
@@ -1311,8 +1317,8 @@ switch ($reportType) {
 
     case 'tips':
         require_once __DIR__ . '/tips_report_helper.php';
-        $tipsWhereClause = getBusinessDayWhereClause('t.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $tipsWhereClause = getDateTimeWhereClause('t.created_at', $startDateTime, $endDateTime);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $reportData = buildTipsReportData($db, $userDb, $tipsWhereClause, $ordersWhereClause, $cashierId);
         break;
 
@@ -1347,8 +1353,8 @@ switch ($reportType) {
         
     case 'profit_loss':
         // Get profit and loss data
-        $ordersWhereClause = getBusinessDayWhereClause('o.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $creditWhereClause = getBusinessDayWhereClause('cs.created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         
         // Revenue from orders
         $revenueQuery = $db->prepare("SELECT COALESCE(SUM(total), 0) FROM orders o WHERE ($ordersWhereClause)");
@@ -1383,13 +1389,13 @@ switch ($reportType) {
         $creditCogs = $creditCogsQuery->fetchColumn();
         
         // Expenses
-        $expWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $expWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $expQuery = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out' AND ($expWhereClause)");
         $expQuery->execute();
         $expenses = $expQuery->fetchColumn();
         
         // Refunds
-        $refundWhereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $refundWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $refundQuery = $db->prepare("SELECT COALESCE(SUM(total_amount), 0) FROM refunds WHERE ($refundWhereClause)");
         $refundQuery->execute();
         $refunds = $refundQuery->fetchColumn();

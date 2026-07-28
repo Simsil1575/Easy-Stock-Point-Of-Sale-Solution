@@ -67,6 +67,10 @@ try {
 }
 
 require_once __DIR__ . '/../ui_cards_helper.php';
+require_once __DIR__ . '/../business_day_helper.php';
+$menuBusinessHours = bdLoadBusinessHoursContext();
+$menuOpeningTime = htmlspecialchars($menuBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
+$menuClosingTime = htmlspecialchars($menuBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
 ensureUiCardsSchema($infoDb);
 $uiCardScope = 'manager_menu';
 $hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
@@ -317,7 +321,14 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                 
                 <!-- All Operations in One Container -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6<?= $uiCardsCustomizeMode ? ' ui-cards-customize-mode' : '' ?>">
-                    <?php include __DIR__ . '/../includes/ui_cards_toolbar.php'; ?>
+                    <?php
+                    ob_start();
+                    $operationsSearchInclude = 'chips';
+                    include __DIR__ . '/../includes/operations_center_search.php';
+                    $uiCardsToolbarLeftHtml = ob_get_clean();
+                    include __DIR__ . '/../includes/ui_cards_toolbar.php';
+                    unset($uiCardsToolbarLeftHtml);
+                    ?>
                     <div id="operationsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         
                         <!-- Tabs -->
@@ -512,6 +523,31 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             </div>
                             <h3 class="font-semibold text-gray-800 mb-1">Receive stock</h3>
                             <p class="text-sm text-gray-500">Deliveries and goods in</p>
+                        </div>
+
+                        <!-- Receiving records -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="receiving_records" onclick="window.location.href='receiving_records.php'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-clipboard-list text-teal-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">Inventory</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Receiving records</h3>
+                            <p class="text-sm text-gray-500">View, edit, delete, and download past receives</p>
+                        </div>
+
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="categories" onclick="window.location.href='categories'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-teal-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-tags text-teal-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-full">Inventory</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Categories</h3>
+                            <p class="text-sm text-gray-500">Easy access to product categories and reports</p>
                         </div>
 
                         <!-- Purchase orders (supplier POs) -->
@@ -817,17 +853,17 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                         <div class="space-y-4">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-2">Starting Date & Hour (24h)</label>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Starting Date &amp; Time (24h)</label>
                                     <div class="flex gap-2 items-center">
                                         <input type="date" id="cashup_start_date" class="flex-1 min-w-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100" value="<?= date('Y-m-d') ?>">
-                                        <select id="cashup_start_hour" class="w-20 shrink-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Hour (24h)"><?php for ($h = 0; $h < 24; $h++) { echo '<option value="'.$h.'"'.($h===0?' selected':'').'>'.str_pad($h,2,'0',STR_PAD_LEFT).':00</option>'; } ?></select>
+                                        <input type="time" id="cashup_start_time" step="60" value="<?= $menuOpeningTime ?>" class="w-28 shrink-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Start time (24h)">
                                     </div>
                                 </div>
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-2">Ending Date & Hour (24h)</label>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Ending Date &amp; Time (24h)</label>
                                     <div class="flex gap-2 items-center">
                                         <input type="date" id="cashup_end_date" class="flex-1 min-w-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100" value="<?= date('Y-m-d') ?>">
-                                        <select id="cashup_end_hour" class="w-20 shrink-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="Hour (24h)"><?php for ($h = 0; $h < 24; $h++) { echo '<option value="'.$h.'"'.($h===23?' selected':'').'>'.str_pad($h,2,'0',STR_PAD_LEFT).':00</option>'; } ?></select>
+                                        <input type="time" id="cashup_end_time" step="60" value="<?= $menuClosingTime ?>" class="w-28 shrink-0 px-3 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 bg-teal-50 hover:bg-teal-100 text-center font-medium" title="End time (24h)">
                                     </div>
                                 </div>
                             </div>
@@ -1009,6 +1045,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
         </div>
     </div>
     
+    <?php include __DIR__ . '/../includes/date_range_time_script.php'; ?>
     <script>
         // Modal functions
         function openOperationModal(type, title, description) {
@@ -1346,12 +1383,12 @@ $uiCardsApiUrl = '../ui_cards_api.php';
         let cashUpSystemData = null;
         
         function getCashUpStartTime() {
-            const h = document.getElementById('cashup_start_hour');
-            return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':00' : '00:00';
+            const el = document.getElementById('cashup_start_time');
+            return drNormalizeTime(el ? el.value : '', window.BUSINESS_HOURS.opening);
         }
         function getCashUpEndTime() {
-            const h = document.getElementById('cashup_end_hour');
-            return h ? String(parseInt(h.value, 10)).padStart(2, '0') + ':59' : '23:59';
+            const el = document.getElementById('cashup_end_time');
+            return drNormalizeTime(el ? el.value : '', window.BUSINESS_HOURS.closing);
         }
         
         function openCashUpModal() {
@@ -1359,9 +1396,8 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             cashUpSystemData = null;
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('cashup_start_date').value = today;
-            document.getElementById('cashup_start_hour').value = '0';
             document.getElementById('cashup_end_date').value = today;
-            document.getElementById('cashup_end_hour').value = '23';
+            drApplyBusinessTimes('cashup_start_time', 'cashup_end_time');
             document.getElementById('cashup_cashier').value = 'all';
             document.getElementById('cashup_cash_on_hand').value = '';
             document.getElementById('cashup_eft_on_hand').value = '';
