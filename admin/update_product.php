@@ -6,9 +6,8 @@ header('Content-Type: application/json');
 
 date_default_timezone_set('Africa/Johannesburg'); // GMT+2 (Windhoek is actually GMT+2, but using Johannesburg which is also GMT+2)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/../cashier_helper.php';
+requireApiSession(['admin', 'manager']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data = json_decode(file_get_contents('php://input'), true);
@@ -45,13 +44,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'price' => SQLITE3_FLOAT,
             'buying_price' => SQLITE3_FLOAT
         ];
+
+        if (!array_key_exists($data['column'], $dataTypes)) {
+            ob_clean();
+            echo json_encode(['success' => false, 'error' => 'Invalid column']);
+            exit;
+        }
         
-        $dataType = $dataTypes[$data['column']] ?? SQLITE3_TEXT;
+        $dataType = $dataTypes[$data['column']];
+        $safeColumn = $data['column'];
 
         $db->exec('BEGIN IMMEDIATE');
     
         // Track stock changes for quantity updates
-        if ($data['column'] === 'quantity') {
+        if ($safeColumn === 'quantity') {
             // Get old quantity before update
             $stmtSelect = $db->prepare("SELECT quantity FROM products WHERE id = :id");
             $stmtSelect->bindValue(':id', $data['id'], SQLITE3_INTEGER);
@@ -123,9 +129,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     
-        // Prepare the update statement
-        $stmt = $db->prepare("UPDATE products SET {$data['column']} = :value WHERE id = :id");
-        if ($data['column'] === 'buying_price') {
+        // Prepare the update statement (column whitelisted above)
+        $stmt = $db->prepare("UPDATE products SET {$safeColumn} = :value WHERE id = :id");
+        if ($safeColumn === 'buying_price') {
             $raw = $data['value'];
             if ($raw === null || (is_string($raw) && trim($raw) === '')) {
                 $stmt->bindValue(':value', null, SQLITE3_NULL);

@@ -62,7 +62,85 @@ function ensureRecipeTables(PDO $db): void
     ");
 }
 
-function deductRecipeStockByProductName(PDO $db, string $productName, float $soldQty): bool
+/**
+ * Whether POS "Skip stock checks" is enabled (allows oversell / negative qty).
+ */
+function isSkipStockChecks(PDO $db): bool
+{
+    try {
+        $row = $db->query('SELECT skip_stock_checks FROM product_settings LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+        return $row && (int) ($row['skip_stock_checks'] ?? 0) === 1;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/**
+ * Atomically deduct product stock by name. When $allowNegative is false, requires quantity >= deduct.
+ *
+ * @throws Exception on insufficient stock or missing product
+ */
+function deductProductStockByName(PDO $db, string $name, float $qty, bool $allowNegative = false): void
+{
+    if ($qty <= 0) {
+        return;
+    }
+    if ($allowNegative) {
+        $stmt = $db->prepare('UPDATE products SET quantity = quantity - :q WHERE name = :n');
+        $stmt->execute([':q' => $qty, ':n' => $name]);
+        if ($stmt->rowCount() === 0) {
+            throw new Exception('Product not found: ' . $name);
+        }
+        return;
+    }
+    $stmt = $db->prepare('UPDATE products SET quantity = quantity - :q WHERE name = :n AND quantity >= :q');
+    $stmt->execute([':q' => $qty, ':n' => $name]);
+    if ($stmt->rowCount() === 0) {
+        $check = $db->prepare('SELECT quantity FROM products WHERE name = ?');
+        $check->execute([$name]);
+        $avail = $check->fetchColumn();
+        if ($avail === false) {
+            throw new Exception('Product not found: ' . $name);
+        }
+        throw new Exception('Insufficient stock for ' . $name);
+    }
+}
+
+/**
+ * Atomically deduct product stock by id.
+ *
+ * @throws Exception on insufficient stock or missing product
+ */
+function deductProductStockById(PDO $db, int $id, float $qty, bool $allowNegative = false): void
+{
+    if ($qty <= 0) {
+        return;
+    }
+    if ($allowNegative) {
+        $stmt = $db->prepare('UPDATE products SET quantity = quantity - :q WHERE id = :id');
+        $stmt->execute([':q' => $qty, ':id' => $id]);
+        if ($stmt->rowCount() === 0) {
+            throw new Exception('Product not found');
+        }
+        return;
+    }
+    $stmt = $db->prepare('UPDATE products SET quantity = quantity - :q WHERE id = :id AND quantity >= :q');
+    $stmt->execute([':q' => $qty, ':id' => $id]);
+    if ($stmt->rowCount() === 0) {
+        $check = $db->prepare('SELECT name, quantity FROM products WHERE id = ?');
+        $check->execute([$id]);
+        $row = $check->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            throw new Exception('Product not found');
+        }
+        throw new Exception('Insufficient stock for ' . ($row['name'] ?? 'product'));
+    }
+}
+
+/**
+ * @param bool $allowNegative When true (skip stock checks), ingredient deducts are unguarded
+ */
+function deductRecipeStockByProductName(PDO $db, string $productName, float $soldQty, bool $allowNegative = false): bool
 {
     if ($soldQty <= 0) {
         return false;
@@ -71,10 +149,11 @@ function deductRecipeStockByProductName(PDO $db, string $productName, float $sol
     ensureRecipeTables($db);
 
     $recipeQuery = $db->prepare("
-        SELECT ri.ingredient_product_id, ri.quantity_per_unit
+        SELECT ri.ingredient_product_id, ri.quantity_per_unit, ing.name AS ingredient_name
         FROM products p
         INNER JOIN product_recipes pr ON pr.product_id = p.id
         INNER JOIN recipe_items ri ON ri.recipe_id = pr.id
+        INNER JOIN products ing ON ing.id = ri.ingredient_product_id
         WHERE p.name = :product_name
     ");
     $recipeQuery->execute([':product_name' => $productName]);
@@ -84,21 +163,22 @@ function deductRecipeStockByProductName(PDO $db, string $productName, float $sol
         return false;
     }
 
-    $deductStmt = $db->prepare("
-        UPDATE products
-        SET quantity = quantity - :deduct_qty
-        WHERE id = :ingredient_id
-    ");
-
     foreach ($ingredients as $ingredient) {
         $deductQty = floatval($ingredient['quantity_per_unit']) * $soldQty;
         if ($deductQty <= 0) {
             continue;
         }
-        $deductStmt->execute([
-            ':deduct_qty' => $deductQty,
-            ':ingredient_id' => intval($ingredient['ingredient_product_id'])
-        ]);
+        try {
+            deductProductStockById($db, (int) $ingredient['ingredient_product_id'], $deductQty, $allowNegative);
+        } catch (Exception $e) {
+            $ingName = $ingredient['ingredient_name'] ?? 'ingredient';
+            if (strpos($e->getMessage(), 'Insufficient stock') === 0) {
+                throw new Exception(
+                    'Insufficient stock for recipe item (' . $productName . '): ' . $ingName
+                );
+            }
+            throw $e;
+        }
     }
 
     return true;
@@ -190,21 +270,14 @@ function adjustRecipeStockByProductId(PDO $db, int $productId, float $qtyChange)
             ]);
         }
     } else {
-        $deductStmt = $db->prepare("
-            UPDATE products
-            SET quantity = quantity - :deduct_qty
-            WHERE id = :ingredient_id
-        ");
         $absChange = abs($qtyChange);
+        $allowNegative = isSkipStockChecks($db);
         foreach ($ingredients as $ingredient) {
             $deductQty = floatval($ingredient['quantity_per_unit']) * $absChange;
             if ($deductQty <= 0) {
                 continue;
             }
-            $deductStmt->execute([
-                ':deduct_qty' => $deductQty,
-                ':ingredient_id' => intval($ingredient['ingredient_product_id']),
-            ]);
+            deductProductStockById($db, (int) $ingredient['ingredient_product_id'], $deductQty, $allowNegative);
         }
     }
 
@@ -255,20 +328,36 @@ function adjustRecipeStockByProductIdSQLite3(SQLite3 $db, int $productId, float 
             $stmt->execute();
         }
     } else {
-        $deductStmt = $db->prepare("
-            UPDATE products
-            SET quantity = quantity - :deduct_qty
-            WHERE id = :ingredient_id
-        ");
         $absChange = abs($qtyChange);
+        $allowNegative = false;
+        try {
+            $skipRes = $db->querySingle('SELECT skip_stock_checks FROM product_settings LIMIT 1');
+            $allowNegative = ((int) $skipRes) === 1;
+        } catch (Throwable $e) {
+            // ignore
+        }
         foreach ($ingredients as $ingredient) {
             $deductQty = floatval($ingredient['quantity_per_unit']) * $absChange;
             if ($deductQty <= 0) {
                 continue;
             }
-            $deductStmt->bindValue(':deduct_qty', $deductQty, SQLITE3_FLOAT);
-            $deductStmt->bindValue(':ingredient_id', (int) $ingredient['ingredient_product_id'], SQLITE3_INTEGER);
-            $deductStmt->execute();
+            $ingId = (int) $ingredient['ingredient_product_id'];
+            if ($allowNegative) {
+                $deductStmt = $db->prepare('UPDATE products SET quantity = quantity - :deduct_qty WHERE id = :ingredient_id');
+                $deductStmt->bindValue(':deduct_qty', $deductQty, SQLITE3_FLOAT);
+                $deductStmt->bindValue(':ingredient_id', $ingId, SQLITE3_INTEGER);
+                $deductStmt->execute();
+            } else {
+                $deductStmt = $db->prepare(
+                    'UPDATE products SET quantity = quantity - :deduct_qty WHERE id = :ingredient_id AND quantity >= :deduct_qty'
+                );
+                $deductStmt->bindValue(':deduct_qty', $deductQty, SQLITE3_FLOAT);
+                $deductStmt->bindValue(':ingredient_id', $ingId, SQLITE3_INTEGER);
+                $deductStmt->execute();
+                if ($db->changes() === 0) {
+                    throw new Exception('Insufficient stock for recipe ingredient');
+                }
+            }
         }
     }
 

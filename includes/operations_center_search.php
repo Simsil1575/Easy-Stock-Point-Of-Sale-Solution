@@ -1,6 +1,6 @@
 <?php
 /**
- * Operations Center search — include with $operationsSearchInclude = 'field' | 'empty' | 'script'
+ * Operations Center search — include with $operationsSearchInclude = 'field' | 'chips' | 'empty' | 'script'
  */
 if (!isset($operationsSearchInclude)) {
     $operationsSearchInclude = 'field';
@@ -32,6 +32,14 @@ if ($operationsSearchInclude === 'field'):
     </div>
 </div>
 <?php
+elseif ($operationsSearchInclude === 'chips'):
+    $centerCategoryChips = [
+        'chipHostId' => 'operationCategoryChips',
+        'clearBtnId' => 'operationCategoryClear',
+        'setFilterFn' => 'setOperationCategoryFilter',
+    ];
+    $centerCategoryChipsMode = 'markup';
+    include __DIR__ . '/center_category_chips.php';
 elseif ($operationsSearchInclude === 'empty'):
 ?>
 <div id="operationSearchEmpty" class="hidden col-span-full text-center py-10 text-gray-500">
@@ -47,54 +55,22 @@ elseif ($operationsSearchInclude === 'script'):
         display: none !important;
     }
 </style>
-<script>
-    function filterOperationCards() {
-        const input = document.getElementById('operationSearchInput');
-        const clearBtn = document.getElementById('operationSearchClear');
-        const emptyState = document.getElementById('operationSearchEmpty');
-        const grid = document.getElementById('operationsGrid');
-        if (!input || !grid) return;
-
-        const query = input.value.trim().toLowerCase();
-        if (clearBtn) {
-            clearBtn.classList.toggle('hidden', query === '');
-        }
-
-        const cards = grid.querySelectorAll('.operation-card');
-
-        cards.forEach(function(card) {
-            const cardId = (card.dataset.cardId || '').toLowerCase();
-            const text = (card.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-            const matches = query === '' || text.indexOf(query) !== -1 || cardId.indexOf(query) !== -1;
-            card.classList.toggle('operation-search-filtered-out', !matches);
-        });
-
-        const visibleAfterFilter = Array.from(cards).filter(function(card) {
-            return !card.classList.contains('operation-search-filtered-out')
-                && window.getComputedStyle(card).display !== 'none';
-        });
-
-        if (emptyState) {
-            emptyState.classList.toggle('hidden', query === '' || visibleAfterFilter.length > 0);
-        }
-    }
-
-    function clearOperationSearch() {
-        const input = document.getElementById('operationSearchInput');
-        if (!input) return;
-        input.value = '';
-        filterOperationCards();
-        input.focus();
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        const input = document.getElementById('operationSearchInput');
-        if (!input) return;
-        input.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                clearOperationSearch();
-            }
-        });
-    });
-</script>
-<?php endif; ?>
+<?php
+    $centerCategoryChips = [
+        'gridId' => 'operationsGrid',
+        'cardSelector' => '.operation-card',
+        'filteredClass' => 'operation-search-filtered-out',
+        'searchInputId' => 'operationSearchInput',
+        'searchClearId' => 'operationSearchClear',
+        'emptyStateId' => 'operationSearchEmpty',
+        'chipHostId' => 'operationCategoryChips',
+        'clearBtnId' => 'operationCategoryClear',
+        'setFilterFn' => 'setOperationCategoryFilter',
+        'filterFn' => 'filterOperationCards',
+        'clearSearchFn' => 'clearOperationSearch',
+        'chipClass' => 'center-category-chip',
+    ];
+    $centerCategoryChipsMode = 'script';
+    include __DIR__ . '/center_category_chips.php';
+endif;
+?>

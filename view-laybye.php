@@ -194,6 +194,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $cashReceivedForOrder = $cashAmount;
         }
 
+        require_once __DIR__ . '/terminal_helper.php';
+        ensureTerminalSchema($db);
+        $terminal = resolveTerminalFromRequest($_POST, $db);
+
         $db->beginTransaction();
         try {
             $orderId = laybyeCreatePaymentOrder(
@@ -205,7 +209,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $walletProvider,
                 $cashAmount,
                 $eftAmount,
-                $cashierUsername
+                $cashierUsername,
+                $terminal['mac'],
+                $terminal['name']
             );
 
             $db->prepare("

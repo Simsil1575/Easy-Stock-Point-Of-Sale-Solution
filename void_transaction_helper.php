@@ -4,6 +4,9 @@
  */
 function ensureVoidTransactionsExtendedSchema(PDO $db): void
 {
+    require_once __DIR__ . '/terminal_helper.php';
+    ensureTerminalSchema($db);
+
     $db->exec("CREATE TABLE IF NOT EXISTS void_transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_id INTEGER,
@@ -39,7 +42,7 @@ function recordVoidForDeletedOrder(PDO $db, int $orderId): void
 {
     ensureVoidTransactionsExtendedSchema($db);
 
-    $orderStmt = $db->prepare("SELECT id, total, cash_received, cashier_id, created_at FROM orders WHERE id = ?");
+    $orderStmt = $db->prepare("SELECT id, total, cash_received, cashier_id, created_at, terminal_mac, terminal_name FROM orders WHERE id = ?");
     $orderStmt->execute([$orderId]);
     $order = $orderStmt->fetch(PDO::FETCH_ASSOC);
     if (!$order) {
@@ -98,10 +101,12 @@ function recordVoidForDeletedOrder(PDO $db, int $orderId): void
     $ins = $db->prepare("
         INSERT INTO void_transactions (
             order_id, credit_sale_id, total, cash_received, items, payment_method,
-            transaction_ref, wallet_provider, eft_amount, cashier_id, voided_at, void_source, creditor_name
+            transaction_ref, wallet_provider, eft_amount, cashier_id, voided_at, void_source, creditor_name,
+            terminal_mac, terminal_name
         ) VALUES (
             :order_id, NULL, :total, :cash_received, :items, :payment_method,
-            :transaction_ref, :wallet_provider, :eft_amount, :cashier_id, :voided_at, 'deleted_order', NULL
+            :transaction_ref, :wallet_provider, :eft_amount, :cashier_id, :voided_at, 'deleted_order', NULL,
+            :terminal_mac, :terminal_name
         )
     ");
     $ins->execute([
@@ -115,6 +120,8 @@ function recordVoidForDeletedOrder(PDO $db, int $orderId): void
         ':eft_amount' => $eftSum > 0 ? $eftSum : null,
         ':cashier_id' => $order['cashier_id'] !== null && $order['cashier_id'] !== '' ? (string) $order['cashier_id'] : 'Unknown',
         ':voided_at' => date('Y-m-d H:i:s'),
+        ':terminal_mac' => $order['terminal_mac'] ?? null,
+        ':terminal_name' => $order['terminal_name'] ?? null,
     ]);
 }
 
@@ -156,10 +163,12 @@ function recordVoidForDeletedCreditSale(PDO $db, int $saleId): void
     $ins = $db->prepare("
         INSERT INTO void_transactions (
             order_id, credit_sale_id, total, cash_received, items, payment_method,
-            transaction_ref, wallet_provider, eft_amount, cashier_id, voided_at, void_source, creditor_name
+            transaction_ref, wallet_provider, eft_amount, cashier_id, voided_at, void_source, creditor_name,
+            terminal_mac, terminal_name
         ) VALUES (
             NULL, :credit_sale_id, :total, :cash_received, :items, :payment_method,
-            NULL, NULL, NULL, :cashier_id, :voided_at, 'deleted_credit', :creditor_name
+            NULL, NULL, NULL, :cashier_id, :voided_at, 'deleted_credit', :creditor_name,
+            :terminal_mac, :terminal_name
         )
     ");
     $ins->execute([
@@ -171,5 +180,7 @@ function recordVoidForDeletedCreditSale(PDO $db, int $saleId): void
         ':cashier_id' => $sale['cashier_id'] !== null && $sale['cashier_id'] !== '' ? (string) $sale['cashier_id'] : 'Unknown',
         ':voided_at' => date('Y-m-d H:i:s'),
         ':creditor_name' => $sale['creditor_name'] ?? null,
+        ':terminal_mac' => $sale['terminal_mac'] ?? null,
+        ':terminal_name' => $sale['terminal_name'] ?? null,
     ]);
 }

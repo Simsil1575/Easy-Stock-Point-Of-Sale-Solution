@@ -3,6 +3,9 @@
 ob_start();
 date_default_timezone_set('Africa/Harare');
 
+require_once __DIR__ . '/../cashier_helper.php';
+requireApiSession(['admin', 'manager']);
+
 try {
     // Database connection
     $db = new PDO('sqlite:../pos.db');

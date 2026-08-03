@@ -22,6 +22,8 @@ if ($activationStatus == 0) {
 }
 
 $db = new PDO('sqlite:../pos.db');
+require_once __DIR__ . '/../recipe_stock_helper.php';
+configureSqlitePdo($db);
 require_once __DIR__ . '/../ensure_stock_changes_username.php';
 ensureStockChangesUsernameColumn($db);
 
@@ -38,19 +40,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare("SELECT quantity FROM products WHERE id = ?");
         $stmt->execute([$product_id]);
         $old_quantity = $stmt->fetchColumn();
-
-        // Check if requested quantity is available
-        if ($quantity > $old_quantity) {
-            throw new Exception("Not enough stock available. Current stock: " . $old_quantity);
-        }
         
         // Insert into damaged goods
         $stmt = $db->prepare("INSERT INTO damaged_goods (product_id, quantity, reason) VALUES (?, ?, ?)");
         $stmt->execute([$product_id, $quantity, $reason]);
         
-        // Update product quantity
-        $stmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE id = ?");
-        $stmt->execute([$quantity, $product_id]);
+        deductProductStockById($db, (int) $product_id, floatval($quantity), false);
         
         // Get new product quantity after update
         $stmt = $db->prepare("SELECT quantity FROM products WHERE id = ?");

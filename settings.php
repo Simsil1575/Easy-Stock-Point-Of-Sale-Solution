@@ -13,6 +13,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Include activation helper
 require_once 'activation_helper.php';
+require_once __DIR__ . '/pos_reset_helper.php';
 ?>
 
 <!DOCTYPE html>
@@ -564,20 +565,11 @@ try {
                 <?php
                 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['delete_all'])) {
                     try {
-                        // Database connection
                         $db = new PDO('sqlite:pos.db');
-                        
-                        // Enable foreign key support for SQLite
                         $db->exec('PRAGMA foreign_keys = OFF');
-                        
-                        // Delete all records from orders and order_items tables
-                        $db->exec("DELETE FROM orders");
-                        $db->exec("DELETE FROM order_items"); 
-                        
-                        // Re-enable foreign key support
+                        posDbResetAllTransactions($db);
                         $db->exec('PRAGMA foreign_keys = ON');
                         
-                        // Show success message instead of redirecting
                         echo "<div class='mt-4 p-4 bg-teal-100 text-teal-700 rounded fade-in z-20' role='alert'>
                             All records have been deleted successfully.
                         </div>";

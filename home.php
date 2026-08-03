@@ -261,6 +261,8 @@ if (!$businessInfo) {
     <?php $kbAssetPrefix = ''; $kbPart = 'styles'; include __DIR__ . '/includes/kioskboard_payment.php'; ?>
     <!-- Load sendToPrinter function from receipt.php -->
     <script src="receipt.php?js=true"></script>
+    <?php if (!empty($use_qz_tray)): ?><script src="receipt/js/qz-tray.js"></script><?php endif; ?>
+    <script src="terminal.js"></script>
     <meta name="google" content="notranslate">
     <link rel="icon" href="favicon.ico" type="image/png">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
@@ -2244,6 +2246,20 @@ if (!$businessInfo) {
             `;
         }
 
+        function postJsonWithTerminal(url, payload) {
+            return attachTerminalToPayload(Object.assign({}, payload)).then(function(enriched) {
+                return fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(enriched),
+                }).then(function(response) { return response.json(); });
+            });
+        }
+
+        if (typeof getTerminalMac === 'function') {
+            getTerminalMac().catch(function() {});
+        }
+
         // Server-side stock map (refreshed periodically); used when DOM quantity is missing or stale
         let productStockByName = <?php echo json_encode($productStockMap, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
 
@@ -3934,14 +3950,7 @@ if (!$businessInfo) {
                 total: data.items.reduce((sum, item) => sum + (item.refund_qty * parseFloat(item.price)), 0)
             };
 
-            fetch('api/process_refund.php', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(refundData)
-            })
-            .then(response => response.json())
+            postJsonWithTerminal('api/process_refund.php', refundData)
             .then(result => {
                 if (result.success) {
                     // Prepare receipt data for printing
@@ -4155,14 +4164,7 @@ if (!$businessInfo) {
                         }
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
                         // Process the payment AFTER confirmation
-                        fetch('process_order.php', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify(saleData),
-                        })
-                        .then(response => response.json())
+                        postJsonWithTerminal('process_order.php', saleData)
                         .then(result => {
                             if (result.success) {
                                 saleData.order_id = result.order_id;
@@ -4313,12 +4315,7 @@ if (!$businessInfo) {
                     }
                     const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
 
-                    fetch('process_order.php', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(saleData)
-                    })
-                    .then(r => r.json())
+                    postJsonWithTerminal('process_order.php', saleData)
                     .then(result => {
                         if (result.success) {
                             saleData.order_id = result.order_id;
@@ -5399,14 +5396,7 @@ if (!$businessInfo) {
                     }).then(ok => {
                         if (!ok.isConfirmed) return;
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
-                        fetch('process_credit.php', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify(saleData),
-                        })
-                        .then(response => response.json())
+                        postJsonWithTerminal('process_credit.php', saleData)
                         .then(result => {
                             if (result.success) {
                                 saleData.sale_id = result.sale_id;
@@ -5576,14 +5566,7 @@ if (!$businessInfo) {
         }
         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
 
-        fetch('process_order.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(data),
-        })
-        .then(response => response.json())
+        postJsonWithTerminal('process_order.php', data)
         .then(result => {
             if (result.success) {
                 data.order_id = result.order_id;
@@ -6149,20 +6132,13 @@ if (!$businessInfo) {
                 const sendToKitchen = document.getElementById('sendToKitchenCheckbox')?.checked && kitchenPrinterConfigured;
                 
                 // Process the tab sale using process_tab.php
-                fetch('process_tab.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
+                postJsonWithTerminal('process_tab.php', {
                         table_id: tableId,
                         table_name: tableName,
                         items: saleData.items,
                         total: saleData.total,
                         cashier_username: saleData.cashier_username
-                    }),
-                })
-                .then(response => response.json())
+                    })
                 .then(result => {
                     if (result.success) {
                         saleData.tab_id = result.tab_id;

@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__ . '/../cashier_helper.php';
+requireApiSession(['admin', 'manager']);
+
 header('Content-Type: application/json');
 
 try {

@@ -13,7 +13,7 @@ $sidebarSections = [
     'dashboard' => ['home', 'dashboard'],
     'sales' => ['sales'],
     'tabs' => ['credit-tabs', 'view-tab'],
-    'products' => ['inventory', 'add_product', 'receiving', 'edit', 'stock_tracking', 'stock_taking'],
+    'products' => ['inventory', 'add_product', 'receiving', 'receiving_records', 'edit', 'stock_tracking', 'stock_taking'],
     'reports' => ['reports', 'daily_stock_report', 'weekly_sales', 'monthly_sales'],
     'credit' => ['credit-book', 'credit-transactions'],
     'cash' => ['cash'],
@@ -722,6 +722,12 @@ foreach ($sidebarSections as $sectionId => $pages) {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"></path>
                         </svg>
                         Receive Stock
+                    </a>
+                    <a href="receiving_records" class="sidebar-link flex items-center p-2 ml-4 rounded-lg text-sm transition-all duration-200 ease-in-out <?php echo ($currentPage === 'receiving_records') ? 'active' : 'text-gray-600 hover:text-gray-700 hover:bg-gray-100'; ?>">
+                        <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                        </svg>
+                        Receiving Records
                     </a>
                     <a href="stock_tracking" class="sidebar-link flex items-center p-2 ml-4 rounded-lg text-sm transition-all duration-200 ease-in-out <?php echo ($currentPage === 'stock_tracking') ? 'active' : 'text-gray-600 hover:text-gray-700 hover:bg-gray-100'; ?>">
                         <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

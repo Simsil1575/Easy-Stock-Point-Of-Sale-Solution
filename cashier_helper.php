@@ -75,6 +75,38 @@ function validateCashierSession($redirect = false) {
 }
 
 /**
+ * Require a logged-in API session. Optionally restrict to roles (lowercase).
+ * On failure: HTTP 401 JSON and exit.
+ *
+ * @param string[] $roles Empty = any logged-in user
+ */
+function requireApiSession(array $roles = []): void {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    if (!isset($_SESSION['user_id'], $_SESSION['username'])) {
+        http_response_code(401);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Not logged in', 'message' => 'Not logged in']);
+        exit();
+    }
+
+    if (!empty($roles)) {
+        $role = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+        $allowed = array_map(static function ($r) {
+            return strtolower(trim((string) $r));
+        }, $roles);
+        if (!in_array($role, $allowed, true)) {
+            http_response_code(403);
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Forbidden', 'message' => 'Forbidden']);
+            exit();
+        }
+    }
+}
+
+/**
  * Convert a cashier_id (username or ID) to username
  * Useful for display and reporting
  * 

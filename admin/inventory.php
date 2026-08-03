@@ -619,14 +619,6 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                     <span class="hidden sm:inline">Add Product</span>
                                     <span class="sm:hidden">Add</span>
                                 </a>
-
-                                <a href="bulk_edit_images" class="inline-flex items-center justify-center px-3 sm:px-4 py-2 text-xs sm:text-sm bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-md shadow-sm whitespace-nowrap flex-shrink-0 transition-colors">
-                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1.5 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
-                                    </svg>
-                                    <span class="hidden sm:inline">Bulk Images</span>
-                                    <span class="sm:hidden">Images</span>
-                                </a>
                             </div>
                         </div>
                     </div>
@@ -775,13 +767,6 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
                                     </svg>
                                     <span>Add Product</span>
-                                </a>
-
-                                <a href="bulk_edit_images" class="inline-flex items-center justify-center px-4 py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-md shadow-sm whitespace-nowrap transition-colors">
-                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
-                                    </svg>
-                                    <span>Bulk Images</span>
                                 </a>
                             </div>
                         </div>
@@ -1013,6 +998,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (savedCategory) {
                 if (categoryFilter) categoryFilter.value = savedCategory;
                 if (categoryFilterDesktop) categoryFilterDesktop.value = savedCategory;
+                filterRows(getSearchValue());
+            }
+            const urlCategory = new URLSearchParams(window.location.search).get('category');
+            if (urlCategory && urlCategory.trim()) {
+                const initialCategory = urlCategory.trim();
+                if (categoryFilter) categoryFilter.value = initialCategory;
+                if (categoryFilterDesktop) categoryFilterDesktop.value = initialCategory;
+                try { sessionStorage.setItem('inventoryCategory', initialCategory); } catch (e) {}
                 filterRows(getSearchValue());
             }
         }

@@ -14,13 +14,17 @@ function laybyeCreatePaymentOrder(
     string $walletProvider,
     float $cashAmount,
     float $eftAmount,
-    string $cashierUsername
+    string $cashierUsername,
+    ?string $terminalMac = null,
+    ?string $terminalName = null
 ): int {
     ensureLaybyeSchema($db);
+    require_once __DIR__ . '/terminal_helper.php';
+    ensureTerminalSchema($db);
     $productName = laybyePaymentProductName();
 
-    $orderStmt = $db->prepare("INSERT INTO orders (total, cash_received, created_at, cashier_id) VALUES (?, ?, ?, ?)");
-    $orderStmt->execute([$amount, $cashReceivedForOrder, date('Y-m-d H:i:s'), $cashierUsername]);
+    $orderStmt = $db->prepare("INSERT INTO orders (total, cash_received, created_at, cashier_id, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?)");
+    $orderStmt->execute([$amount, $cashReceivedForOrder, date('Y-m-d H:i:s'), $cashierUsername, $terminalMac, $terminalName]);
     $orderId = (int) $db->lastInsertId();
 
     $stmtOrderItems = $db->prepare("INSERT INTO order_items (order_id, product_name, quantity, price, buying_price) VALUES (?, ?, ?, ?, ?)");
@@ -43,8 +47,8 @@ function laybyeCreatePaymentOrder(
             )
         ");
         $eftAmountToRecord = $isMixedPayment ? $eftAmount : $amount;
-        $stmtEft = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)");
-        $stmtEft->execute([$orderId, $transactionRef, $walletProvider, $eftAmountToRecord, $cashierUsername, date('Y-m-d H:i:s')]);
+        $stmtEft = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmtEft->execute([$orderId, $transactionRef, $walletProvider, $eftAmountToRecord, $cashierUsername, date('Y-m-d H:i:s'), $terminalMac, $terminalName]);
     }
 
     if ($isMixedPayment) {
@@ -61,8 +65,8 @@ function laybyeCreatePaymentOrder(
                 FOREIGN KEY(order_id) REFERENCES orders(id)
             )
         ");
-        $stmtMixed = $db->prepare("INSERT INTO mixed_payments (order_id, cash_amount, eft_amount, eft_transaction_ref, eft_wallet_provider, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
-        $stmtMixed->execute([$orderId, $cashAmount, $eftAmount, $transactionRef, $walletProvider, $cashierUsername]);
+        $stmtMixed = $db->prepare("INSERT INTO mixed_payments (order_id, cash_amount, eft_amount, eft_transaction_ref, eft_wallet_provider, cashier_id, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmtMixed->execute([$orderId, $cashAmount, $eftAmount, $transactionRef, $walletProvider, $cashierUsername, $terminalMac, $terminalName]);
     }
 
     return $orderId;

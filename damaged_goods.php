@@ -23,6 +23,8 @@ if ($activationStatus == 0) {
 $posDb = __DIR__ . '/pos.db';
 $db = new PDO('sqlite:' . $posDb);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/recipe_stock_helper.php';
+configureSqlitePdo($db);
 
 function ensureDamagedGoodsTable(PDO $db) {
     $db->exec("CREATE TABLE IF NOT EXISTS damaged_goods (
@@ -56,18 +58,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$product_id]);
         $old_quantity = $stmt->fetchColumn();
         
-        // Add validation check
-        if ($quantity > $old_quantity) {
-            throw new Exception("Cannot damage more items than are available in stock");
-        }
-        
         // Insert into damaged goods with selected date at 10:00
         $stmt = $db->prepare("INSERT INTO damaged_goods (product_id, quantity, reason, date) VALUES (?, ?, ?, ?)");
         $stmt->execute([$product_id, $quantity, $reason, $damageDateTime]);
         
-        // Update product quantity
-        $stmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE id = ?");
-        $stmt->execute([$quantity, $product_id]);
+        // Atomically deduct (blocks concurrent oversell)
+        deductProductStockById($db, (int) $product_id, floatval($quantity), false);
         
         // Get new product quantity after update
         $stmt = $db->prepare("SELECT quantity FROM products WHERE id = ?");

@@ -138,12 +138,13 @@
             };
 
             // Send AJAX request
+            attachTerminalToPayload(data).then(function(enriched) {
             fetch('process_order.php', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(data),
+                body: JSON.stringify(enriched),
             })
             .then(response => response.json())
             .then(result => {
@@ -174,6 +175,7 @@
                     title: 'Error',
                     text: 'There was an error processing your order. Please try again.',
                 });
+            });
             });
         }
 

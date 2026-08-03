@@ -97,13 +97,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch unique categories
+// Fetch unique categories (registry + products)
 $categories = [];
-$db = new SQLite3('../pos.db');
-$catResult = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
-while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
-    $categories[] = $row['category'];
+require_once __DIR__ . '/../includes/categories_lib.php';
+try {
+    $catPdo = new PDO('sqlite:../pos.db');
+    $catPdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $categories = catListNames($catPdo);
+} catch (Throwable $e) {
+    $db = new SQLite3('../pos.db');
+    $catResult = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
+    while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
+        $categories[] = $row['category'];
+    }
 }
+$prefillCategory = trim((string) ($_GET['category'] ?? ''));
 ?>
 
 <!DOCTYPE html>
@@ -370,6 +378,7 @@ while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
                                     <label for="category" class="block text-sm font-medium text-gray-700 mb-2">Category</label>
                                     <input type="text" name="category" id="category" 
                                         list="category-list"
+                                        value="<?= htmlspecialchars($prefillCategory, ENT_QUOTES, 'UTF-8') ?>"
                                         placeholder="Type or select a category"
                                         class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm 
                                         placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 

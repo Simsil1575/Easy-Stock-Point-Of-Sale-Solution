@@ -1,8 +1,8 @@
 <?php
-session_start();
+require_once __DIR__ . '/cashier_helper.php';
+requireApiSession();
 header('Content-Type: application/json');
 
-// Set Namibia timezone
 date_default_timezone_set('Africa/Harare');
 
 $db = new PDO('sqlite:pos.db');
@@ -10,6 +10,7 @@ $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 require_once __DIR__ . '/recipe_stock_helper.php';
 configureSqlitePdo($db);
 require_once __DIR__ . '/tab_balance_helper.php';
+require_once __DIR__ . '/terminal_helper.php';
 
 // Create tabs and tab_items tables if they don't exist
 try {
@@ -67,6 +68,8 @@ try {
 
     // Validate input
     $data = json_decode(file_get_contents('php://input'), true);
+    ensureTerminalSchema($db);
+    $terminal = resolveTerminalFromRequest(is_array($data) ? $data : [], $db);
     if (!isset($data['table_id'], $data['table_name'], $data['total'], $data['items'])) {
         throw new Exception('Missing required fields');
     }
@@ -85,8 +88,8 @@ try {
         // Create new tab for this table - store username for consistent tracking
         ensureTabGratuityColumns($db);
         $defaultGratuityOn = tab_default_gratuity_enabled_on_create($db);
-        $createTabStmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, cashier_id, gratuity_enabled) VALUES (?, 0, 0, ?, ?)");
-        $createTabStmt->execute([$tableName, $cashierUsername, $defaultGratuityOn]);
+        $createTabStmt = $db->prepare("INSERT INTO tabs (tab_name, opening_balance, current_balance, cashier_id, gratuity_enabled, terminal_mac, terminal_name) VALUES (?, 0, 0, ?, ?, ?, ?)");
+        $createTabStmt->execute([$tableName, $cashierUsername, $defaultGratuityOn, $terminal['mac'], $terminal['name']]);
         $tabId = $db->lastInsertId();
         
         // Fetch the newly created tab
@@ -120,9 +123,8 @@ try {
     $insertItemStmt = $db->prepare("INSERT INTO tab_items (tab_id, product_name, quantity, price, added_by) VALUES (?, ?, ?, ?, ?)");
     $updateItemStmt = $db->prepare("UPDATE tab_items SET quantity = quantity + ? WHERE id = ?");
     
-    // Prepare statements for updating product quantities (similar to process_order.php)
+    $allowNegative = isSkipStockChecks($db);
     $stmtGetProductInfo = $db->prepare("SELECT buying_price, category FROM products WHERE name = ?");
-    $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE name = ?");
     
     // Create tab_item_payments table if it doesn't exist (for the query above)
     try {
@@ -169,12 +171,12 @@ try {
             $stmtGetProductInfo->execute([$item['name']]);
             $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
             $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
-            deductRecipeStockByProductName($db, $item['name'], floatval($quantity));
+            deductRecipeStockByProductName($db, $item['name'], floatval($quantity), $allowNegative);
             
             // Only decrease main product quantity if category is not "Food" (ingredients always deducted above when linked)
             $isFood = strtolower(trim($productCategory ?? '')) === 'food';
             if (!$isFood) {
-                $stmtUpdateInventory->execute([$quantity, $item['name']]);
+                deductProductStockByName($db, $item['name'], floatval($quantity), $allowNegative);
             }
         }
     }

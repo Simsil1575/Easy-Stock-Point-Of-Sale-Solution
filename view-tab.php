@@ -29,7 +29,9 @@ require_once __DIR__ . '/tab_balance_helper.php';
 require_once __DIR__ . '/cashback_accounting_helper.php';
 require_once __DIR__ . '/ensure_orders_gratuity_columns.php';
 require_once __DIR__ . '/ensure_tab_gratuity_columns.php';
+require_once __DIR__ . '/terminal_helper.php';
 ensureTabPrepaidBalanceColumn($db);
+ensureTerminalSchema($db);
 ensureTabVoidMarkColumns($db);
 ensureTabGratuityColumns($db);
 
@@ -462,14 +464,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             // Create credit sale record
             $cashierUsername = $_SESSION['username'] ?? 'Unknown';
-            $saleStmt = $db->prepare("INSERT INTO credit_sales (creditor_id, total_amount, due_date, created_at, cashier_id, payment_status) 
-                                     VALUES (?, ?, ?, ?, ?, 'unpaid')");
+            $terminal = resolveTerminalFromRequest($_POST, $db);
+            $saleStmt = $db->prepare("INSERT INTO credit_sales (creditor_id, total_amount, due_date, created_at, cashier_id, payment_status, terminal_mac, terminal_name) 
+                                     VALUES (?, ?, ?, ?, ?, 'unpaid', ?, ?)");
             $saleStmt->execute([
                 $creditorId,
                 $totalAmount,
                 $dueDate,
                 date('Y-m-d H:i:s'),
-                $cashierUsername
+                $cashierUsername,
+                $terminal['mac'],
+                $terminal['name'],
             ]);
             $saleId = $db->lastInsertId();
             
@@ -571,6 +576,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } elseif (isset($_POST['payment_amount'])) {
         // Make payment on tab - treat as sale and decrease quantities
+        ensureTerminalSchema($db);
+        $terminal = resolveTerminalFromRequest($_POST, $db);
         $tabId = intval($_POST['tab_id']);
         $amount = floatval($_POST['payment_amount']);
         $tipAmount = floatval($_POST['tip_amount'] ?? 0);
@@ -795,7 +802,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]) . "\n", FILE_APPEND);
             // #endregion
             $orderStmt = $db->prepare(
-                'INSERT INTO orders (total, cash_received, created_at, cashier_id, gratuity_amount, gratuity_percent_applied, gratuity_included_in_total) VALUES (?, ?, ?, ?, ?, ?, 1)'
+                'INSERT INTO orders (total, cash_received, created_at, cashier_id, gratuity_amount, gratuity_percent_applied, gratuity_included_in_total, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)'
             );
             $orderStmt->execute([
                 $amount,
@@ -804,6 +811,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cashierUsername,
                 $gratuityForOrder,
                 $gratuityPctForOrder,
+                $terminal['mac'],
+                $terminal['name'],
             ]);
             $orderId = $db->lastInsertId();
             
@@ -866,8 +875,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Insert payment record
             $paymentTimestamp = date('Y-m-d H:i:s');
-            $paymentStmt = $db->prepare("INSERT INTO tab_payments (tab_id, amount, tip_amount, cash_back_amount, payment_method, transaction_ref, wallet_provider, cashier_id, order_id, payment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $paymentStmt->execute([$tabId, $amount, $tipAmount, round($cashBackPost, 2), $paymentMethod, $transactionRef, $walletProvider, $cashierUsername, $orderId, $paymentTimestamp]);
+            $paymentStmt = $db->prepare("INSERT INTO tab_payments (tab_id, amount, tip_amount, cash_back_amount, payment_method, transaction_ref, wallet_provider, cashier_id, order_id, payment_date, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $paymentStmt->execute([$tabId, $amount, $tipAmount, round($cashBackPost, 2), $paymentMethod, $transactionRef, $walletProvider, $cashierUsername, $orderId, $paymentTimestamp, $terminal['mac'], $terminal['name']]);
             $paymentId = $db->lastInsertId();
             
             if (!empty($itemsToPay)) {
@@ -959,14 +968,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     )
                 ");
                 
-                $stmtEftPayment = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (?, ?, ?, ?, ?, ?)");
+                $stmtEftPayment = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmtEftPayment->execute([
                     $orderId,
                     $transactionRef,
                     $walletProvider,
                     $eftAmountToRecord,
                     $cashierUsername,
-                    date('Y-m-d H:i:s')
+                    date('Y-m-d H:i:s'),
+                    $terminal['mac'],
+                    $terminal['name'],
                 ]);
                 
                 // Handle mixed payment
@@ -985,14 +996,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         )
                     ");
                     
-                    $stmtMixed = $db->prepare("INSERT INTO mixed_payments (order_id, cash_amount, eft_amount, eft_transaction_ref, eft_wallet_provider, cashier_id) VALUES (?, ?, ?, ?, ?, ?)");
+                    $stmtMixed = $db->prepare("INSERT INTO mixed_payments (order_id, cash_amount, eft_amount, eft_transaction_ref, eft_wallet_provider, cashier_id, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                     $stmtMixed->execute([
                         $orderId,
                         $cashAmount,
                         $eftAmount,
                         $transactionRef,
                         $walletProvider,
-                        $cashierUsername
+                        $cashierUsername,
+                        $terminal['mac'],
+                        $terminal['name'],
                     ]);
                 }
             }
@@ -1406,6 +1419,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
     <?php $kbAssetPrefix = ''; include __DIR__ . '/includes/kioskboard_payment.php'; ?>
     <!-- Load sendToPrinter function from receipt.php -->
     <script src="receipt.php?js=true"></script>
+    <script src="terminal.js"></script>
 
     <style>
         .sidebar {
@@ -1975,6 +1989,8 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
 
                 <form method="POST" id="paymentForm">
                     <input type="hidden" name="tab_id" value="<?= $viewTab['id'] ?>">
+                    <input type="hidden" name="terminal_mac" id="terminalMacField" value="">
+                    <input type="hidden" name="terminal_name" id="terminalNameField" value="">
                     
                     <div class="p-6 space-y-4">
                       
@@ -2226,7 +2242,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
                         <input type="number" name="edit_item_quantity" id="edit_item_quantity" step="1" min="1" required
-                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Unit Price (N$)</label>
@@ -2238,7 +2254,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                         <p class="text-sm text-gray-600">Total: <span id="edit_item_total" class="font-semibold text-gray-900">N$0.00</span></p>
                     </div>
                     <div class="flex gap-2 pt-4">
-                        <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                        <button type="submit" class="flex-1 inline-flex items-center justify-center bg-teal-600 hover:bg-teal-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
                             <i data-lucide="save" class="w-4 h-4 mr-2"></i>Save Changes
                         </button>
                         <button type="button" onclick="closeEditItemModal()" 
@@ -2606,6 +2622,23 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                             return false;
                         }
                     }
+
+                    if (!paymentForm.dataset.terminalReady) {
+                        e.preventDefault();
+                         attachTerminalToPayload({}).then(function(payload) {
+                            var macField = document.getElementById('terminalMacField');
+                            var nameField = document.getElementById('terminalNameField');
+                            if (macField) macField.value = payload.terminal_mac || '';
+                            if (nameField) nameField.value = payload.terminal_name || '';
+                            paymentForm.dataset.terminalReady = '1';
+                            paymentForm.submit();
+                        }).catch(function() {
+                            paymentForm.dataset.terminalReady = '1';
+                            paymentForm.submit();
+                        });
+                        return false;
+                    }
+                    delete paymentForm.dataset.terminalReady;
                 });
             }
         });

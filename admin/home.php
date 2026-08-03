@@ -80,21 +80,14 @@ try {
     $closingTime = '22:00';
 }
 
+require_once __DIR__ . '/../business_day_helper.php';
+
 // Calculate business day boundaries (cached calculation)
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+$isAfterMidnight = bdIsOvernightClosing($closingTime);
 
 // Match admin/cash.php business date resolution
 function getCurrentBusinessDate($closingTime, $isAfterMidnight) {
-    $today = date('Y-m-d');
-    $yesterday = date('Y-m-d', strtotime('-1 day'));
-    $currentTime = date('H:i');
-
-    if ($isAfterMidnight && $currentTime >= '00:00' && $currentTime < $closingTime) {
-        return $yesterday;
-    }
-    return ($currentTime < $closingTime) ? $yesterday : $today;
+    return bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 }
 
 $currentBusinessDate = getCurrentBusinessDate($closingTime, $isAfterMidnight);
@@ -107,35 +100,7 @@ class BusinessDayCache {
         $cacheKey = "$dateField-$startDate-$endDate-$closingTime-$isAfterMidnight";
         
         if (!isset(self::$cache[$cacheKey])) {
-    if ($startDate === $endDate) {
-        // Single day - use business day logic
-        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-                self::$cache[$cacheKey] = "
-            (DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-            (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-        ";
-    } else {
-        // Multiple days - need to handle each day's business hours
-        $whereClauses = [];
-        $currentDate = new DateTime($startDate);
-        $endDateTime = new DateTime($endDate);
-        
-        while ($currentDate <= $endDateTime) {
-            $dateStr = $currentDate->format('Y-m-d');
-            $nextDay = clone $currentDate;
-            $nextDay->modify('+1 day');
-            $nextDayStr = $nextDay->format('Y-m-d');
-            
-            $whereClauses[] = "
-                (DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-            ";
-            
-            $currentDate->modify('+1 day');
-        }
-        
-                self::$cache[$cacheKey] = "(" . implode(") OR (", $whereClauses) . ")";
-            }
+            self::$cache[$cacheKey] = bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight);
         }
         
         return self::$cache[$cacheKey];

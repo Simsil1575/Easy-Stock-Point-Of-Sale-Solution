@@ -2109,7 +2109,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
                         <input type="number" name="edit_item_quantity" id="edit_item_quantity" step="1" min="1" required
-                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Unit Price (N$)</label>
@@ -2121,7 +2121,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                         <p class="text-sm text-gray-600">Total: <span id="edit_item_total" class="font-semibold text-gray-900">N$0.00</span></p>
                     </div>
                     <div class="flex gap-2 pt-4">
-                        <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                        <button type="submit" class="flex-1 inline-flex items-center justify-center bg-teal-600 hover:bg-teal-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
                             <i data-lucide="save" class="w-4 h-4 mr-2"></i>Save Changes
                         </button>
                         <button type="button" onclick="closeEditItemModal()" 

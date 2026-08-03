@@ -15,8 +15,10 @@ $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 require_once __DIR__ . '/recipe_stock_helper.php';
 require_once __DIR__ . '/ensure_laybye_schema.php';
 require_once __DIR__ . '/laybye_order_helper.php';
+require_once __DIR__ . '/terminal_helper.php';
 
 ensureLaybyeSchema($db);
+ensureTerminalSchema($db);
 
 try {
     $db->exec("ALTER TABLE product_settings ADD COLUMN skip_stock_checks BOOLEAN NOT NULL DEFAULT 0");
@@ -28,6 +30,7 @@ $skipStockChecks = $settingsRow && (int) ($settingsRow['skip_stock_checks'] ?? 0
 
 try {
     $data = json_decode(file_get_contents('php://input'), true);
+    $terminal = resolveTerminalFromRequest(is_array($data) ? $data : [], $db);
     if (!$data || !isset($data['creditor_id'], $data['items'], $data['total'])) {
         throw new Exception('Missing required fields');
     }
@@ -175,10 +178,9 @@ try {
         laybyeAssertStockForAddItem($db, $name, $qty, $productInfo, $skipStockChecks);
 
         $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-        deductRecipeStockByProductName($db, $name, floatval($qty));
+        deductRecipeStockByProductName($db, $name, floatval($qty), $skipStockChecks);
         if (!$isFood) {
-            $updateStmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE name = ?");
-            $updateStmt->execute([$qty, $name]);
+            deductProductStockByName($db, $name, floatval($qty), $skipStockChecks);
         }
 
         $itemStmt->execute([$laybyeId, $name, $qty, $unitPrice, $buyingPrice, $cashierUsername]);
@@ -205,7 +207,9 @@ try {
             $walletProvider,
             $cashAmount,
             $eftAmount,
-            $cashierUsername
+            $cashierUsername,
+            $terminal['mac'],
+            $terminal['name']
         );
 
         $payStmt = $db->prepare("

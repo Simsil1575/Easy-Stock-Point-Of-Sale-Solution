@@ -1000,6 +1000,14 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 if (categoryFilterDesktop) categoryFilterDesktop.value = savedCategory;
                 filterRows(getSearchValue());
             }
+            const urlCategory = new URLSearchParams(window.location.search).get('category');
+            if (urlCategory && urlCategory.trim()) {
+                const initialCategory = urlCategory.trim();
+                if (categoryFilter) categoryFilter.value = initialCategory;
+                if (categoryFilterDesktop) categoryFilterDesktop.value = initialCategory;
+                try { sessionStorage.setItem('inventoryCategory', initialCategory); } catch (e) {}
+                filterRows(getSearchValue());
+            }
         }
         
         // Load saved page on page initialization

@@ -97,10 +97,9 @@ try {
         laybyeAssertStockForAddItem($db, $name, $qty, $productInfo, $skipStockChecks);
 
         $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-        deductRecipeStockByProductName($db, $name, floatval($qty));
+        deductRecipeStockByProductName($db, $name, floatval($qty), $skipStockChecks);
         if (!$isFood) {
-            $updateStmt = $db->prepare("UPDATE products SET quantity = quantity - ? WHERE name = ?");
-            $updateStmt->execute([$qty, $name]);
+            deductProductStockByName($db, $name, floatval($qty), $skipStockChecks);
         }
 
         $itemStmt->execute([$laybyeId, $name, $qty, $unitPrice, $buyingPrice, $cashierUsername]);

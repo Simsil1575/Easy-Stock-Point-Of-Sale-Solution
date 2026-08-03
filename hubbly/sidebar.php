@@ -229,15 +229,22 @@
         ?>
     </div>
 
+    <?php
+    // hubbly/home injects <base href="../"> so relative links must be prefixed with hubbly/.
+    // Pages already under /hubbly/ (credit-tabs, view-tab) have no base tag — stay relative.
+    $scriptDir = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? ''));
+    $alreadyInHubbly = (bool) preg_match('#(?:^|/)hubbly$#i', rtrim($scriptDir, '/'));
+    $hubblyNavPrefix = ((defined('HUBBLY_POS') && HUBBLY_POS) || !$alreadyInHubbly) ? 'hubbly/' : '';
+    ?>
     <div class="relative mb-4 mt-4" style="flex-shrink: 0;">
         <div class="flex flex-col items-center justify-center"><br>
-            <a><img src="logo.png" style="width: 60px;" alt="POS System Icon"></a><br>
+            <a href="<?= htmlspecialchars($hubblyNavPrefix) ?>home"><img src="<?= (defined('HUBBLY_POS') && HUBBLY_POS) ? '' : '../' ?>logo.png" style="width: 60px;" alt="POS System Icon"></a><br>
         </div>
     </div>
     <nav>
         <ul class="space-y-3">
             <li>
-                <a href="hubbly/home" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="hubbly/home">
+                <a href="<?= htmlspecialchars($hubblyNavPrefix) ?>home" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="./">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
                     </svg>
@@ -246,7 +253,22 @@
             </li>
 
             <li>
-                <a href="hubbly/logout" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="hubbly/logout">
+                <a href="<?= htmlspecialchars($hubblyNavPrefix) ?>credit-tabs" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="credit-tabs">
+                    <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="2" y="5" width="20" height="14" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+                        <rect x="2" y="9" width="20" height="2" fill="currentColor"/>
+                        <rect x="16" y="15" width="4" height="2" rx="1" fill="currentColor"/>
+                    </svg>
+                    <span class="text-lg text-gray-700">Tabs</span>
+                </a>
+            </li>
+
+      
+
+         
+
+            <li>
+                <a href="<?= htmlspecialchars($hubblyNavPrefix) ?>logout" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="logout">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
                     </svg>
@@ -469,11 +491,20 @@
                             return;
                         }
                         
-                        // Normalize the href
+                        // Normalize the href (keep hubbly/ prefix when present)
                         if (href === './') {
                             href = 'home';
                         } else if (href.startsWith('./')) {
                             href = href.substring(2);
+                        }
+                        // Ensure mobile nav stays inside /hubbly when base href points at site root
+                        if (!href.startsWith('hubbly/') && !href.startsWith('/') && !href.startsWith('http')) {
+                            const pathParts = window.location.pathname.split('/').filter(Boolean);
+                            const underHubbly = pathParts.length > 0 && pathParts[0].toLowerCase() === 'hubbly';
+                            const hasRootBase = !!document.querySelector('base[href]');
+                            if (hasRootBase || !underHubbly) {
+                                href = 'hubbly/' + href;
+                            }
                         }
                         
                         // Close sidebar with animation

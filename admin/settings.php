@@ -14,9 +14,10 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 // Include secure activation helper
 require_once '../activation_helper.php';
 require_once __DIR__ . '/../pos_reset_helper.php';
+require_once __DIR__ . '/../terminal_helper.php';
 
 $settingsSection = isset($_GET['s']) && is_string($_GET['s']) ? preg_replace('/[^a-z]/', '', $_GET['s']) : '';
-$settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system'];
+$settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system', 'terminal'];
 if (!in_array($settingsSection, $settingsSectionAllowed, true)) {
     $settingsSection = '';
 }
@@ -26,6 +27,7 @@ $settingsSectionTitles = [
     'activation' => 'Software activation',
     'cashout' => 'Month-end cashout',
     'system' => 'System management',
+    'terminal' => 'POS terminal',
 ];
 ?>
 
@@ -398,6 +400,16 @@ $settingsSectionTitles = [
                                 </div>
                                 <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-emerald-900">Month-end cashout</h3>
                                 <p class="text-sm text-gray-500">Report download and transaction cleanup</p>
+                            </a>
+                            <a href="settings?s=terminal" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-desktop text-indigo-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Terminal</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-indigo-900">POS terminal</h3>
+                                <p class="text-sm text-gray-500">Name this computer for sales reports</p>
                             </a>
                             <a href="settings?s=system" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
                                 <div class="flex items-start justify-between mb-3">
@@ -986,7 +998,8 @@ $settingsSectionTitles = [
                             });
                         });
                         const skipStockChecksCheckbox = document.getElementById('skip_stock_checks');
-                        skipStockChecksCheckbox.checked = <?php echo $skip_stock_checks; ?>;
+                        if (skipStockChecksCheckbox) {
+                        skipStockChecksCheckbox.checked = <?php echo (int) $skip_stock_checks; ?> === 1;
                         skipStockChecksCheckbox.addEventListener('change', function() {
                             const skipStockChecks = this.checked ? 1 : 0;
                             fetch('../update_display_setting.php', {
@@ -1010,6 +1023,7 @@ $settingsSectionTitles = [
                                 skipStockChecksCheckbox.checked = !skipStockChecksCheckbox.checked;
                             });
                         });
+                        }
 
                         document.getElementById('saveGratuityPercentBtn').addEventListener('click', function() {
                             let gp = parseFloat(document.getElementById('gratuity_percent_admin').value);
@@ -1086,7 +1100,6 @@ $settingsSectionTitles = [
                                 else showAlert('error', 'Error', data.error || 'Failed to save');
                             })
                             .catch(function() { showAlert('error', 'Error', 'Failed to save'); });
-                        });
                         });
 
                         const useQzTrayCheckbox = document.getElementById('use_qz_tray');
@@ -1450,6 +1463,103 @@ $settingsSectionTitles = [
                         });
                     </script>
                 </div>
+                <?php endif; ?>
+
+                <?php if ($settingsSection === 'terminal'):
+                    $posDbTerminal = new PDO('sqlite:../pos.db');
+                    $posDbTerminal->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    ensureTerminalSchema($posDbTerminal);
+                    $knownTerminals = getAllTerminals($posDbTerminal);
+                    $useQzForTerminal = 0;
+                    try {
+                        $qzRow = $posDbTerminal->query('SELECT use_qz_tray FROM product_settings LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+                        $useQzForTerminal = (int) ($qzRow['use_qz_tray'] ?? 0);
+                    } catch (PDOException $e) {
+                    }
+                ?>
+                <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4 max-w-3xl">
+                    <h2 class="text-xl font-semibold mb-2">POS Terminal</h2>
+                    <p class="text-sm text-gray-600 mb-6">Set a friendly name for this computer (e.g. Computer 1). Sales from this terminal will appear under that name in reports.</p>
+
+                    <div class="space-y-4 mb-8">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Detected MAC / device ID</label>
+                            <input type="text" id="terminalMacDisplay" readonly class="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 font-mono text-sm" placeholder="Detecting...">
+                            <p class="text-xs text-gray-500 mt-1"><?php echo $useQzForTerminal ? 'Uses QZ Tray when running for accurate MAC address.' : 'Enable QZ Tray in Display settings for MAC detection; otherwise a device ID is used.'; ?></p>
+                        </div>
+                        <div>
+                            <label for="terminalNameInput" class="block text-sm font-medium text-gray-700 mb-1">Terminal name</label>
+                            <input type="text" id="terminalNameInput" maxlength="80" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500" placeholder="e.g. Computer 1">
+                        </div>
+                        <button type="button" id="saveTerminalSettingsBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-5 rounded-lg">Save terminal name</button>
+                        <p id="terminalSettingsMessage" class="text-sm hidden"></p>
+                    </div>
+
+                    <?php if (!empty($knownTerminals)): ?>
+                    <h3 class="text-lg font-semibold mb-3">All registered terminals</h3>
+                    <div class="overflow-x-auto border border-gray-200 rounded-lg">
+                        <table class="min-w-full text-sm">
+                            <thead class="bg-gray-50 text-left">
+                                <tr>
+                                    <th class="px-4 py-2 font-medium text-gray-600">Name</th>
+                                    <th class="px-4 py-2 font-medium text-gray-600">MAC / ID</th>
+                                    <th class="px-4 py-2 font-medium text-gray-600">Last seen</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($knownTerminals as $term): ?>
+                                <tr class="border-t border-gray-100">
+                                    <td class="px-4 py-2"><?= htmlspecialchars($term['terminal_name'] !== '' ? $term['terminal_name'] : 'Unnamed') ?></td>
+                                    <td class="px-4 py-2 font-mono text-xs"><?= htmlspecialchars($term['mac_address']) ?></td>
+                                    <td class="px-4 py-2 text-gray-500"><?= htmlspecialchars($term['last_seen_at'] ?? '') ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <?php if ($useQzForTerminal): ?><script src="../receipt/js/qz-tray.js"></script><?php endif; ?>
+                <script>window.TERMINAL_API_BASE = '../';</script>
+                <script src="../terminal.js"></script>
+                <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    var macInput = document.getElementById('terminalMacDisplay');
+                    var nameInput = document.getElementById('terminalNameInput');
+                    var msg = document.getElementById('terminalSettingsMessage');
+                    var saveBtn = document.getElementById('saveTerminalSettingsBtn');
+
+                    if (typeof getTerminalInfo !== 'function') return;
+
+                    getTerminalInfo().then(function(info) {
+                        if (macInput) macInput.value = info.mac || '';
+                        if (nameInput && info.name) nameInput.value = info.name;
+                    });
+
+                    if (saveBtn) {
+                        saveBtn.addEventListener('click', function() {
+                            var name = (nameInput && nameInput.value) ? nameInput.value.trim() : '';
+                            if (!name) {
+                                msg.textContent = 'Please enter a terminal name.';
+                                msg.className = 'text-sm text-red-600';
+                                msg.classList.remove('hidden');
+                                return;
+                            }
+                            saveTerminalSettings(name).then(function(res) {
+                                if (res && res.success) {
+                                    msg.textContent = 'Terminal name saved.';
+                                    msg.className = 'text-sm text-green-600';
+                                    setTimeout(function() { window.location.reload(); }, 800);
+                                } else {
+                                    msg.textContent = (res && res.message) ? res.message : 'Could not save.';
+                                    msg.className = 'text-sm text-red-600';
+                                }
+                                msg.classList.remove('hidden');
+                            });
+                        });
+                    }
+                });
+                </script>
                 <?php endif; ?>
 
                 <?php if ($settingsSection === 'system'): ?>
@@ -1838,9 +1948,8 @@ $settingsSectionTitles = [
                     // Enable foreign key support for SQLite
                     $db->exec('PRAGMA foreign_keys = OFF');
                     
-                    // All transactional tables from pos.db.sql (not products / product_settings / users)
-                    posDbDeleteAllFromTables($db, posDbTransactionTables());
-                    posDbResetSqliteSequences($db, posDbTransactionTables());
+                    // All transactional tables (not products / product_settings / users)
+                    posDbResetAllTransactions($db);
 
                     // Re-enable foreign key support
                     $db->exec('PRAGMA foreign_keys = ON');
@@ -2088,8 +2197,8 @@ $settingsSectionTitles = [
                         $preserveCreditorsSql = "DELETE FROM creditors WHERE id NOT IN ({$placeholders})";
                         $preserveCreditorStmt = $db->prepare($preserveCreditorsSql);
                         
-                        // Clear all pos.db.sql transaction tables except creditors (trimmed next)
-                        posDbDeleteAllFromTables($db, posDbTransactionTablesWithoutCreditors());
+                        // Clear all pos.db transaction tables except creditors (trimmed next)
+                        posDbDeleteAllFromTables($db, posDbTransactionTablesWithoutCreditors($db));
                         
                         // Execute preserve creditors statement
                         $preserveCreditorStmt->execute($unpaidCreditorIds);
@@ -2127,13 +2236,12 @@ $settingsSectionTitles = [
                             ]);
                         }
 
-                        posDbResetSqliteSequences($db, posDbTransactionTables());
+                        posDbResetSqliteSequences($db, posDbAllClearableTables($db));
                         posDbResequenceAfterExplicitInserts($db, 'credit_sales');
                         posDbResequenceAfterExplicitInserts($db, 'credit_sale_items');
                         posDbResequenceAfterExplicitInserts($db, 'creditors');
                     } else {
-                        posDbDeleteAllFromTables($db, posDbTransactionTables());
-                        posDbResetSqliteSequences($db, posDbTransactionTables());
+                        posDbResetAllTransactions($db);
                     }
                     
                     // Commit the transaction

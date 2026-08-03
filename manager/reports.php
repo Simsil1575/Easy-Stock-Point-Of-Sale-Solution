@@ -47,49 +47,32 @@ try {
 }
 
 // Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../terminal_helper.php';
+ensureTerminalSchema($db);
 
-// If closing time is after midnight (e.g., 2:00 AM), we need to consider transactions
-// that happened after midnight but before closing time as part of the previous day
-$isAfterMidnight = $closingHour < 12;
-
-// Prepare date calculation snippet for SQL
-$dateSql = "
-    CASE 
-        WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-        THEN date(datetime(created_at, '-1 day'))
-        ELSE date(created_at)
-    END AS business_date
-";
+$isAfterMidnight = bdIsOvernightClosing($closingTime);
+$bdCaseCreated = bdBusinessDateCaseSql('created_at', $closingTime, $isAfterMidnight);
+$bdCasePayment = bdBusinessDateCaseSql('payment_date', $closingTime, $isAfterMidnight);
+$bdCaseOCreated = bdBusinessDateCaseSql('o.created_at', $closingTime, $isAfterMidnight);
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePayment = bdSingleDayWhereSql('p.payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereEPayment = bdSingleDayWhereSql('e.payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCsCreated = bdSingleDayWhereSql('cs.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereTCreated = bdSingleDayWhereSql('t.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePaymentDate = bdSingleDayWhereSql('payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$dateSql = $bdCaseCreated . ' AS business_date';
 
 // Fetch distinct dates where transactions occurred, considering business closing time
 $distinctDatesQuery = $db->prepare("
     SELECT DISTINCT business_date
     FROM (
-        SELECT
-            CASE 
-                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(created_at, '-1 day'))
-                ELSE date(created_at)
-            END AS business_date
-        FROM orders
+        SELECT $bdCaseCreated AS business_date FROM orders
         UNION ALL
-        SELECT
-            CASE 
-                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(created_at, '-1 day'))
-                ELSE date(created_at)
-            END AS business_date
-        FROM credit_sales
+        SELECT $bdCaseCreated AS business_date FROM credit_sales
         UNION ALL
-        SELECT
-            CASE 
-                WHEN strftime('%H:%M', payment_date) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(payment_date, '-1 day'))
-                ELSE date(payment_date)
-            END AS business_date
-        FROM payments
+        SELECT $bdCasePayment AS business_date FROM payments
     )
     ORDER BY business_date DESC
 ");
@@ -109,12 +92,7 @@ if (!in_array($yesterday, $distinctDates)) {
     array_unshift($distinctDates, $yesterday); // Add yesterday at the beginning of the array
 }
 
-// Determine which date to show by default based on current time vs closing time
-$currentTime = date('H:i');
-
-// If current time is before closing time, show yesterday's data
-// If current time is after closing time, show today's data
-$defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
+$defaultDate = bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 
 // Handle date selection
 $selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
@@ -128,10 +106,7 @@ $cashSalesQuery = $db->prepare("
         o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
     ), 0) 
     FROM orders o
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
 ");
 $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
 $cashSalesQuery->bindParam(':nextDay', $nextDay);
@@ -143,11 +118,7 @@ $cumulativeCashSalesQuery = $db->prepare("
     SELECT SUM(total) FROM (
         SELECT 
             o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0) as total, 
-        CASE 
-            WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-            THEN date(datetime(o.created_at, '-1 day'))
-            ELSE date(o.created_at)
-        END AS business_date
+        $bdCaseOCreated AS business_date
         FROM orders o
     ) 
     WHERE business_date <= :selectedDate
@@ -176,10 +147,7 @@ $eftSalesQuery = $db->prepare("
     SELECT SUM(e.amount) 
     FROM eft_payments e 
     JOIN orders o ON e.order_id = o.id 
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
 ");
 $eftSalesQuery->bindParam(':selectedDate', $selectedDate);
 $eftSalesQuery->bindParam(':nextDay', $nextDay);
@@ -191,10 +159,7 @@ $eftCreditSalesQuery = $db->prepare("
     SELECT COALESCE(SUM(e.amount), 0)
     FROM eft_payments e
     JOIN credit_sales cs ON e.order_id = cs.id
-    WHERE (
-        (DATE(e.payment_date) = :selectedDate AND strftime('%H:%M', e.payment_date) >= '$closingTime') OR
-        (DATE(e.payment_date) = :nextDay AND strftime('%H:%M', e.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereEPayment)
 ");
 $eftCreditSalesQuery->bindParam(':selectedDate', $selectedDate);
 $eftCreditSalesQuery->bindParam(':nextDay', $nextDay);
@@ -221,10 +186,7 @@ $creditSalesQuery = $db->prepare("
         ELSE 0 
     END) as total_partial_paid
     FROM credit_sales 
-    WHERE (
-        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= '$closingTime') OR
-        (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereCreated)
 ");
 $creditSalesQuery->bindParam(':selectedDate', $selectedDate);
 $creditSalesQuery->bindParam(':nextDay', $nextDay);
@@ -255,10 +217,7 @@ $paidCreditQuery = $db->prepare("
         COUNT(DISTINCT cs.id) as total_transactions
     FROM payments p
     JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE (
-        (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-        (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    ) AND cs.payment_status IN ('paid', 'partial', 'eft', 'paid_mixed')
+    WHERE ($bdWherePayment) AND cs.payment_status IN ('paid', 'partial', 'eft', 'paid_mixed')
 ");
 $paidCreditQuery->bindParam(':selectedDate', $selectedDate);
 $paidCreditQuery->bindParam(':nextDay', $nextDay);
@@ -316,10 +275,7 @@ $topProductsQuery = $db->prepare("
         JOIN credit_sales cs ON credit_sale_items.sale_id = cs.id
     ) t
     LEFT JOIN products p ON t.product_name = p.name
-    WHERE (
-        (DATE(t.created_at) = :selectedDate AND strftime('%H:%M', t.created_at) >= '$closingTime') OR
-        (DATE(t.created_at) = :nextDay AND strftime('%H:%M', t.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereTCreated)
     GROUP BY t.product_name
     ORDER BY total_qty DESC
 ");
@@ -354,7 +310,7 @@ $ordersQuery = $db->prepare("
         INNER JOIN laybye_accounts la ON la.id = lp.laybye_id
         LEFT JOIN creditors cr ON cr.id = la.creditor_id
     ), order_splits AS (
-        SELECT o.id, o.total, o.created_at, o.cashier_id, op.products, os.eft_sum, os.provider_name,
+        SELECT o.id, o.total, o.created_at, o.cashier_id, o.terminal_name, o.terminal_mac, op.products, os.eft_sum, os.provider_name,
                MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
                MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
                oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips,
@@ -365,19 +321,16 @@ $ordersQuery = $db->prepare("
         LEFT JOIN order_products op ON op.order_id = o.id
         LEFT JOIN order_tab_info oti ON oti.order_id = o.id
         LEFT JOIN order_laybye olb ON olb.order_id = o.id
-        WHERE (
-            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWhereOCreated)
         GROUP BY o.id
     )
     SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
-           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name, terminal_name, terminal_mac
     FROM order_splits
     WHERE cash_amount > 0
     UNION ALL
     SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
-           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name, terminal_name, terminal_mac
     FROM order_splits
     WHERE eft_amount > 0
     ORDER BY created_at DESC
@@ -408,25 +361,23 @@ $creditQuery = $db->prepare("
         NULL as laybye_id,
         NULL as laybye_reference,
         NULL as laybye_payment_kind,
-        NULL as laybye_creditor_name
+        NULL as laybye_creditor_name,
+        cs.terminal_name,
+        cs.terminal_mac
     FROM credit_sales cs
     JOIN credit_sale_items csi ON cs.id = csi.sale_id
     LEFT JOIN creditors cr ON cs.creditor_id = cr.id
     WHERE (
         -- Show unpaid/partial credit sales on their original creation date
         (
-            (DATE(cs.created_at) = :selectedDate AND strftime('%H:%M', cs.created_at) >= '$closingTime') OR
-            (DATE(cs.created_at) = :nextDay AND strftime('%H:%M', cs.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        ) AND cs.payment_status IN ('unpaid', 'partial')
+            ($bdWhereCsCreated) AND cs.payment_status IN ('unpaid', 'partial')
+        )
     )
     OR (
         -- Show paid/eft credit sales only on their payment date
         cs.payment_status IN ('paid', 'eft', 'partial', 'paid_mixed') AND cs.id IN (
             SELECT sale_id FROM payments 
-            WHERE (
-                (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
-                (DATE(payment_date) = :nextDay AND strftime('%H:%M', payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-            )
+            WHERE ($bdWherePaymentDate)
         )
     )
     GROUP BY cs.id
@@ -467,11 +418,7 @@ $dailyBreakdownQuery = $db->prepare("
     FROM (
         -- Get all order transactions split into cash and EFT components
         SELECT 
-            CASE 
-                WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(o.created_at, '-1 day'))
-                ELSE date(o.created_at)
-            END AS business_date, 
+            $bdCaseOCreated AS business_date, 
             o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0) as amount,
             'cash' as source,
             'income' as transaction_type
@@ -481,11 +428,7 @@ $dailyBreakdownQuery = $db->prepare("
         UNION ALL
         
         SELECT 
-            CASE 
-                WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(o.created_at, '-1 day'))
-                ELSE date(o.created_at)
-            END AS business_date, 
+            $bdCaseOCreated AS business_date, 
             COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0) as amount,
             'eft' as source,
             'income' as transaction_type
@@ -496,11 +439,7 @@ $dailyBreakdownQuery = $db->prepare("
         
         -- Include only unpaid/partial credit sales on their creation date
         SELECT 
-            CASE 
-                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(created_at, '-1 day'))
-                ELSE date(created_at)
-            END AS business_date, 
+            $bdCaseCreated AS business_date, 
             total_amount as amount, 
             CASE 
                 WHEN payment_status = 'unpaid' THEN 'credit_unpaid'
@@ -515,11 +454,7 @@ $dailyBreakdownQuery = $db->prepare("
         
         -- Include credit payments on payment date based on payment type
         SELECT 
-            CASE 
-                WHEN strftime('%H:%M', p.payment_date) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(p.payment_date, '-1 day'))
-                ELSE date(p.payment_date)
-            END AS business_date,
+            $bdCasePayment AS business_date,
             p.amount as amount,
             CASE
                 WHEN EXISTS (
@@ -1265,6 +1200,9 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 </svg>
                             </div>
                         </th>
+                        <th class="py-2 px-2 text-center w-24">
+                            <span class="text-gray-700">Terminal</span>
+                        </th>
                         <th class="py-2 px-2 text-left cursor-pointer w-16" onclick="sortTable(6)">
                             <div class="flex items-center">
                                 <span class="text-gray-700">Action</span>
@@ -1360,6 +1298,9 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                             </td>
                             <td class="py-1 px-2 text-sm text-gray-500 text-center" data-label="Cashier">
                                 <?= htmlspecialchars($row['cashier_id'] ?? '-') ?>
+                            </td>
+                            <td class="py-1 px-2 text-sm text-gray-500 text-center" data-label="Terminal">
+                                <?= htmlspecialchars(formatTerminalLabel($row['terminal_name'] ?? null, $row['terminal_mac'] ?? null)) ?>
                             </td>
                             <td class="py-4 px-6" data-label="Action">
                                 <div class="flex flex-wrap items-center gap-2 justify-center">

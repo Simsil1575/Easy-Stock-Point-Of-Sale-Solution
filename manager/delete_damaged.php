@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__ . '/../cashier_helper.php';
+requireApiSession(['admin', 'manager']);
+
 $db = new PDO('sqlite:../pos.db');
 
 if (isset($_POST['id'])) {

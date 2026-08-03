@@ -162,6 +162,9 @@ if (!$businessInfo) {
     <?php $kbAssetPrefix = '../'; include __DIR__ . '/../includes/kioskboard_payment.php'; ?>
     <!-- Load sendToPrinter function from receipt.php -->
     <script src="../receipt.php?js=true"></script>
+    <?php if (!empty($use_qz_tray)): ?><script src="../receipt/js/qz-tray.js"></script><?php endif; ?>
+    <script>window.TERMINAL_API_BASE = '../';</script>
+    <script src="../terminal.js"></script>
     <meta name="google" content="notranslate">
     <link rel="icon" href="../favicon.ico" type="image/png">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
@@ -2005,6 +2008,20 @@ if (!$businessInfo) {
             var useQzTray = <?php echo $use_qz_tray ? 'true' : 'false'; ?>;
         }
 
+        function postJsonWithTerminal(url, payload) {
+            return attachTerminalToPayload(Object.assign({}, payload)).then(function(enriched) {
+                return fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(enriched),
+                }).then(function(response) { return response.json(); });
+            });
+        }
+
+        if (typeof getTerminalMac === 'function') {
+            getTerminalMac().catch(function() {});
+        }
+
         // Get available quantity from product element (data attribute or "Available:" text). Used for stock checks even when quantity is hidden.
         function getAvailableQuantity(productElement) {
             if (!productElement) return null;
@@ -3052,14 +3069,7 @@ if (!$businessInfo) {
                         if (!confirmRes.isConfirmed) return;
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
                         // Process the e-wallet payment AFTER confirmation
-                        fetch('../process_order.php', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify(saleData),
-                        })
-                        .then(response => response.json())
+                        postJsonWithTerminal('../process_order.php', saleData)
                         .then(result => {
                             if (result.success) {
                                 saleData.order_id = result.order_id;
@@ -3212,12 +3222,7 @@ if (!$businessInfo) {
                     if (!ok.isConfirmed) return;
                     const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
 
-                    fetch('../process_order.php', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(saleData)
-                    })
-                    .then(r => r.json())
+                    postJsonWithTerminal('../process_order.php', saleData)
                     .then(result => {
                         if (result.success) {
                             saleData.order_id = result.order_id;
@@ -3801,14 +3806,7 @@ if (!$businessInfo) {
                     }).then(ok => {
                         if (!ok.isConfirmed) return;
                         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
-                        fetch('../process_credit.php', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify(saleData),
-                        })
-                        .then(response => response.json())
+                        postJsonWithTerminal('../process_credit.php', saleData)
                         .then(result => {
                             if (result.success) {
                                 saleData.sale_id = result.sale_id;
@@ -3984,14 +3982,7 @@ if (!$businessInfo) {
         }
         const printReceipt = document.getElementById('printReceiptCheckbox')?.checked;
 
-        fetch('../process_order.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(data),
-        })
-        .then(response => response.json())
+        postJsonWithTerminal('../process_order.php', data)
         .then(result => {
             if (result.success) {
                 data.order_id = result.order_id;
@@ -4539,20 +4530,13 @@ if (!$businessInfo) {
                 const sendToKitchen = document.getElementById('sendToKitchenCheckbox')?.checked && kitchenPrinterConfigured;
                 
                 // Process the tab sale using process_tab.php
-                fetch('../process_tab.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
+                postJsonWithTerminal('../process_tab.php', {
                         table_id: tableId,
                         table_name: tableName,
                         items: saleData.items,
                         total: saleData.total,
                         cashier_username: saleData.cashier_username
-                    }),
-                })
-                .then(response => response.json())
+                    })
                 .then(result => {
                     if (result.success) {
                         saleData.tab_id = result.tab_id;

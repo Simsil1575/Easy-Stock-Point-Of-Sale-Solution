@@ -15,9 +15,11 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 require_once '../activation_helper.php';
 
 require_once __DIR__ . '/../manager_pin_helper.php';
+require_once __DIR__ . '/../terminal_helper.php';
+require_once __DIR__ . '/../pos_reset_helper.php';
 
 $settingsSection = isset($_GET['s']) && is_string($_GET['s']) ? preg_replace('/[^a-z]/', '', $_GET['s']) : '';
-$settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system'];
+$settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system', 'terminal'];
 if (!in_array($settingsSection, $settingsSectionAllowed, true)) {
     $settingsSection = '';
 }
@@ -27,6 +29,7 @@ $settingsSectionTitles = [
     'activation' => 'Software activation',
     'cashout' => 'Month-end cashout',
     'system' => 'System management',
+    'terminal' => 'POS terminal',
 ];
 
 $manager_pin_configured = false;
@@ -455,6 +458,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                 </div>
                                 <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-emerald-900">Month-end cashout</h3>
                                 <p class="text-sm text-gray-500">Report download and transaction cleanup</p>
+                            </a>
+                            <a href="settings?s=terminal" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-desktop text-indigo-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Terminal</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-indigo-900">POS terminal</h3>
+                                <p class="text-sm text-gray-500">Name this computer for sales reports</p>
                             </a>
                             <a href="settings?s=system" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
                                 <div class="flex items-start justify-between mb-3">
@@ -1134,6 +1147,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                 </div>
                 <?php endif; ?>
 
+                <?php if ($settingsSection === 'terminal'):
+                    $posDbTerminal = new PDO('sqlite:../pos.db');
+                    $posDbTerminal->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    ensureTerminalSchema($posDbTerminal);
+                    $knownTerminals = getAllTerminals($posDbTerminal);
+                    $useQzForTerminal = 0;
+                    try {
+                        $qzRow = $posDbTerminal->query('SELECT use_qz_tray FROM product_settings LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+                        $useQzForTerminal = (int) ($qzRow['use_qz_tray'] ?? 0);
+                    } catch (PDOException $e) {
+                    }
+                ?>
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-8 max-w-3xl">
+                    <h2 class="text-xl font-semibold mb-2">POS Terminal</h2>
+                    <p class="text-sm text-gray-600 mb-6">Set a friendly name for this computer (e.g. Computer 1). Sales from this terminal will appear under that name in reports.</p>
+                    <div class="space-y-4 mb-8">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Detected MAC / device ID</label>
+                            <input type="text" id="terminalMacDisplay" readonly class="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 font-mono text-sm" placeholder="Detecting...">
+                        </div>
+                        <div>
+                            <label for="terminalNameInput" class="block text-sm font-medium text-gray-700 mb-1">Terminal name</label>
+                            <input type="text" id="terminalNameInput" maxlength="80" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500" placeholder="e.g. Computer 1">
+                        </div>
+                        <button type="button" id="saveTerminalSettingsBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-5 rounded-lg">Save terminal name</button>
+                        <p id="terminalSettingsMessage" class="text-sm hidden"></p>
+                    </div>
+                    <?php if (!empty($knownTerminals)): ?>
+                    <h3 class="text-lg font-semibold mb-3">All registered terminals</h3>
+                    <div class="overflow-x-auto border border-gray-200 rounded-lg">
+                        <table class="min-w-full text-sm">
+                            <thead class="bg-gray-50 text-left"><tr><th class="px-4 py-2">Name</th><th class="px-4 py-2">MAC / ID</th><th class="px-4 py-2">Last seen</th></tr></thead>
+                            <tbody>
+                                <?php foreach ($knownTerminals as $term): ?>
+                                <tr class="border-t"><td class="px-4 py-2"><?= htmlspecialchars($term['terminal_name'] !== '' ? $term['terminal_name'] : 'Unnamed') ?></td><td class="px-4 py-2 font-mono text-xs"><?= htmlspecialchars($term['mac_address']) ?></td><td class="px-4 py-2 text-gray-500"><?= htmlspecialchars($term['last_seen_at'] ?? '') ?></td></tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <?php if ($useQzForTerminal): ?><script src="../receipt/js/qz-tray.js"></script><?php endif; ?>
+                <script>window.TERMINAL_API_BASE = '../';</script>
+                <script src="../terminal.js"></script>
+                <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    var macInput = document.getElementById('terminalMacDisplay');
+                    var nameInput = document.getElementById('terminalNameInput');
+                    var msg = document.getElementById('terminalSettingsMessage');
+                    var saveBtn = document.getElementById('saveTerminalSettingsBtn');
+                    if (typeof getTerminalInfo !== 'function') return;
+                    getTerminalInfo().then(function(info) {
+                        if (macInput) macInput.value = info.mac || '';
+                        if (nameInput && info.name) nameInput.value = info.name;
+                    });
+                    if (saveBtn) saveBtn.addEventListener('click', function() {
+                        var name = (nameInput && nameInput.value) ? nameInput.value.trim() : '';
+                        if (!name) { msg.textContent = 'Please enter a terminal name.'; msg.className = 'text-sm text-red-600'; msg.classList.remove('hidden'); return; }
+                        saveTerminalSettings(name).then(function(res) {
+                            msg.textContent = (res && res.success) ? 'Terminal name saved.' : ((res && res.message) ? res.message : 'Could not save.');
+                            msg.className = 'text-sm ' + ((res && res.success) ? 'text-green-600' : 'text-red-600');
+                            msg.classList.remove('hidden');
+                            if (res && res.success) setTimeout(function() { window.location.reload(); }, 800);
+                        });
+                    });
+                });
+                </script>
+                <?php endif; ?>
+
                 <?php if ($settingsSection === 'system'): ?>
                 <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-8">
                     <div class="flex items-center gap-3 mb-4">
@@ -1259,51 +1341,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
             <?php
             if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['delete_all'])) {
                 try {
-                    // Database connection
                     $db = new PDO('sqlite:../pos.db');
-                    
-                    // Enable foreign key support for SQLite
                     $db->exec('PRAGMA foreign_keys = OFF');
-                    
-                    // Delete all records from all transaction and log tables
-                    $db->exec("DELETE FROM orders");
-                    $db->exec("DELETE FROM order_items");
-                    
-                    // Add credit-related table deletions
-                    $db->exec("DELETE FROM credit_sale_items");
-                    $db->exec("DELETE FROM credit_sales");
-                    $db->exec("DELETE FROM payments");
-                    $db->exec("DELETE FROM payment_logs");
-                    $db->exec("DELETE FROM cash_transactions"); 
-                    $db->exec("DELETE FROM credit_book");
-                    $db->exec("DELETE FROM credit_returns");
-                    $db->exec("DELETE FROM stock_changes");
-                    $db->exec("DELETE FROM damaged_goods");
-                    $db->exec("DELETE FROM creditors");
-                    $db->exec("DELETE FROM eft_payments");
-                    $db->exec("DELETE FROM mixed_payments");
-                    $db->exec("DELETE FROM opening_stock");
-                    $db->exec("DELETE FROM closing_stock");
-                    $db->exec("DELETE FROM daily_stock_summary");
-                    $db->exec("DELETE FROM cash_up_summary");
-                    $db->exec("DELETE FROM user_log");
-                    
-                    // Delete tab-related tables
-                    $db->exec("DELETE FROM tab_item_payments");
-                    $db->exec("DELETE FROM tab_items");
-                    $db->exec("DELETE FROM tab_payments");
-                    $db->exec("DELETE FROM tabs");
-                    
-                    // Delete refund and void transaction tables
-                    $db->exec("DELETE FROM refund_items");
-                    $db->exec("DELETE FROM refunds");
-                    $db->exec("DELETE FROM void_transactions");
-
-                    
-                    // Re-enable foreign key support
+                    posDbResetAllTransactions($db);
                     $db->exec('PRAGMA foreign_keys = ON');
                     
-                    // Show success message with modal
                     echo "<script>
                         showAlert('success', 'Success', 'All records have been deleted successfully.');
                     </script>";
@@ -1545,36 +1587,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                         $preserveCreditorsSql = "DELETE FROM creditors WHERE id NOT IN ({$placeholders})";
                         $preserveCreditorStmt = $db->prepare($preserveCreditorsSql);
                         
-                        // Clear all tables in a batch for efficiency
-                        $db->exec("DELETE FROM orders");
-                        $db->exec("DELETE FROM order_items");
-                        $db->exec("DELETE FROM credit_sale_items");
-                        $db->exec("DELETE FROM credit_sales");
-                        $db->exec("DELETE FROM payments");
-                        $db->exec("DELETE FROM payment_logs");
-                        $db->exec("DELETE FROM cash_transactions"); 
-                        $db->exec("DELETE FROM credit_book");
-                        $db->exec("DELETE FROM credit_returns");
-                        $db->exec("DELETE FROM stock_changes");
-                        $db->exec("DELETE FROM damaged_goods");
-                        $db->exec("DELETE FROM eft_payments");
-                        $db->exec("DELETE FROM mixed_payments");
-                        $db->exec("DELETE FROM opening_stock");
-                        $db->exec("DELETE FROM closing_stock");
-                        $db->exec("DELETE FROM daily_stock_summary");
-                        $db->exec("DELETE FROM cash_up_summary");
-                        $db->exec("DELETE FROM user_log");
-                        
-                        // Delete tab-related tables
-                        $db->exec("DELETE FROM tab_item_payments");
-                        $db->exec("DELETE FROM tab_items");
-                        $db->exec("DELETE FROM tab_payments");
-                        $db->exec("DELETE FROM tabs");
-                        
-                        // Delete refund and void transaction tables
-                        $db->exec("DELETE FROM refund_items");
-                        $db->exec("DELETE FROM refunds");
-                        $db->exec("DELETE FROM void_transactions");
+                        posDbDeleteAllFromTables($db, posDbTransactionTablesWithoutCreditors($db));
                         
                         // Execute preserve creditors statement
                         $preserveCreditorStmt->execute($unpaidCreditorIds);
@@ -1611,21 +1624,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                 $item['price']
                             ]);
                         }
-                    } else {
-                        // If no unpaid creditors, delete all records in one go
-                        $tables = [
-                            "orders", "order_items", "credit_sale_items", "credit_sales", 
-                            "payments", "payment_logs", "cash_transactions", "credit_book", 
-                            "credit_returns", "stock_changes", "damaged_goods", "creditors", 
-                            "eft_payments", "mixed_payments", "opening_stock", "closing_stock", 
-                            "daily_stock_summary", "cash_up_summary", "user_log",
-                            "tab_item_payments", "tab_items", "tab_payments", "tabs",
-                            "refund_items", "refunds", "void_transactions"
-                        ];
                         
-                        foreach ($tables as $table) {
-                            $db->exec("DELETE FROM {$table}");
-                        }
+                        posDbResetSqliteSequences($db, posDbAllClearableTables($db));
+                        posDbResequenceAfterExplicitInserts($db, 'credit_sales');
+                        posDbResequenceAfterExplicitInserts($db, 'credit_sale_items');
+                        posDbResequenceAfterExplicitInserts($db, 'creditors');
+                    } else {
+                        posDbResetAllTransactions($db);
                     }
                     
                     // Commit the transaction

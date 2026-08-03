@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__ . '/cashier_helper.php';
+requireApiSession(['admin', 'manager']);
+
 // Check activation status
 $pdo = new PDO('sqlite:active.db');
 $activationStatus = $pdo->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();

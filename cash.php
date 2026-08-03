@@ -25,6 +25,9 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+require_once __DIR__ . '/terminal_helper.php';
+ensureTerminalSchema($db);
+
 // Check activation status
 $activationStatus = $pdoActive->query("SELECT COUNT(*) FROM software_keys WHERE is_used = 1")->fetchColumn();
 if ($activationStatus == 0) {
@@ -214,8 +217,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Insert transaction
         try {
-            $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$action, $amount, $description, $_SESSION['username'] ?? 'Unknown', $createdAt]);
+            $terminal = resolveTerminalFromRequest($_POST, $db);
+            $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$action, $amount, $description, $_SESSION['username'] ?? 'Unknown', $createdAt, $terminal['mac'], $terminal['name']]);
             
             if (isset($_POST['ajax'])) {
                 $id = $db->lastInsertId();

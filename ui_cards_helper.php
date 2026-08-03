@@ -129,3 +129,129 @@ function uiResetCardsToDefault(PDO $infoDb, string $scope): array
         'hidden_cleared' => $hiddenDel->rowCount(),
     ];
 }
+
+/**
+ * @return list<string>
+ */
+function uiAllCardScopes(): array
+{
+    return [
+        'admin_menu',
+        'manager_menu',
+        'admin_reports',
+        'manager_reports',
+        'cashier_menu',
+        'cashier_reports',
+    ];
+}
+
+function uiBaseScope(string $scope): string
+{
+    $pos = strpos($scope, ':');
+    return $pos === false ? $scope : substr($scope, 0, $pos);
+}
+
+function uiPersonalScope(string $baseScope, string $userKey): string
+{
+    $userKey = trim($userKey);
+    if ($userKey === '') {
+        return $baseScope;
+    }
+    $safeKey = preg_replace('/[^a-zA-Z0-9_.@-]/', '_', $userKey);
+    return $baseScope . ':' . $safeKey;
+}
+
+/**
+ * @return array{allow_menu: bool, allow_transactions: bool, allow_reports: bool, allow_settings: bool}
+ */
+function uiGetCashierPermissions(PDO $infoDb): array
+{
+    $defaults = [
+        'allow_menu' => true,
+        'allow_transactions' => true,
+        'allow_reports' => true,
+        'allow_settings' => true,
+    ];
+    try {
+        ensureUiCardsSchema($infoDb);
+        $row = $infoDb->query('SELECT * FROM cashier_permissions LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return $defaults;
+        }
+        return [
+            'allow_menu' => array_key_exists('allow_menu', $row) ? (bool) $row['allow_menu'] : true,
+            'allow_transactions' => array_key_exists('allow_transactions', $row) ? (bool) $row['allow_transactions'] : true,
+            'allow_reports' => array_key_exists('allow_reports', $row) ? (bool) $row['allow_reports'] : true,
+            'allow_settings' => array_key_exists('allow_settings', $row) ? (bool) $row['allow_settings'] : true,
+        ];
+    } catch (Throwable $e) {
+        return $defaults;
+    }
+}
+
+function uiCanCustomizeScope(string $role, string $scope, PDO $infoDb, string $userId): bool
+{
+    $role = strtolower(trim($role));
+    $userId = trim($userId);
+    $baseScope = uiBaseScope($scope);
+    if (!in_array($baseScope, uiAllCardScopes(), true)) {
+        return false;
+    }
+
+    $privileged = in_array($role, ['admin', 'manager'], true);
+    $roleScopes = [
+        'admin' => ['admin_menu', 'admin_reports', 'cashier_menu', 'cashier_reports'],
+        'manager' => ['manager_menu', 'manager_reports', 'cashier_menu', 'cashier_reports'],
+        'cashier' => ['cashier_menu', 'cashier_reports'],
+        'waitress' => ['cashier_menu', 'cashier_reports'],
+    ];
+
+    if (!isset($roleScopes[$role]) || !in_array($baseScope, $roleScopes[$role], true)) {
+        return false;
+    }
+
+    if (in_array($baseScope, ['cashier_menu', 'cashier_reports'], true)) {
+        if ($scope !== uiPersonalScope($baseScope, $userId)) {
+            return false;
+        }
+        if ($privileged) {
+            return true;
+        }
+        if (!in_array($role, ['cashier', 'waitress'], true)) {
+            return false;
+        }
+        $perms = uiGetCashierPermissions($infoDb);
+        if ($baseScope === 'cashier_menu') {
+            return !empty($perms['allow_menu']);
+        }
+        return !empty($perms['allow_reports']);
+    }
+
+    return $scope === $baseScope;
+}
+
+/**
+ * Shared page bootstrap for card hide/order/customize UI.
+ *
+ * @return array{
+ *   uiCardScope: string,
+ *   hiddenUiCards: list<string>,
+ *   orderedUiCards: list<string>,
+ *   showHiddenUiCards: bool,
+ *   uiCardsCustomizeMode: bool
+ * }
+ */
+function uiCardsInitPageState(PDO $infoDb, string $baseScope, string $userId, bool $personalScope = false): array
+{
+    ensureUiCardsSchema($infoDb);
+    $scope = $personalScope ? uiPersonalScope($baseScope, $userId) : $baseScope;
+    $showHiddenUiCards = isset($_GET['show_hidden']);
+
+    return [
+        'uiCardScope' => $scope,
+        'hiddenUiCards' => uiGetHiddenCards($infoDb, $scope),
+        'orderedUiCards' => uiGetCardOrder($infoDb, $scope),
+        'showHiddenUiCards' => $showHiddenUiCards,
+        'uiCardsCustomizeMode' => isset($_GET['customize']) || $showHiddenUiCards,
+    ];
+}

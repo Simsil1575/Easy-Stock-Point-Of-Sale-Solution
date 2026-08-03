@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'cashier_helper.php';
+require_once 'terminal_helper.php';
 
 date_default_timezone_set('Africa/Harare');
 
@@ -40,11 +41,13 @@ if ($expenseDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $expenseDate)) {
 try {
     $db = new PDO('sqlite:pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    ensureTerminalSchema($db);
+    $terminal = resolveTerminalFromRequest(is_array($input) ? $input : [], $db);
     $cashier = getCashierInfo();
     $createdAt = $expenseDate . ' 10:00:00';
 
-    $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES (?, ?, ?, ?, ?)");
-    $stmt->execute(['cash-out', $amount, $description, $cashier['username'], $createdAt]);
+    $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    $stmt->execute(['cash-out', $amount, $description, $cashier['username'], $createdAt, $terminal['mac'], $terminal['name']]);
 
     header('Content-Type: application/json');
     echo json_encode([

@@ -1,6 +1,6 @@
 <?php
 /**
- * Reports Center search — include with $reportsSearchInclude = 'field' | 'empty' | 'script'
+ * Reports Center search — include with $reportsSearchInclude = 'field' | 'chips' | 'empty' | 'script'
  */
 if (!isset($reportsSearchInclude)) {
     $reportsSearchInclude = 'field';
@@ -32,6 +32,14 @@ if ($reportsSearchInclude === 'field'):
     </div>
 </div>
 <?php
+elseif ($reportsSearchInclude === 'chips'):
+    $centerCategoryChips = [
+        'chipHostId' => 'reportCategoryChips',
+        'clearBtnId' => 'reportCategoryClear',
+        'setFilterFn' => 'setReportCategoryFilter',
+    ];
+    $centerCategoryChipsMode = 'markup';
+    include __DIR__ . '/center_category_chips.php';
 elseif ($reportsSearchInclude === 'empty'):
 ?>
 <div id="reportSearchEmpty" class="hidden col-span-full text-center py-10 text-gray-500">
@@ -47,54 +55,22 @@ elseif ($reportsSearchInclude === 'script'):
         display: none !important;
     }
 </style>
-<script>
-    function filterReportCards() {
-        const input = document.getElementById('reportSearchInput');
-        const clearBtn = document.getElementById('reportSearchClear');
-        const emptyState = document.getElementById('reportSearchEmpty');
-        const grid = document.getElementById('reportsGrid');
-        if (!input || !grid) return;
-
-        const query = input.value.trim().toLowerCase();
-        if (clearBtn) {
-            clearBtn.classList.toggle('hidden', query === '');
-        }
-
-        const cards = grid.querySelectorAll('.report-card');
-
-        cards.forEach(function(card) {
-            const cardId = (card.dataset.cardId || '').toLowerCase();
-            const text = (card.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-            const matches = query === '' || text.indexOf(query) !== -1 || cardId.indexOf(query) !== -1;
-            card.classList.toggle('report-search-filtered-out', !matches);
-        });
-
-        const visibleAfterFilter = Array.from(cards).filter(function(card) {
-            return !card.classList.contains('report-search-filtered-out')
-                && window.getComputedStyle(card).display !== 'none';
-        });
-
-        if (emptyState) {
-            emptyState.classList.toggle('hidden', query === '' || visibleAfterFilter.length > 0);
-        }
-    }
-
-    function clearReportSearch() {
-        const input = document.getElementById('reportSearchInput');
-        if (!input) return;
-        input.value = '';
-        filterReportCards();
-        input.focus();
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        const input = document.getElementById('reportSearchInput');
-        if (!input) return;
-        input.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                clearReportSearch();
-            }
-        });
-    });
-</script>
-<?php endif; ?>
+<?php
+    $centerCategoryChips = [
+        'gridId' => 'reportsGrid',
+        'cardSelector' => '.report-card',
+        'filteredClass' => 'report-search-filtered-out',
+        'searchInputId' => 'reportSearchInput',
+        'searchClearId' => 'reportSearchClear',
+        'emptyStateId' => 'reportSearchEmpty',
+        'chipHostId' => 'reportCategoryChips',
+        'clearBtnId' => 'reportCategoryClear',
+        'setFilterFn' => 'setReportCategoryFilter',
+        'filterFn' => 'filterReportCards',
+        'clearSearchFn' => 'clearReportSearch',
+        'chipClass' => 'report-category-chip',
+    ];
+    $centerCategoryChipsMode = 'script';
+    include __DIR__ . '/center_category_chips.php';
+endif;
+?>

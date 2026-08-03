@@ -54,12 +54,10 @@ try {
             echo json_encode(['success' => false, 'message' => 'Product not found.']);
             exit();
         }
-        $available = (int)$product['quantity'];
-        if ($quantity > $available) {
-            echo json_encode(['success' => false, 'message' => "Not enough stock. Available: $available."]);
-            exit();
-        }
-        
+        require_once __DIR__ . '/recipe_stock_helper.php';
+        configureSqlitePdo($db);
+        $allowNegative = isSkipStockChecks($db);
+
         $amount = (float)$product['price'] * $quantity;
         $paymentMethod = 'inventory';
         $description = 'Tips - ' . $product['name'] . ($quantity > 1 ? " x$quantity" : '');
@@ -74,11 +72,12 @@ try {
             $db->exec("CREATE TABLE IF NOT EXISTS tips (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL NOT NULL, payment_method TEXT NOT NULL, cashier_id TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL)");
             $stmt = $db->prepare("INSERT INTO tips (amount, payment_method, cashier_id, notes, created_at) VALUES (?, ?, ?, ?, ?)");
             $stmt->execute([$amount, $paymentMethod, $cashier['username'], $notes, $timestamp]);
-            
-            $db->prepare("UPDATE products SET quantity = quantity - ? WHERE id = ?")->execute([$quantity, $productId]);
-            
+
             $oldQty = (int)$product['quantity'];
-            $newQty = $oldQty - $quantity;
+            deductProductStockById($db, $productId, (float) $quantity, $allowNegative);
+            $newQtyRow = $db->prepare('SELECT quantity FROM products WHERE id = ?');
+            $newQtyRow->execute([$productId]);
+            $newQty = (int) $newQtyRow->fetchColumn();
             $hasStockChanges = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='stock_changes'")->fetch();
             if ($hasStockChanges) {
                 require_once __DIR__ . '/ensure_stock_changes_username.php';

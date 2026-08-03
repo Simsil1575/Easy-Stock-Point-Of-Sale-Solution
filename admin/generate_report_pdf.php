@@ -447,7 +447,8 @@ function getReportTitle($type) {
         'voids' => 'Voids Report',
         'cashier_sales' => 'Cashier Sales Report',
         'terminal_sales' => 'Terminal Sales Report',
-        'gratuity' => 'Gratuity Report',
+        'gratuity' => 'Tips Report',
+        'tips' => 'Tips Report',
         'shift' => 'Shift Report',
         'profit_loss' => 'Profit & Loss Report',
         'audit_log' => 'Audit Log Report',
@@ -483,10 +484,12 @@ switch ($reportType) {
     case 'sales':
     case 'daily_sales':
     case 'monthly_sales':
+        require_once __DIR__ . '/../sales_report_helper.php';
         // Get orders
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
+                   COALESCE(o.gratuity_amount, 0) AS gratuity_amount,
                    COALESCE(o.cashier_id, 'Unknown') as cashier_name
             FROM orders o
             WHERE ($ordersWhereClause)
@@ -549,6 +552,18 @@ switch ($reportType) {
                     ];
                 }, $itemRows);
             }
+            if (!$categoryFilterActive) {
+                if (count($order['items'] ?? []) === 0 && salesReportIsCashBackOrder($db, (int) $order['id'])) {
+                    $order['order_type'] = 'cash_back';
+                    $order['items'] = [[
+                        'product_name' => 'Cash Back',
+                        'quantity' => 1,
+                        'price' => (float) $order['total'],
+                    ]];
+                } else {
+                    salesReportAnnotateOrder($order, $itemRows);
+                }
+            }
             $filteredOrders[] = $order;
         }
         $orders = $filteredOrders;
@@ -559,6 +574,9 @@ switch ($reportType) {
             $cashTotal += $order['cash_amount'];
             $cardTotal += $order['eft_amount'];
         }
+
+        $salesBreakdown = buildSalesReportBreakdown($db, $ordersWhereClause, $startDateTime, $endDateTime);
+        $dailyBreakdown = buildSalesReportDailyBreakdown($db, $startDateTime, $endDateTime);
 
         // Get credit sales
         $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
@@ -632,10 +650,14 @@ switch ($reportType) {
         $creditTotal = array_sum(array_column($creditSales, 'total_amount'));
         $creditPaid = array_sum(array_column($creditSales, 'paid_amount'));
         
+        $salesGrandTotal = $cashTotal + $cardTotal + $creditTotal;
+
         $reportData = [
             'orders' => $orders,
             'credit_sales' => $creditSales,
-            'summary' => [
+            'daily' => $dailyBreakdown['days'],
+            'cash_movements' => $dailyBreakdown['cash_movements'],
+            'summary' => array_merge([
                 'total_orders' => count($orders),
                 'total_credit_sales' => count($creditSales),
                 'cash_total' => $cashTotal,
@@ -643,8 +665,11 @@ switch ($reportType) {
                 'credit_total' => $creditTotal,
                 'credit_paid' => $creditPaid,
                 'credit_outstanding' => $creditTotal - $creditPaid,
-                'grand_total' => $cashTotal + $cardTotal + $creditTotal
-            ]
+                'sales_grand_total' => $salesGrandTotal,
+                'cash_in_total' => $dailyBreakdown['totals']['cash_in_total'],
+                'cash_out_total' => $dailyBreakdown['totals']['cash_out_total'],
+                'grand_total' => $dailyBreakdown['totals']['adjusted_grand_total'],
+            ], $salesBreakdown),
         ];
         break;
         
@@ -1425,188 +1450,11 @@ switch ($reportType) {
         break;
 
     case 'gratuity':
+    case 'tips':
+        require_once __DIR__ . '/../tips_report_helper.php';
+        $tipsWhereClause = getDateTimeWhereClause('t.created_at', $startDateTime, $endDateTime);
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
-        $selectedCashierUserId = '';
-        if ($cashierId !== '') {
-            try {
-                $uStmt = $userDb->prepare('SELECT id FROM users WHERE username = ? LIMIT 1');
-                $uStmt->execute([$cashierId]);
-                $uid = $uStmt->fetchColumn();
-                if ($uid !== false) {
-                    $selectedCashierUserId = (string) $uid;
-                }
-            } catch (PDOException $e) {
-            }
-        }
-
-        $gratuityItemsJoin = '
-LEFT JOIN (
-    SELECT order_id, SUM(price) AS gratuity_from_items
-    FROM order_items
-    WHERE LOWER(TRIM(COALESCE(product_name, \'\'))) = \'gratuity\'
-    GROUP BY order_id
-) grat_items ON grat_items.order_id = o.id';
-        $effectiveGratuitySql = '(CASE WHEN COALESCE(o.gratuity_amount, 0) > 0.005 THEN COALESCE(o.gratuity_amount, 0) ELSE COALESCE(grat_items.gratuity_from_items, 0) END)';
-
-        if ($cashierId !== '') {
-            $sumStmt = $db->prepare("
-                SELECT 
-                    COALESCE(SUM($effectiveGratuitySql), 0) AS total_gratuity,
-                    SUM(CASE WHEN ($effectiveGratuitySql) > 0.005 THEN 1 ELSE 0 END) AS orders_with_gratuity,
-                    COUNT(*) AS total_orders,
-                    COALESCE(SUM(o.total), 0) AS total_sales
-                FROM orders o
-                $gratuityItemsJoin
-                WHERE ($ordersWhereClause)
-                  AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
-            ");
-            $sumStmt->execute([$cashierId, $selectedCashierUserId]);
-            $byCashierStmt = $db->prepare("
-                SELECT COALESCE(o.cashier_id, 'Unknown') AS cashier_name,
-                       COALESCE(SUM($effectiveGratuitySql), 0) AS gratuity_total,
-                       COALESCE(SUM(o.total), 0) AS total_sales
-                FROM orders o
-                $gratuityItemsJoin
-                WHERE ($ordersWhereClause)
-                  AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
-                GROUP BY o.cashier_id
-                ORDER BY gratuity_total DESC
-            ");
-            $byCashierStmt->execute([$cashierId, $selectedCashierUserId]);
-        } else {
-            $sumStmt = $db->prepare("
-                SELECT 
-                    COALESCE(SUM($effectiveGratuitySql), 0) AS total_gratuity,
-                    SUM(CASE WHEN ($effectiveGratuitySql) > 0.005 THEN 1 ELSE 0 END) AS orders_with_gratuity,
-                    COUNT(*) AS total_orders,
-                    COALESCE(SUM(o.total), 0) AS total_sales
-                FROM orders o
-                $gratuityItemsJoin
-                WHERE ($ordersWhereClause)
-            ");
-            $sumStmt->execute();
-            $byCashierStmt = $db->prepare("
-                SELECT COALESCE(o.cashier_id, 'Unknown') AS cashier_name,
-                       COALESCE(SUM($effectiveGratuitySql), 0) AS gratuity_total,
-                       COALESCE(SUM(o.total), 0) AS total_sales
-                FROM orders o
-                $gratuityItemsJoin
-                WHERE ($ordersWhereClause)
-                GROUP BY o.cashier_id
-                ORDER BY gratuity_total DESC
-            ");
-            $byCashierStmt->execute();
-        }
-        $sumRow = $sumStmt->fetch(PDO::FETCH_ASSOC);
-        $byCashier = $byCashierStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $eftTableExists = false;
-        $mixedTableExists = false;
-        try {
-            $eftTableExists = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'")->fetchColumn() !== false;
-            $mixedTableExists = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='mixed_payments'")->fetchColumn() !== false;
-        } catch (PDOException $e) {
-        }
-
-        $detailWhere = "$ordersWhereClause AND ($effectiveGratuitySql) > 0.005";
-        $detailParams = [];
-        if ($cashierId !== '') {
-            $detailWhere .= ' AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)';
-            $detailParams[] = $cashierId;
-            $detailParams[] = $selectedCashierUserId;
-        }
-
-        $mixedJoin = '';
-        $mixedSelect = ', 0 AS has_mixed, 0.0 AS mixed_cash, 0.0 AS mixed_eft';
-        if ($mixedTableExists) {
-            $mixedJoin = '
-                LEFT JOIN (
-                    SELECT order_id, SUM(cash_amount) AS mc, SUM(eft_amount) AS me
-                    FROM mixed_payments GROUP BY order_id
-                ) mx ON mx.order_id = o.id';
-            $mixedSelect = ',
-                    CASE WHEN mx.order_id IS NOT NULL THEN 1 ELSE 0 END AS has_mixed,
-                    COALESCE(mx.mc, 0) AS mixed_cash,
-                    COALESCE(mx.me, 0) AS mixed_eft';
-        }
-
-        $eftJoin = '';
-        $eftSelect = ', 0.0 AS eft_total';
-        if ($eftTableExists) {
-            $eftJoin = '
-                LEFT JOIN (
-                    SELECT order_id, SUM(amount) AS eft_total FROM eft_payments GROUP BY order_id
-                ) ep ON ep.order_id = o.id';
-            $eftSelect = ', COALESCE(ep.eft_total, 0) AS eft_total';
-        }
-
-        $detailSql = "
-            SELECT o.id AS order_id,
-                   o.created_at,
-                   COALESCE(o.cashier_id, 'Unknown') AS cashier_name,
-                   o.total AS order_total,
-                   ($effectiveGratuitySql) AS gratuity_amount
-                   $mixedSelect
-                   $eftSelect
-            FROM orders o
-            $gratuityItemsJoin
-            $mixedJoin
-            $eftJoin
-            WHERE ($detailWhere)
-            ORDER BY o.created_at DESC
-        ";
-        $detailStmt = $db->prepare($detailSql);
-        $detailStmt->execute($detailParams);
-        $detailLines = $detailStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $sumDetailCash = 0.0;
-        $sumDetailCard = 0.0;
-        foreach ($detailLines as &$dl) {
-            $hasMixed = !empty($dl['has_mixed']);
-            if ($mixedTableExists && $hasMixed) {
-                $cashAmt = round(floatval($dl['mixed_cash']), 2);
-                $cardAmt = round(floatval($dl['mixed_eft']), 2);
-            } else {
-                $eft = round(floatval($dl['eft_total']), 2);
-                $tot = round(floatval($dl['order_total']), 2);
-                $cardAmt = $eft;
-                $cashAmt = round(max(0.0, $tot - $eft), 2);
-            }
-            $dl['cash_amount'] = $cashAmt;
-            $dl['card_amount'] = $cardAmt;
-            $sumDetailCash += $cashAmt;
-            $sumDetailCard += $cardAmt;
-            unset($dl['has_mixed'], $dl['mixed_cash'], $dl['mixed_eft'], $dl['eft_total']);
-        }
-        unset($dl);
-
-        $cashCardByCashier = [];
-        foreach ($detailLines as $dl) {
-            $key = (string) ($dl['cashier_name'] ?? 'Unknown');
-            if (!isset($cashCardByCashier[$key])) {
-                $cashCardByCashier[$key] = ['cash_total' => 0.0, 'card_total' => 0.0];
-            }
-            $cashCardByCashier[$key]['cash_total'] += (float) ($dl['cash_amount'] ?? 0);
-            $cashCardByCashier[$key]['card_total'] += (float) ($dl['card_amount'] ?? 0);
-        }
-        foreach ($byCashier as &$bcRow) {
-            $key = (string) ($bcRow['cashier_name'] ?? 'Unknown');
-            $bcRow['cash_total'] = round($cashCardByCashier[$key]['cash_total'] ?? 0.0, 2);
-            $bcRow['card_total'] = round($cashCardByCashier[$key]['card_total'] ?? 0.0, 2);
-        }
-        unset($bcRow);
-
-        $reportData = [
-            'summary' => [
-                'total_gratuity' => (float) ($sumRow['total_gratuity'] ?? 0),
-                'orders_with_gratuity' => (int) ($sumRow['orders_with_gratuity'] ?? 0),
-                'total_orders' => (int) ($sumRow['total_orders'] ?? 0),
-                'total_sales' => (float) ($sumRow['total_sales'] ?? 0),
-                'detail_cash_total' => round($sumDetailCash, 2),
-                'detail_card_total' => round($sumDetailCard, 2),
-            ],
-            'by_cashier' => $byCashier,
-        ];
+        $reportData = buildTipsReportData($db, $userDb, $tipsWhereClause, $ordersWhereClause, $cashierId);
         break;
 
     case 'shift':
@@ -2171,7 +2019,7 @@ header('Content-Type: text/html; charset=utf-8');
                 <div class="value">N$<?= formatCurrency($reportData['summary']['grand_total']) ?></div>
             </div>
         </div>
-        
+
         <h3 class="section-title">Cash & Card Orders</h3>
         <?php if (!empty($reportData['orders'])): ?>
         <table>
@@ -2248,6 +2096,132 @@ header('Content-Type: text/html; charset=utf-8');
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['credit_paid']) ?></td>
                     <td class="text-right">N$<?= formatCurrency($reportData['summary']['credit_outstanding']) ?></td>
                     <td></td>
+                </tr>
+            </tbody>
+        </table>
+        <?php endif; ?>
+
+        <h3 class="section-title">Sales breakdown</h3>
+        <table>
+            <tbody>
+                <tr>
+                    <td>Product sales</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['product_sales_total'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Gratuity (on orders)</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['gratuity_total'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Manual tips</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['manual_tips_total'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Cash back</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['cash_back_total'] ?? 0) ?></td>
+                </tr>
+                <tr class="total-row">
+                    <td><strong>Cash &amp; card orders total</strong></td>
+                    <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['cash_total'] + $reportData['summary']['card_total']) ?></strong></td>
+                </tr>
+                <?php if (($reportData['summary']['credit_total'] ?? 0) > 0): ?>
+                <tr>
+                    <td>Credit sales</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['credit_total']) ?></td>
+                </tr>
+                <?php endif; ?>
+                <tr class="total-row">
+                    <td><strong>Sales subtotal</strong></td>
+                    <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['sales_grand_total'] ?? $reportData['summary']['grand_total']) ?></strong></td>
+                </tr>
+                <tr>
+                    <td>Cash in</td>
+                    <td class="text-right text-green">+ N$<?= formatCurrency($reportData['summary']['cash_in_total'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Cash out</td>
+                    <td class="text-right text-red">− N$<?= formatCurrency($reportData['summary']['cash_out_total'] ?? 0) ?></td>
+                </tr>
+                <tr class="total-row">
+                    <td><strong>Grand total</strong></td>
+                    <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['grand_total']) ?></strong></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3 class="section-title">Daily breakdown</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th class="text-right">Orders</th>
+                    <th class="text-right">Cash sales</th>
+                    <th class="text-right">Card sales</th>
+                    <th class="text-right">Credit</th>
+                    <th class="text-right">Cash in</th>
+                    <th class="text-right">Cash out</th>
+                    <th class="text-right">Day total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['daily'])): ?>
+                    <?php foreach ($reportData['daily'] as $dayRow): ?>
+                    <tr>
+                        <td><?= date('M j, Y', strtotime($dayRow['date'])) ?></td>
+                        <td class="text-right"><?= (int) ($dayRow['order_count'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($dayRow['cash_sales'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($dayRow['card_sales'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($dayRow['credit_sales'] ?? 0) ?></td>
+                        <td class="text-right text-green">N$<?= formatCurrency($dayRow['cash_in'] ?? 0) ?></td>
+                        <td class="text-right text-red">N$<?= formatCurrency($dayRow['cash_out'] ?? 0) ?></td>
+                        <td class="text-right font-bold">N$<?= formatCurrency($dayRow['day_total'] ?? 0) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <tr class="total-row">
+                        <td><strong>Total</strong></td>
+                        <td class="text-right"><strong><?= (int) ($reportData['summary']['total_orders'] ?? 0) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['cash_total']) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['card_total']) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['credit_total']) ?></strong></td>
+                        <td class="text-right text-green"><strong>N$<?= formatCurrency($reportData['summary']['cash_in_total'] ?? 0) ?></strong></td>
+                        <td class="text-right text-red"><strong>N$<?= formatCurrency($reportData['summary']['cash_out_total'] ?? 0) ?></strong></td>
+                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['grand_total']) ?></strong></td>
+                    </tr>
+                <?php else: ?>
+                    <tr><td colspan="8" class="no-data">No daily data for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+
+        <?php if (!empty($reportData['cash_movements'])): ?>
+        <h3 class="section-title">Cash in / out detail</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date / time</th>
+                    <th>Type</th>
+                    <th>Description</th>
+                    <th>Cashier</th>
+                    <th class="text-right">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($reportData['cash_movements'] as $mv): ?>
+                <tr>
+                    <td><?= htmlspecialchars((string) ($mv['created_at'] ?? '')) ?></td>
+                    <td><?= ($mv['type'] ?? '') === 'cash-in' ? 'Cash in' : 'Cash out' ?></td>
+                    <td><?= htmlspecialchars((string) ($mv['description'] ?? '')) ?></td>
+                    <td><?= htmlspecialchars((string) ($mv['cashier_id'] ?? 'Unknown')) ?></td>
+                    <td class="text-right <?= ($mv['type'] ?? '') === 'cash-in' ? 'text-green' : 'text-red' ?>">
+                        <?= ($mv['type'] ?? '') === 'cash-in' ? '+' : '−' ?>N$<?= formatCurrency($mv['amount'] ?? 0) ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                <tr class="total-row">
+                    <td colspan="4"><strong>Net cash movement</strong></td>
+                    <td class="text-right">
+                        <strong>N$<?= formatCurrency(($reportData['summary']['cash_in_total'] ?? 0) - ($reportData['summary']['cash_out_total'] ?? 0)) ?></strong>
+                    </td>
                 </tr>
             </tbody>
         </table>
@@ -3464,31 +3438,70 @@ header('Content-Type: text/html; charset=utf-8');
             </tbody>
         </table>
 
-    <?php break; case 'gratuity': ?>
+    <?php break; case 'gratuity':
+    case 'tips': ?>
         <div class="summary-cards">
             <div class="summary-card positive">
-                <div class="label">Total gratuity</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['total_gratuity']) ?></div>
+                <div class="label">Total tips</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['total_tips'] ?? 0) ?></div>
             </div>
             <div class="summary-card">
-                <div class="label">Orders with gratuity</div>
-                <div class="value"><?= (int) $reportData['summary']['orders_with_gratuity'] ?></div>
+                <div class="label">Manual tips</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['manual_tips_total'] ?? 0) ?></div>
             </div>
             <div class="summary-card">
-                <div class="label">Orders (period)</div>
-                <div class="value"><?= (int) $reportData['summary']['total_orders'] ?></div>
+                <div class="label">Checkout / tab gratuity</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['order_gratuity_total'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Entries</div>
+                <div class="value"><?= (int) ($reportData['summary']['total_entries'] ?? 0) ?></div>
             </div>
         </div>
 
-        <h3 class="section-title">Gratuity by cashier</h3>
+        <h3 class="section-title">Tips by payment method</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th class="text-right">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Cash</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['cash'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Card / EFT</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['card'] ?? 0) ?></td>
+                </tr>
+                <tr>
+                    <td>Inventory</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['inventory'] ?? 0) ?></td>
+                </tr>
+                <?php if (($reportData['summary']['by_method']['other'] ?? 0) > 0): ?>
+                <tr>
+                    <td>Other</td>
+                    <td class="text-right">N$<?= formatCurrency($reportData['summary']['by_method']['other'] ?? 0) ?></td>
+                </tr>
+                <?php endif; ?>
+                <tr class="total-row">
+                    <td><strong>Total</strong></td>
+                    <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_tips'] ?? 0) ?></strong></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3 class="section-title">Tips by cashier</h3>
         <table>
             <thead>
                 <tr>
                     <th>Cashier</th>
                     <th class="text-right">Cash</th>
                     <th class="text-right">Card / EFT</th>
-                    <th class="text-right">Total sales</th>
-                    <th class="text-right">Gratuity total</th>
+                    <th class="text-right">Inventory</th>
+                    <th class="text-right">Total</th>
                 </tr>
             </thead>
             <tbody>
@@ -3498,19 +3511,42 @@ header('Content-Type: text/html; charset=utf-8');
                         <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
                         <td class="text-right">N$<?= formatCurrency($row['cash_total'] ?? 0) ?></td>
                         <td class="text-right">N$<?= formatCurrency($row['card_total'] ?? 0) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['total_sales'] ?? 0) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($row['gratuity_total']) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['inventory_total'] ?? 0) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['total'] ?? 0) ?></td>
                     </tr>
                     <?php endforeach; ?>
-                    <tr class="total-row">
-                        <td><strong>Totals</strong></td>
-                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['detail_cash_total'] ?? 0) ?></strong></td>
-                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['detail_card_total'] ?? 0) ?></strong></td>
-                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_sales'] ?? 0) ?></strong></td>
-                        <td class="text-right"><strong>N$<?= formatCurrency($reportData['summary']['total_gratuity']) ?></strong></td>
-                    </tr>
                 <?php else: ?>
-                    <tr><td colspan="5" class="no-data">No order data for this period</td></tr>
+                    <tr><td colspan="5" class="no-data">No tips recorded for this period</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+
+        <h3 class="section-title">Tip entries</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date / time</th>
+                    <th>Source</th>
+                    <th>Cashier</th>
+                    <th>Method</th>
+                    <th class="text-right">Amount</th>
+                    <th>Reference</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($reportData['entries'])): ?>
+                    <?php foreach ($reportData['entries'] as $row): ?>
+                    <tr>
+                        <td><?= htmlspecialchars((string) ($row['created_at'] ?? '')) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['source'] ?? '')) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['cashier_name'] ?? 'Unknown')) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['payment_method'] ?? '')) ?></td>
+                        <td class="text-right">N$<?= formatCurrency($row['amount'] ?? 0) ?></td>
+                        <td><?= htmlspecialchars((string) ($row['reference'] ?? '')) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="6" class="no-data">No tip entries for this period</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>

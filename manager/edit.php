@@ -153,13 +153,25 @@ if (isset($_GET['id'])) {
     $result = $stmt->execute();
     $product = $result->fetchArray(SQLITE3_ASSOC);
     
-    // Fetch unique categories
+    // Fetch categories (registry + products)
+    require_once __DIR__ . '/../includes/categories_lib.php';
     $categories = [];
-    $catResult = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
-    while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
-        $categories[] = $row['category'];
+    try {
+        $catPdo = new PDO('sqlite:../pos.db');
+        $catPdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $categories = catListNames($catPdo);
+    } catch (Throwable $e) {
+        $catResult = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
+        while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
+            $categories[] = $row['category'];
+        }
     }
-    
+    $currentCat = trim((string) ($product['category'] ?? ''));
+    if ($currentCat !== '' && !in_array($currentCat, $categories, true)) {
+        $categories[] = $currentCat;
+        usort($categories, 'strcasecmp');
+    }
+
     if (!$product) {
         header('Location: inventory');
         exit;
@@ -468,12 +480,9 @@ if (isset($_GET['id'])) {
                                             placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
                                             focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
                                         <datalist id="category-list">
-                                            <?php 
-                                            $catResult = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
-                                            while ($row = $catResult->fetchArray(SQLITE3_ASSOC)) {
-                                                echo '<option value="' . htmlspecialchars($row['category']) . '">';
-                                            }
-                                            ?>
+                                            <?php foreach ($categories as $cat): ?>
+                                            <option value="<?= htmlspecialchars($cat, ENT_QUOTES, 'UTF-8') ?>">
+                                            <?php endforeach; ?>
                                         </datalist>
                                     </div>
                                     <div>

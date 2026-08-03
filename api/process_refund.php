@@ -1,5 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/../cashier_helper.php';
+require_once __DIR__ . '/../terminal_helper.php';
+requireApiSession();
 header('Content-Type: application/json');
 
 try {
@@ -25,6 +27,8 @@ try {
     $reason = isset($input['reason']) ? $input['reason'] : 'No reason provided';
     $total = floatval($input['total']);
     $cashierId = $_SESSION['username'] ?? 'Unknown';
+    ensureTerminalSchema($db);
+    $terminal = resolveTerminalFromRequest(is_array($input) ? $input : [], $db);
     
     // Start transaction
     $db->beginTransaction();
@@ -32,14 +36,16 @@ try {
     try {
         // Insert into refunds table
         $stmt = $db->prepare("
-            INSERT INTO refunds (order_id, total_amount, reason, cashier_id, created_at)
-            VALUES (:order_id, :total, :reason, :cashier_id, datetime('now', 'localtime'))
+            INSERT INTO refunds (order_id, total_amount, reason, cashier_id, created_at, terminal_mac, terminal_name)
+            VALUES (:order_id, :total, :reason, :cashier_id, datetime('now', 'localtime'), :terminal_mac, :terminal_name)
         ");
         $stmt->execute([
             ':order_id' => $orderId,
             ':total' => $total,
             ':reason' => $reason,
-            ':cashier_id' => $cashierId
+            ':cashier_id' => $cashierId,
+            ':terminal_mac' => $terminal['mac'],
+            ':terminal_name' => $terminal['name'],
         ]);
         
         $refundId = $db->lastInsertId();
@@ -159,13 +165,15 @@ try {
         
         // Record cash transaction for refund
         $stmtCash = $db->prepare("
-            INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at)
-            VALUES ('refund', :amount, :description, :cashier_id, datetime('now', 'localtime'))
+            INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at, terminal_mac, terminal_name)
+            VALUES ('refund', :amount, :description, :cashier_id, datetime('now', 'localtime'), :terminal_mac, :terminal_name)
         ");
         $stmtCash->execute([
             ':amount' => -$total,
             ':description' => 'Refund for Order #' . $orderId . ' - ' . $reason,
-            ':cashier_id' => $cashierId
+            ':cashier_id' => $cashierId,
+            ':terminal_mac' => $terminal['mac'],
+            ':terminal_name' => $terminal['name'],
         ]);
         
         $db->commit();

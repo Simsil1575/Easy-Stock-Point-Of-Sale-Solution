@@ -5,6 +5,7 @@
 /** @var bool $showHiddenUiCards */
 /** @var bool $uiCardsCustomizeMode */
 /** @var string $uiCardsApiUrl */
+$uiCardsPosConfirmUrl = $uiCardsPosConfirmUrl ?? '../js/pos-confirm.js';
 $hiddenUiCardsJson = json_encode($hiddenUiCards, JSON_HEX_TAG | JSON_HEX_APOS | JSON_UNESCAPED_UNICODE);
 $orderedUiCards = $orderedUiCards ?? [];
 $orderedUiCardsJson = json_encode($orderedUiCards, JSON_HEX_TAG | JSON_HEX_APOS | JSON_UNESCAPED_UNICODE);
@@ -59,16 +60,27 @@ $uiCardsCustomizeMode = $uiCardsCustomizeMode ?? ($showHiddenUiCards || isset($_
 </style>
 
 <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-  <!-- Normal view: single unobtrusive link -->
-  <div class="ui-cards-normal-only flex-wrap items-center gap-3 ml-auto w-full justify-end">
-    <?php if ($hiddenCount > 0): ?>
-      <a href="?show_hidden=1" class="text-sm text-gray-500 hover:text-gray-800">
-        <i class="fas fa-eye-slash mr-1"></i> Hidden cards (<?= $hiddenCount ?>)
+  <!-- Normal view: optional left slot (e.g. category chips) + customize link -->
+  <div class="ui-cards-normal-only flex-wrap items-center gap-3 w-full justify-between">
+    <div id="uiCardsToolbarLeft" class="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+      <?php
+      if (!empty($uiCardsToolbarLeftHtml)) {
+          echo $uiCardsToolbarLeftHtml;
+      } elseif (!empty($uiCardsToolbarLeftInclude) && is_string($uiCardsToolbarLeftInclude) && is_file($uiCardsToolbarLeftInclude)) {
+          include $uiCardsToolbarLeftInclude;
+      }
+      ?>
+    </div>
+    <div class="flex flex-wrap items-center gap-3 shrink-0 ml-auto">
+      <?php if ($hiddenCount > 0): ?>
+        <a href="?show_hidden=1" class="text-sm text-gray-500 hover:text-gray-800 whitespace-nowrap">
+          <i class="fas fa-eye-slash mr-1"></i> Hidden cards (<?= $hiddenCount ?>)
+        </a>
+      <?php endif; ?>
+      <a href="?customize=1" class="text-sm text-gray-500 hover:text-gray-800 whitespace-nowrap">
+        <i class="fas fa-sliders-h mr-1"></i> Customize cards
       </a>
-    <?php endif; ?>
-    <a href="?customize=1" class="text-sm text-gray-500 hover:text-gray-800">
-      <i class="fas fa-sliders-h mr-1"></i> Customize cards
-    </a>
+    </div>
   </div>
 
   <!-- Customize / hide-unhide mode -->
@@ -105,7 +117,7 @@ $uiCardsCustomizeMode = $uiCardsCustomizeMode ?? ($showHiddenUiCards || isset($_
   </div>
 </div>
 
-<script src="../js/pos-confirm.js"></script>
+<script src="<?= htmlspecialchars($uiCardsPosConfirmUrl, ENT_QUOTES, 'UTF-8') ?>"></script>
 <script>
 (function() {
     const UI_CARD_SCOPE = <?= json_encode($uiCardScope, JSON_HEX_TAG | JSON_HEX_APOS) ?>;

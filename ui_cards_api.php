@@ -10,13 +10,6 @@ if (!isset($_SESSION['user_id'], $_SESSION['role'])) {
     exit;
 }
 
-$role = strtolower((string) $_SESSION['role']);
-if (!in_array($role, ['admin', 'manager'], true)) {
-    http_response_code(403);
-    echo json_encode(['ok' => false, 'message' => 'Not allowed.']);
-    exit;
-}
-
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo json_encode(['ok' => false, 'message' => 'Method not allowed.']);
@@ -25,12 +18,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 require_once __DIR__ . '/ui_cards_helper.php';
 
+$role = strtolower((string) $_SESSION['role']);
+$userId = (string) $_SESSION['user_id'];
 $action = (string) ($_POST['action'] ?? '');
 $scope = trim((string) ($_POST['scope'] ?? ''));
 $cardIds = array_values(array_filter(array_map('strval', (array) ($_POST['card_ids'] ?? []))));
 
-$allowedScopes = ['admin_menu', 'manager_menu', 'admin_reports', 'manager_reports'];
-if (!in_array($scope, $allowedScopes, true)) {
+if ($scope === '' || !in_array(uiBaseScope($scope), uiAllCardScopes(), true)) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'message' => 'Invalid scope.']);
     exit;
@@ -39,6 +33,12 @@ if (!in_array($scope, $allowedScopes, true)) {
 try {
     $infoDb = new PDO('sqlite:' . __DIR__ . '/info.db');
     $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    if (!uiCanCustomizeScope($role, $scope, $infoDb, $userId)) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'message' => 'Not allowed.']);
+        exit;
+    }
 
     if ($action === 'reorder') {
         if ($cardIds === []) {

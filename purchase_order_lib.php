@@ -235,6 +235,70 @@ function poApplyReceiving(PDO $db, int $poId, array $receivedItems): void
     poRefreshReceivingStatus($db, $poId);
 }
 
+/**
+ * Reverse received quantities on PO lines (for deleting/editing a receiving batch).
+ *
+ * @param list<array{product_id: int, quantity: int}> $receivedItems
+ */
+function poReverseReceiving(PDO $db, int $poId, array $receivedItems): void
+{
+    if ($poId < 1 || empty($receivedItems)) {
+        return;
+    }
+
+    $itemsStmt = $db->prepare('
+        SELECT id, product_id, quantity, COALESCE(quantity_received, 0) AS quantity_received
+        FROM purchase_order_items
+        WHERE purchase_order_id = ?
+    ');
+    $itemsStmt->execute([$poId]);
+    $poItems = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+    if (empty($poItems)) {
+        return;
+    }
+
+    $byProduct = [];
+    foreach ($receivedItems as $ri) {
+        $pid = (int) ($ri['product_id'] ?? 0);
+        $qty = (int) ($ri['quantity'] ?? 0);
+        if ($pid < 1 || $qty < 1) {
+            continue;
+        }
+        $byProduct[$pid] = ($byProduct[$pid] ?? 0) + $qty;
+    }
+
+    $update = $db->prepare('UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?');
+    foreach ($poItems as $line) {
+        $pid = (int) ($line['product_id'] ?? 0);
+        if ($pid < 1 || !isset($byProduct[$pid])) {
+            continue;
+        }
+        $subtract = $byProduct[$pid];
+        $current = (int) $line['quantity_received'];
+        $newReceived = max(0, $current - $subtract);
+        $update->execute([$newReceived, (int) $line['id']]);
+        $byProduct[$pid] -= ($current - $newReceived);
+    }
+
+    $statusStmt = $db->prepare('SELECT status FROM purchase_orders WHERE id = ?');
+    $statusStmt->execute([$poId]);
+    $status = (string) ($statusStmt->fetchColumn() ?: '');
+    if (in_array($status, ['ordered', 'partially_received', 'received'], true)) {
+        $sumStmt = $db->prepare('
+            SELECT SUM(COALESCE(quantity_received, 0)) AS total_received
+            FROM purchase_order_items WHERE purchase_order_id = ?
+        ');
+        $sumStmt->execute([$poId]);
+        $totalReceived = (int) ($sumStmt->fetchColumn() ?: 0);
+        if ($totalReceived <= 0) {
+            $db->prepare("UPDATE purchase_orders SET status = 'ordered', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                ->execute([$poId]);
+        } else {
+            poRefreshReceivingStatus($db, $poId);
+        }
+    }
+}
+
 function poRefreshReceivingStatus(PDO $db, int $poId): void
 {
     $stmt = $db->prepare('

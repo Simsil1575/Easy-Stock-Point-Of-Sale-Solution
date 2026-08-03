@@ -1,22 +1,22 @@
 <?php
 header('Content-Type: application/json');
 
-// Start session
-session_start();
+require_once __DIR__ . '/cashier_helper.php';
+requireApiSession();
 
-// Set Central Africa Time timezone
 date_default_timezone_set('Africa/Harare');
 
-// Database connection
 $db = new PDO('sqlite:pos.db');
 require_once __DIR__ . '/recipe_stock_helper.php';
+require_once __DIR__ . '/terminal_helper.php';
 configureSqlitePdo($db);
 
-// Get the raw POST data
 $json = file_get_contents('php://input');
 $data = json_decode($json, true);
 
 try {
+    ensureTerminalSchema($db);
+    $terminal = resolveTerminalFromRequest(is_array($data) ? $data : [], $db);
     foreach ([
         "ALTER TABLE orders ADD COLUMN gratuity_amount REAL NOT NULL DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN gratuity_percent_applied REAL",
@@ -29,22 +29,21 @@ try {
         }
     }
 
-    // Start a transaction
     $db->beginTransaction();
 
-    // Check payment modes
+    $allowNegative = isSkipStockChecks($db);
+
     $isEftPayment = isset($data['payment_method']) && $data['payment_method'] === 'e-wallet';
     $isMixedPayment = isset($data['payment_method']) && $data['payment_method'] === 'mixed';
-    
-    // Determine cash received based on payment method
+
     if ($isEftPayment) {
-        $cashReceived = 0; // EFT only
+        $cashReceived = 0;
     } else if ($isMixedPayment) {
         $cashReceived = isset($data['cash_amount']) ? floatval($data['cash_amount']) : 0;
     } else {
         $cashReceived = isset($data['cash_received']) ? floatval($data['cash_received']) : 0;
     }
-    
+
     $gratuityAmount = round(floatval($data['gratuity_amount'] ?? 0), 2);
     if ($gratuityAmount < 0) {
         $gratuityAmount = 0;
@@ -55,27 +54,24 @@ try {
     }
     $gratuityIncluded = isset($data['gratuity_included_in_total']) ? ((int) $data['gratuity_included_in_total'] ? 1 : 0) : 1;
 
-    // Insert the order into the orders table with current Namibia time
-    $stmt = $db->prepare("INSERT INTO orders (total, cash_received, created_at, cashier_id, gratuity_amount, gratuity_percent_applied, gratuity_included_in_total) VALUES (:total, :cash_received, :created_at, :cashier_id, :gratuity_amount, :gratuity_percent_applied, :gratuity_included_in_total)");
+    $stmt = $db->prepare("INSERT INTO orders (total, cash_received, created_at, cashier_id, gratuity_amount, gratuity_percent_applied, gratuity_included_in_total, terminal_mac, terminal_name) VALUES (:total, :cash_received, :created_at, :cashier_id, :gratuity_amount, :gratuity_percent_applied, :gratuity_included_in_total, :terminal_mac, :terminal_name)");
     $stmt->execute([
         ':total' => $data['total'],
         ':cash_received' => $cashReceived,
-        ':created_at' => date('Y-m-d H:i:s'), // Current Namibia time
+        ':created_at' => date('Y-m-d H:i:s'),
         ':cashier_id' => $_SESSION['username'] ?? 'Unknown',
         ':gratuity_amount' => $gratuityAmount,
         ':gratuity_percent_applied' => $gratuityPctApplied,
         ':gratuity_included_in_total' => $gratuityIncluded,
+        ':terminal_mac' => $terminal['mac'],
+        ':terminal_name' => $terminal['name'],
     ]);
 
     $orderId = $db->lastInsertId();
 
-    // Insert order items and update inventory
-    // Get buying_price and category from products table to store historical cost and check category
     $stmtGetProductInfo = $db->prepare("SELECT buying_price, category FROM products WHERE name = :product_name");
     $stmtOrderItems = $db->prepare("INSERT INTO order_items (order_id, product_name, quantity, price, buying_price) VALUES (:order_id, :product_name, :quantity, :price, :buying_price)");
-    $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity - :quantity WHERE name = :product_name");
-    
-    // Prepare statements for updating daily stock summary with sold quantities
+
     $stmtUpdateDailySummary = $db->prepare("
         INSERT OR REPLACE INTO daily_stock_summary 
         (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
@@ -90,7 +86,6 @@ try {
         )
     ");
 
-    // Prepare statement to ensure daily stock summary exists for the current day
     $stmtEnsureDailySummary = $db->prepare("
         INSERT OR IGNORE INTO daily_stock_summary 
         (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
@@ -104,7 +99,6 @@ try {
     $currentDate = date('Y-m-d');
 
     foreach ($data['items'] as $item) {
-        // Get buying_price and category for this product (store historical cost and check category)
         $buyingPrice = null;
         $productCategory = null;
         if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && $item['name'] !== 'Cart Discount' && $item['name'] !== 'Gratuity') {
@@ -113,7 +107,7 @@ try {
             $buyingPrice = $productInfo ? ($productInfo['buying_price'] ?? null) : null;
             $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
         }
-        
+
         $stmtOrderItems->execute([
             ':order_id' => $orderId,
             ':product_name' => $item['name'],
@@ -122,40 +116,32 @@ try {
             ':buying_price' => $buyingPrice
         ]);
 
-        // Skip inventory for non-stock lines; Food category handled inside this block
         if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && $item['name'] !== 'Cart Discount' && $item['name'] !== 'Gratuity') {
-            deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']));
-            // Only decrease main product quantity if category is not "Food" (ingredients always deducted above when linked)
+            deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']), $allowNegative);
             $isFood = strtolower(trim($productCategory ?? '')) === 'food';
             if (!$isFood) {
-                $stmtUpdateInventory->execute([
-                    ':quantity' => $item['quantity'],
-                    ':product_name' => $item['name']
-                ]);
+                deductProductStockByName($db, $item['name'], floatval($item['quantity']), $allowNegative);
             }
-            
-            // Ensure daily stock summary exists for this product and date
+
             $stmtEnsureDailySummary->execute([
                 $currentDate,
                 $item['name']
             ]);
-            
-            // Update daily stock summary with sold quantity immediately (even for Food, for reporting purposes)
+
             $stmtUpdateDailySummary->execute([
-                $currentDate, // date
-                $item['name'], // product name for product_id lookup
-                $currentDate, $item['name'], // opening_quantity lookup
-                $currentDate, $item['name'], // closing_quantity lookup  
-                $currentDate, $item['name'], // received_quantity lookup
-                $currentDate, $item['name'], $item['quantity'], // sold_quantity lookup and increment
-                $currentDate, $item['name']  // damaged_quantity lookup
+                $currentDate,
+                $item['name'],
+                $currentDate, $item['name'],
+                $currentDate, $item['name'],
+                $currentDate, $item['name'],
+                $currentDate, $item['name'], $item['quantity'],
+                $currentDate, $item['name']
             ]);
         }
     }
 
-    // If this is an EFT or MIXED payment, store the EFT payment details
     if ($isEftPayment || $isMixedPayment) {
-        $stmtEftPayment = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date) VALUES (:order_id, :transaction_ref, :wallet_provider, :amount, :cashier_id, :payment_date)");
+        $stmtEftPayment = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date, terminal_mac, terminal_name) VALUES (:order_id, :transaction_ref, :wallet_provider, :amount, :cashier_id, :payment_date, :terminal_mac, :terminal_name)");
         $eftAmount = $isEftPayment ? floatval($data['total']) : (isset($data['eft_amount']) ? floatval($data['eft_amount']) : 0);
         if ($eftAmount > 0) {
             $stmtEftPayment->execute([
@@ -164,11 +150,12 @@ try {
                 ':wallet_provider' => $data['wallet_provider'] ?? null,
                 ':amount' => $eftAmount,
                 ':cashier_id' => $_SESSION['username'] ?? 'Unknown',
-                ':payment_date' => date('Y-m-d H:i:s')
+                ':payment_date' => date('Y-m-d H:i:s'),
+                ':terminal_mac' => $terminal['mac'],
+                ':terminal_name' => $terminal['name'],
             ]);
         }
 
-        // Persist mixed payment split for audit if applicable
         if ($isMixedPayment) {
             $db->exec("CREATE TABLE IF NOT EXISTS mixed_payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,24 +169,26 @@ try {
                 FOREIGN KEY(order_id) REFERENCES orders(id)
             )");
 
-            $stmtMixed = $db->prepare("INSERT INTO mixed_payments (order_id, cash_amount, eft_amount, eft_transaction_ref, eft_wallet_provider, cashier_id) VALUES (:order_id, :cash_amount, :eft_amount, :eft_transaction_ref, :eft_wallet_provider, :cashier_id)");
+            $stmtMixed = $db->prepare("INSERT INTO mixed_payments (order_id, cash_amount, eft_amount, eft_transaction_ref, eft_wallet_provider, cashier_id, terminal_mac, terminal_name) VALUES (:order_id, :cash_amount, :eft_amount, :eft_transaction_ref, :eft_wallet_provider, :cashier_id, :terminal_mac, :terminal_name)");
             $stmtMixed->execute([
                 ':order_id' => $orderId,
                 ':cash_amount' => $cashReceived,
                 ':eft_amount' => $eftAmount,
                 ':eft_transaction_ref' => $data['transaction_ref'] ?? null,
                 ':eft_wallet_provider' => $data['wallet_provider'] ?? null,
-                ':cashier_id' => $_SESSION['username'] ?? 'Unknown'
+                ':cashier_id' => $_SESSION['username'] ?? 'Unknown',
+                ':terminal_mac' => $terminal['mac'],
+                ':terminal_name' => $terminal['name'],
             ]);
         }
     }
 
-    // Commit the transaction
     $db->commit();
 
     echo json_encode(['success' => true, 'order_id' => $orderId]);
 } catch (Exception $e) {
-    // Rollback the transaction in case of error
-    $db->rollBack();
+    if ($db->inTransaction()) {
+        $db->rollBack();
+    }
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }

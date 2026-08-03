@@ -483,7 +483,6 @@
                     <span class="text-lg text-gray-700">Inventory</span>
                 </a>
             </li>
-            
 
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
@@ -560,7 +559,9 @@
             currentPage.startsWith('create_creditor') ||
             currentPage.startsWith('quotation') || currentPage.startsWith('quotations') ||
             currentPage.startsWith('invoice') || currentPage.startsWith('invoices') ||
-            currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders')
+            currentPage === 'categories' || currentPage.startsWith('categories') ||
+            currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders') ||
+            currentPage === 'receiving_records.php' || currentPage.startsWith('receiving_records')
         );
         
         // Remove active class from all links
@@ -584,7 +585,9 @@
                      currentPage === 'add_product' || 
                      currentPage === 'receiving' ||
                      currentPage === 'receiving.php' ||
-                     currentPage.startsWith('receiving') ||
+                     currentPage === 'receiving_records' ||
+                     currentPage === 'receiving_records.php' ||
+                     (currentPage.startsWith('receiving') && currentPage !== 'receiving_records' && currentPage !== 'receiving_records.php') ||
                      currentPage === 'edit' || 
                      currentPage === 'stock_tracking' || 
                      currentPage === 'stock_tracking.php' ||
