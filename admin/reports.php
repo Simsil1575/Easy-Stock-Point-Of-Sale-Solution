@@ -45,6 +45,7 @@ try {
 }
 
 require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../invoice_transactions_helper.php';
 
 // Overnight closing (e.g. 02:00) shifts early-morning sales to previous business day.
 // Evening closing (e.g. 22:00) uses calendar-day filtering.
@@ -75,6 +76,20 @@ $distinctDatesQuery = $db->prepare("
 ");
 $distinctDatesQuery->execute();
 $distinctDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
+
+if (invoicePaymentsTableExists($db)) {
+    $ipTs = invoicePaymentTimestampExpr('ip');
+    $ipBdCase = bdBusinessDateCaseSql($ipTs, $closingTime, $isAfterMidnight);
+    try {
+        foreach ($db->query("SELECT DISTINCT {$ipBdCase} AS business_date FROM invoice_payments ip WHERE ip.payment_method != 'Credit' AND {$ipTs} IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN) as $ipDate) {
+            if ($ipDate && !in_array($ipDate, $distinctDates, true)) {
+                $distinctDates[] = $ipDate;
+            }
+        }
+        rsort($distinctDates);
+    } catch (Throwable $e) {
+    }
+}
 
 // Always add today's date if it's not already in the list
 $today = date('Y-m-d');
@@ -163,8 +178,11 @@ $eftCreditSalesQuery->bindParam(':nextDay', $nextDay);
 $eftCreditSalesQuery->execute();
 $eftCreditSalesTotal = $eftCreditSalesQuery->fetchColumn() ?: 0;
 
+$invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$invoiceEftPayments = sumInvoiceEftPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+
 // Total EFT payments including both regular EFT and credit sales with payment_status 'eft'
-$totalEftPayments = $eftSalesTotal + $eftCreditSalesTotal;
+$totalEftPayments = $eftSalesTotal + $eftCreditSalesTotal + $invoiceEftPayments;
 
 // Fetch credit sales total and unpaid balances with business day logic
 $creditSalesQuery = $db->prepare("
@@ -223,8 +241,8 @@ $paidCreditData = $paidCreditQuery->fetch(PDO::FETCH_ASSOC);
 $paidCreditAmount = $paidCreditData['paid_credit'] ?: 0;
 $totalTransactions = $paidCreditData['total_transactions'] ?: 0;
 
-// Update cash sales display total to include partial payments
-$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount - $eftCreditSalesTotal ;
+// Update cash sales display total to include partial payments and invoice cash
+$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount + $invoiceCashPayments - $eftCreditSalesTotal ;
 
 // Total revenue includes all sales regardless of payment method (only for selected date)
 $totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments -$partialPaidTotal - $eftCreditSalesTotal;
@@ -372,7 +390,8 @@ $creditQuery->execute();
 $creditResult = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
 
 // Combine results
-$salesData = array_merge($ordersResult, $creditResult);
+$invoicePaymentRows = fetchInvoicePaymentReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$salesData = array_merge($ordersResult, $creditResult, $invoicePaymentRows);
 
 // Sort combined results by created_at in descending order (most recent first)
 usort($salesData, function($a, $b) {
@@ -1222,6 +1241,18 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
                                         <span>EFT</span>
                                     </span>
+                                    <?php elseif ($row['sale_type'] === 'invoice_cash'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-sm">
+                                        <span>Invoice (Cash)</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'invoice_eft'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
+                                        <span>Invoice (<?= htmlspecialchars($row['payment_method'] ?? 'EFT') ?>)</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'invoice_payment'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 border border-blue-200 shadow-sm">
+                                        <span>Invoice (<?= htmlspecialchars($row['payment_method'] ?? 'Payment') ?>)</span>
+                                    </span>
                                     <?php elseif ($row['sale_type'] === 'cash'): ?>
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800 border border-teal-200 shadow-sm">
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z"></path><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clip-rule="evenodd"></path></svg>
@@ -1272,14 +1303,11 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 <?= htmlspecialchars($row['cashier_id'] ?? '-') ?>
                             </td>
                             <td class="py-4 px-6" data-label="Action">
-                                <?php
-                                // Show delete button for:
-                                // - Credit sales that are paid or EFT (reset credit payment)
-                                // - Cash sales (delete sale)
-                                // - EFT sales (delete sale or reset EFT credit sale)
-                                // - Paid credit sales (reset credit payment)
-                                // - Credit sales that are unpaid or partial (delete credit record)
-                                if (
+                                <?php if (!empty($row['is_invoice_payment'])): ?>
+                                    <a href="../invoice_print.php?id=<?= (int) ($row['invoice_id'] ?? 0) ?>" target="_blank" class="text-teal-600 hover:text-teal-800 transition-colors" title="Print Invoice">
+                                        <i class="fas fa-print"></i>
+                                    </a>
+                                <?php elseif (
                                     ($row['sale_type'] === 'credit' && ($row['payment_status'] === 'paid' || $row['payment_status'] === 'eft' || $row['payment_status'] === 'paid_mixed'))
                                 ) : ?>
                                     <button onclick="deleteRecord('credit', '<?= $row['id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Reset Paid/EFT Credit Sale">

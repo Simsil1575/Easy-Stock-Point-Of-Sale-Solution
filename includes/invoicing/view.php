@@ -137,8 +137,8 @@ $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
                 <button onclick="invConvert(<?= $id ?>)" class="w-full px-4 py-2.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 text-sm font-medium"><i class="fas fa-file-invoice-dollar mr-1"></i> Convert to Invoice</button>
                 <?php endif; ?>
 
-                <a href="../invoicing_pdf.php?type=<?= $type ?>&id=<?= $id ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-file-pdf mr-1"></i> Download PDF</a>
-                <a href="../<?= $printPage ?>.php?id=<?= $id ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-print mr-1"></i> Print</a>
+                <a href="<?= $invBase ?? '../' ?>invoicing_pdf.php?type=<?= $type ?>&id=<?= $id ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-file-pdf mr-1"></i> Download PDF</a>
+                <a href="<?= $invBase ?? '../' ?><?= $printPage ?>.php?id=<?= $id ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-print mr-1"></i> Print</a>
                 <button onclick="invEmailPlaceholder()" class="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-envelope mr-1"></i> Email</button>
                 <button onclick="invDuplicate(<?= $id ?>)" class="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-copy mr-1"></i> Duplicate</button>
 

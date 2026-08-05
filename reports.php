@@ -37,6 +37,7 @@ if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 require_once __DIR__ . '/ensure_laybye_schema.php';
+require_once __DIR__ . '/invoice_transactions_helper.php';
 ensureLaybyeSchema($db);
 
 // Ensure tab tips column exists (ignore if already added)
@@ -127,6 +128,30 @@ $distinctDatesQuery = $db->prepare("
 ");
 $distinctDatesQuery->execute();
 $distinctDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
+
+if (invoicePaymentsTableExists($db)) {
+    $ipTs = invoicePaymentTimestampExpr();
+    $ipDatesSql = "
+        SELECT DISTINCT
+            CASE
+                WHEN strftime('%H:%M', {$ipTs}) BETWEEN '00:00' AND " . $db->quote($closingTime) . " AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
+                THEN date(datetime({$ipTs}, '-1 day'))
+                ELSE date({$ipTs})
+            END AS business_date
+        FROM invoice_payments ip
+        WHERE ip.payment_method != 'Credit'
+          AND {$ipTs} IS NOT NULL
+    ";
+    try {
+        foreach ($db->query($ipDatesSql)->fetchAll(PDO::FETCH_COLUMN) as $ipDate) {
+            if ($ipDate && !in_array($ipDate, $distinctDates, true)) {
+                $distinctDates[] = $ipDate;
+            }
+        }
+        rsort($distinctDates);
+    } catch (Throwable $e) {
+    }
+}
 
 // Always add today's date if it's not already in the list
 $today = date('Y-m-d');
@@ -223,6 +248,9 @@ $totalCashOut = $financialData['cash_out'] ?: 0;
 $totalCreditPayments = $financialData['credit_payments'] ?: 0;
 $eftCreditSalesTotal = $financialData['eft_credit_payments'] ?: 0;
 
+$invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$invoiceEftPayments = sumInvoiceEftPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+
 // Get cumulative cash sales up to selected date (optimized)
 $cumulativeCashSalesQuery = $db->prepare("
     WITH order_totals AS (
@@ -247,13 +275,13 @@ $cumulativeCashSales = $cumulativeCashSalesQuery->fetchColumn() ?: 0;
 
 // Calculate cash available in till for the selected date
 $totalCashSales = $cashSalesTotal; // Already calculated in the optimized query above
-$cashAvailableInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+$cashAvailableInTill = $totalCashIn + $totalCashSales + $totalCreditPayments + $invoiceCashPayments - $totalCashOut;
 
 // Calculate expected amount using cash in till logic for the selected date
 $expectedAmount = $cashAvailableInTill;
 
 // Total EFT payments including both regular EFT and credit sales with payment_status 'eft'
-$totalEftPayments = $eftSalesTotal + $eftCreditSalesTotal;
+$totalEftPayments = $eftSalesTotal + $eftCreditSalesTotal + $invoiceEftPayments;
 
 // Optimized: Single query for all credit sales data
 $creditSalesDataQuery = $db->prepare("
@@ -315,8 +343,8 @@ $cumulativePaidCredit = $creditData['cumulative_paid'] ?: 0;
 // Use unpaid total for the selected day instead of all-time unpaid credit
 $totalUnpaidCredit = $unpaidTotal;
 
-// Update cash sales display total to include partial payments
-$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount - $eftCreditSalesTotal ;
+// Update cash sales display total to include partial payments and invoice cash
+$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount + $invoiceCashPayments - $eftCreditSalesTotal ;
 
 // Total revenue includes all sales regardless of payment method (only for selected date)
 $totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments -$partialPaidTotal - $eftCreditSalesTotal;
@@ -510,7 +538,8 @@ $creditQuery->execute();
 $creditResult = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
 
 // Combine results
-$salesData = array_merge($ordersResult, $creditResult);
+$invoicePaymentRows = fetchInvoicePaymentReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$salesData = array_merge($ordersResult, $creditResult, $invoicePaymentRows);
 
 // Sort combined results by created_at in descending order (most recent first)
 usort($salesData, function($a, $b) {
@@ -1342,6 +1371,21 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
                                         <span>EFT</span>
                                     </span>
+                                    <?php elseif ($row['sale_type'] === 'invoice_cash'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z"></path><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clip-rule="evenodd"></path></svg>
+                                        <span>Invoice (Cash)</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'invoice_eft'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
+                                        <span>Invoice (<?= htmlspecialchars($row['payment_method'] ?? 'EFT') ?>)</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'invoice_payment'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 border border-blue-200 shadow-sm">
+                                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"></path></svg>
+                                        <span>Invoice (<?= htmlspecialchars($row['payment_method'] ?? 'Payment') ?>)</span>
+                                    </span>
                                     <?php elseif ($row['sale_type'] === 'cash'): ?>
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-teal-100 text-teal-800 border border-teal-200 shadow-sm">
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z"></path><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clip-rule="evenodd"></path></svg>
@@ -1428,6 +1472,15 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 }
                                 ?>
                                 <div class="print-void-actions inline-flex items-center justify-center gap-1">
+                                <?php if (!empty($row['is_invoice_payment'])): ?>
+                                <a href="invoice_print.php?id=<?= (int) ($row['invoice_id'] ?? 0) ?>" target="_blank"
+                                        class="inline-flex items-center justify-center w-8 h-8 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200"
+                                        title="Print Invoice">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
+                                    </svg>
+                                </a>
+                                <?php else: ?>
                                 <button type="button" onclick="reprintReceipt('<?= $row['id'] ?>', '<?= $row['sale_type'] ?>', '<?= $row['payment_status'] ?>')" 
                                         class="inline-flex items-center justify-center w-8 h-8 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200" 
                                         title="Reprint Receipt">
@@ -1435,6 +1488,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
                                     </svg>
                                 </button>
+                                <?php endif; ?>
                                 <?php if (!empty($row['laybye_id'])): ?>
                                 <button type="button" onclick="reprintLaybyeBalance(<?= (int) $row['laybye_id'] ?>)" 
                                         class="inline-flex items-center justify-center w-8 h-8 text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-amber-300 shadow-sm border border-amber-200" 

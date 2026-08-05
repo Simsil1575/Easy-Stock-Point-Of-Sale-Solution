@@ -160,7 +160,7 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
                     <button type="button" onclick="saveDoc('issue')" <?= $readonly ? 'disabled' : '' ?> class="w-full px-4 py-2.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 text-sm font-medium"><i class="fas fa-check mr-1"></i> Save &amp; Issue</button>
                     <?php endif; ?>
                     <?php if ($isEdit): ?>
-                    <a href="../invoicing_pdf.php?type=<?= $type ?>&id=<?= $docId ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-file-pdf mr-1"></i> Generate PDF</a>
+                    <a href="<?= $invBase ?? '../' ?>invoicing_pdf.php?type=<?= $type ?>&id=<?= $docId ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-file-pdf mr-1"></i> Generate PDF</a>
                     <?php endif; ?>
                 </div>
             </div>
@@ -412,7 +412,7 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
     }
 
     // ---- Product picker (POS-style) ----
-    const PRODUCT_IMG_BASE = '../products/';
+    const PRODUCT_IMG_BASE = '<?= $invBase ?? '../' ?>products/';
     function openProductPicker() {
         document.getElementById('pickerSearch').value = '';
         renderPicker();

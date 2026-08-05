@@ -22,6 +22,7 @@ try {
 
 // New SQLite connection
 $db = new PDO('sqlite:pos.db');
+require_once __DIR__ . '/invoice_transactions_helper.php';
 
 // Get selected date from request
 $selectedDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
@@ -119,8 +120,10 @@ $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashOutQuery->execute();
 $totalCashOut = $cashOutQuery->fetchColumn();
 
+$invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextBusinessDay, $closingTime, (bool) $isAfterMidnight);
+
 // Calculate final cash in till
-$cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+$cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments + $invoiceCashPayments - $totalCashOut;
 
 // Return JSON response
 header('Content-Type: application/json');

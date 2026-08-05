@@ -64,6 +64,8 @@ try {
     exit;
 }
 
+require_once __DIR__ . '/../invoice_transactions_helper.php';
+
 // Get business closing time (same as cash.php) for business-day alignment
 $closingTime = '22:00';
 try {
@@ -266,6 +268,15 @@ try {
     bindCashierParam($cashOutQuery);
     $cashOutQuery->execute();
     $totalCashOut = $cashOutQuery->fetchColumn();
+
+    $invoiceCashPayments = sumInvoiceCashPaymentsInRange(
+        $db,
+        $startDatetime,
+        $endDatetime,
+        ($selectedCashier === 'all' || empty($selectedCashier)) ? null : $selectedCashier,
+        $selectedCashierNumericId
+    );
+    $totalCashSales = floatval($totalCashSales) + $invoiceCashPayments;
 
     // Calculate cash in till / cash sales expected (matches cash.php formula)
     $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
@@ -474,6 +485,7 @@ try {
         'cash_sales_expected' => floatval($cashSalesExpected),
         'cash_in_till' => floatval($cashInTill),
         'total_cash_sales' => floatval($totalCashSales),
+        'invoice_cash_payments' => floatval($invoiceCashPayments),
         // CARD & CREDIT section
         'card_sales_expected' => floatval($cardSalesExpected),
         'unpaid_credit_sales' => floatval($unpaidCreditSales),

@@ -23,6 +23,7 @@ $db = new PDO('sqlite:pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
+require_once __DIR__ . '/invoice_transactions_helper.php';
 
 // Calculate business day boundaries based on closing time
 $closingHour = (int)substr($closingTime, 0, 2);
@@ -411,7 +412,7 @@ $selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
                 $todayCashSalesQuery->execute();
                 $todayCashSalesOnly = $todayCashSalesQuery->fetchColumn() ?: 0;
                 
-                $cashAvailableInTill = $totalCashIn - $totalCashOut + $todayCashSalesOnly + $paidCreditAmount;
+                $cashAvailableInTill = $totalCashIn - $totalCashOut + $todayCashSalesOnly + $paidCreditAmount + sumInvoiceCashPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
 
                 // Total revenue includes all sales regardless of payment method (only for selected date)
                 $totalCashOnHand = $cashSalesTotal + $creditTotal;
@@ -618,7 +619,8 @@ $selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
                                     $creditResult = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
                                     
                                     // Combine results
-                                    $result = array_merge($ordersResult, $creditResult);
+                                    $invoicePaymentRows = fetchInvoicePaymentReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+                                    $result = array_merge($ordersResult, $creditResult, $invoicePaymentRows);
                                     
                                     // Sort combined results by created_at in descending order (most recent first)
                                     usort($result, function($a, $b) {
@@ -646,6 +648,10 @@ $selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
                                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
                                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
                                                         <span>EFT</span>
+                                                    </span>
+                                                    <?php elseif (in_array($row['sale_type'], ['invoice_cash', 'invoice_eft', 'invoice_payment'], true)): ?>
+                                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-sm">
+                                                        <span>Invoice</span>
                                                     </span>
                                                     <?php elseif ($row['sale_type'] === 'cash' || $row['sale_type'] === 'paid'): ?>
                                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 border border-blue-200 shadow-sm">

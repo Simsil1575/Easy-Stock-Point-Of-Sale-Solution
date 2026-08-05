@@ -9,19 +9,7 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/invoicing_lib.php';
 
-/**
- * Guard: JSON 401/403 responses (this is an API, not a page).
- */
-if (!isset($_SESSION['user_id'], $_SESSION['username'], $_SESSION['role'])) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'message' => 'Unauthorized. Please log in again.']);
-    exit;
-}
-if (!in_array(invCurrentRole(), ['admin', 'manager'], true)) {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'message' => 'You do not have permission to perform this action.']);
-    exit;
-}
+invRequireInvoicingAccessJson();
 
 invBootstrap();
 $db = invGetDb();

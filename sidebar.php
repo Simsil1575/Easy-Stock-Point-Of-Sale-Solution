@@ -357,7 +357,9 @@
             currentPage === 'bale' || currentPage.startsWith('bale') ||
             currentPage === 'cash-up' || currentPage.startsWith('cash-up') ||
             currentPage.startsWith('damaged_goods') ||
-            currentPage.startsWith('create_creditor')
+            currentPage.startsWith('create_creditor') ||
+            currentPage.startsWith('quotation') || currentPage.startsWith('quotations') ||
+            currentPage.startsWith('invoice') || currentPage.startsWith('invoices')
         );
         
         // Remove active class from all links

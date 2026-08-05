@@ -18,7 +18,7 @@
 
         // ---- API helper ----
         async function invApi(action, payload = {}) {
-            const res = await fetch('../invoicing_ajax.php', {
+            const res = await fetch('<?= $invBase ?? '../' ?>invoicing_ajax.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(Object.assign({ action }, payload))

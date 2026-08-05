@@ -26,6 +26,7 @@ try {
 }
 
 require_once __DIR__ . '/terminal_helper.php';
+require_once __DIR__ . '/invoice_transactions_helper.php';
 ensureTerminalSchema($db);
 
 // Check activation status
@@ -188,9 +189,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
                 $cashOutQuery->execute();
                 $totalCashOut = $cashOutQuery->fetchColumn();
+
+                $invoiceCashPayments = sumInvoiceCashPayments($db, $postSelectedDate, $nextBusinessDay, $closingTime, (bool) $isAfterMidnight);
                 
                 // Calculate cash in till for selected date's business day
-                $cashInTillValidation = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+                $cashInTillValidation = $totalCashIn + $totalCashSales + $totalCreditPayments + $invoiceCashPayments - $totalCashOut;
                 
                 // Validate withdrawal amount
                 if ($amount > $cashInTillValidation) {
@@ -410,9 +413,11 @@ try {
     $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
     $cashOutQuery->execute();
     $totalCashOut = $cashOutQuery->fetchColumn();
+
+    $invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextBusinessDay, $closingTime, (bool) $isAfterMidnight);
     
     // Final cash in till calculation using selected date's business day
-    $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+    $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments + $invoiceCashPayments - $totalCashOut;
 } catch (PDOException $e) {
     $cashInTill = 0;
     error_log("Error calculating cash in till: " . $e->getMessage());

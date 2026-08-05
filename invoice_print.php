@@ -10,7 +10,7 @@ if (!isset($_SESSION['user_id'], $_SESSION['username'], $_SESSION['role'])) {
     header('Location: ./');
     exit;
 }
-if (!in_array(invCurrentRole(), ['admin', 'manager'], true)) {
+if (!in_array(invCurrentRole(), ['admin', 'manager', 'cashier'], true)) {
     header('Location: ./');
     exit;
 }

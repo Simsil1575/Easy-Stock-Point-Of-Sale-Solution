@@ -101,6 +101,35 @@ function invRequireAdminOrManager(): void
 }
 
 /**
+ * Page/API guard for admin, manager, and cashier invoicing access.
+ */
+function invRequireInvoicingAccess(): void
+{
+    invRequireLogin();
+    if (!in_array(invCurrentRole(), ['admin', 'manager', 'cashier'], true)) {
+        header('Location: ../');
+        exit;
+    }
+}
+
+/**
+ * JSON guard variant for invoicing AJAX endpoints.
+ */
+function invRequireInvoicingAccessJson(): void
+{
+    if (!isset($_SESSION['user_id'], $_SESSION['username'], $_SESSION['role'])) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Unauthorized. Please log in again.']);
+        exit;
+    }
+    if (!in_array(invCurrentRole(), ['admin', 'manager', 'cashier'], true)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'You do not have permission to perform this action.']);
+        exit;
+    }
+}
+
+/**
  * Permission matrix. Cashier support is scaffolded for later phases.
  *
  * @param string $action e.g. 'delete_paid_invoice', 'edit', 'delete', 'create', 'view'
@@ -115,7 +144,7 @@ function invCan(string $action, string $role = ''): bool
             // Everything except deleting paid invoices.
             return $action !== 'delete_paid_invoice';
         case 'cashier':
-            return in_array($action, ['view', 'create', 'print', 'pdf'], true);
+            return $action !== 'delete_paid_invoice';
         default:
             return false;
     }

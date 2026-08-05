@@ -235,6 +235,41 @@ try {
         $ordersSheet->getColumnDimension($col)->setAutoSize(true);
     }
 
+    require_once __DIR__ . '/../invoice_transactions_helper.php';
+    $invoicePaymentExportRows = fetchInvoicePaymentExportRows($pdo, $startDateFormatted, $endDateFormatted);
+
+    $invoiceSheet = $spreadsheet->createSheet();
+    $invoiceSheet->setTitle('Invoice Payments');
+    $invoiceSheet->setCellValue('A1', 'Payment ID');
+    $invoiceSheet->setCellValue('B1', 'Invoice ID');
+    $invoiceSheet->setCellValue('C1', 'Invoice Number');
+    $invoiceSheet->setCellValue('D1', 'Customer');
+    $invoiceSheet->setCellValue('E1', 'Payment Date');
+    $invoiceSheet->setCellValue('F1', 'Method');
+    $invoiceSheet->setCellValue('G1', 'Amount');
+    $invoiceSheet->setCellValue('H1', 'Reference');
+    $invoiceSheet->setCellValue('I1', 'Received By');
+    $invoiceSheet->setCellValue('J1', 'Recorded At');
+    $invoiceSheet->getStyle('A1:J1')->applyFromArray($headerStyle);
+
+    $row = 2;
+    foreach ($invoicePaymentExportRows as $payment) {
+        $invoiceSheet->setCellValue('A' . $row, $payment['id']);
+        $invoiceSheet->setCellValue('B' . $row, $payment['invoice_id']);
+        $invoiceSheet->setCellValue('C' . $row, $payment['invoice_number']);
+        $invoiceSheet->setCellValue('D' . $row, $payment['customer_name']);
+        $invoiceSheet->setCellValue('E' . $row, $payment['payment_date']);
+        $invoiceSheet->setCellValue('F' . $row, $payment['payment_method']);
+        $invoiceSheet->setCellValue('G' . $row, $payment['amount']);
+        $invoiceSheet->setCellValue('H' . $row, $payment['reference']);
+        $invoiceSheet->setCellValue('I' . $row, $payment['received_by']);
+        $invoiceSheet->setCellValue('J' . $row, $payment['recorded_at']);
+        $row++;
+    }
+    foreach (range('A', 'J') as $col) {
+        $invoiceSheet->getColumnDimension($col)->setAutoSize(true);
+    }
+
     // Create Summary sheet
     $summarySheet = $spreadsheet->createSheet();
     $summarySheet->setTitle('Summary');
@@ -298,6 +333,21 @@ try {
     ]);
     $ordersTotal = $ordersStmt->fetch(PDO::FETCH_ASSOC);
 
+    $invoicePaymentsSummary = ['count' => 0, 'total' => 0];
+    if (invoicePaymentsTableExists($pdo)) {
+        $ipSummaryStmt = $pdo->prepare("
+            SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+            FROM invoice_payments
+            WHERE payment_method != 'Credit'
+              AND DATE(COALESCE(created_at, payment_date || ' 12:00:00')) BETWEEN :start_date AND :end_date
+        ");
+        $ipSummaryStmt->execute([
+            ':start_date' => $startDateFormatted,
+            ':end_date' => $endDateFormatted,
+        ]);
+        $invoicePaymentsSummary = $ipSummaryStmt->fetch(PDO::FETCH_ASSOC) ?: $invoicePaymentsSummary;
+    }
+
     // Populate summary data
     $summarySheet->setCellValue('A2', 'Cash In');
     $summarySheet->setCellValue('B2', $cashIn['count']);
@@ -319,13 +369,17 @@ try {
     $summarySheet->setCellValue('B6', $ordersTotal['count']);
     $summarySheet->setCellValue('C6', $ordersTotal['total'] ?: 0);
 
+    $summarySheet->setCellValue('A7', 'Invoice Payments');
+    $summarySheet->setCellValue('B7', $invoicePaymentsSummary['count'] ?? 0);
+    $summarySheet->setCellValue('C7', $invoicePaymentsSummary['total'] ?: 0);
+
     // Calculate net cash flow
     $netCashFlow = ($cashIn['total'] ?: 0) - ($cashOut['total'] ?: 0);
-    $summarySheet->setCellValue('A8', 'Net Cash Flow');
-    $summarySheet->setCellValue('C8', $netCashFlow);
+    $summarySheet->setCellValue('A9', 'Net Cash Flow');
+    $summarySheet->setCellValue('C9', $netCashFlow);
 
     // Format the summary sheet
-    $summarySheet->getStyle('A8:C8')->applyFromArray([
+    $summarySheet->getStyle('A9:C9')->applyFromArray([
         'font' => [
             'bold' => true,
         ],
