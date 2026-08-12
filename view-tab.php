@@ -33,6 +33,7 @@ require_once __DIR__ . '/terminal_helper.php';
 ensureTabPrepaidBalanceColumn($db);
 ensureTerminalSchema($db);
 ensureTabVoidMarkColumns($db);
+ensureTabItemVoidMarkColumns($db);
 ensureTabGratuityColumns($db);
 
 $tabGratuitySettings = tab_gratuity_settings($db);
@@ -93,6 +94,7 @@ function getUsernameById($userId) {
 // Handle POST requests for payments and item edits/deletes
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     handle_tab_void_mark_post_request($db);
+    handle_tab_item_void_mark_post_request($db);
 
     if (isset($_POST['toggle_tab_gratuity'])) {
         $tabId = intval($_POST['tab_id'] ?? 0);
@@ -392,20 +394,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
         
-        // Get unpaid tab items
-        $tabItemsStmt = $db->prepare("
-            SELECT ti.*, 
-                   COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) as paid_amount,
-                   (ti.quantity * ti.price) as item_total
-            FROM tab_items ti
-            WHERE ti.tab_id = ?
-                AND (
-                    (ti.quantity * ti.price) < 0
-                    OR COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) < (ti.quantity * ti.price)
-                )
-        ");
-        $tabItemsStmt->execute([$tabId]);
-        $unpaidItems = $tabItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        // Get unpaid tab items (excludes lines marked for void)
+        $unpaidItems = tab_fetch_unpaid_payable_items($db, $tabId, false);
         
         if (empty($unpaidItems)) {
             $_SESSION['error'] = 'No unpaid items to transfer';
@@ -687,20 +677,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Column might already exist, ignore error
         }
         
-        // Get unpaid tab items (ordered by oldest first - FIFO)
-        $tabItemsStmt = $db->prepare("
-            SELECT ti.*, (ti.quantity * ti.price) as item_total,
-                   COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) as paid_amount
-            FROM tab_items ti
-            WHERE ti.tab_id = ?
-                AND (
-                    (ti.quantity * ti.price) < 0
-                    OR COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) < (ti.quantity * ti.price)
-                )
-            ORDER BY ti.added_at ASC
-        ");
-        $tabItemsStmt->execute([$tabId]);
-        $unpaidItems = $tabItemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        // Get unpaid tab items (ordered by oldest first - FIFO; excludes void-pending)
+        $unpaidItems = tab_fetch_unpaid_payable_items($db, $tabId, true);
         
         $remainingPayment = $amount;
         $itemsToPay = [];
@@ -1373,6 +1351,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             $orderDataForReceipt['transaction_ref'] = $payment['transaction_ref'] ?? '';
             $orderDataForReceipt['wallet_provider'] = $payment['wallet_provider'] ?? '';
             $orderDataForReceipt['tips'] = floatval($payment['tip_amount'] ?? 0);
+            $orderDataForReceipt['cash_back_amount'] = floatval($payment['cash_back_amount'] ?? 0);
             $orderDataForReceipt['payment_date'] = $payment['payment_date'] ?? '';
             
             if ($payment['payment_method'] === 'mixed' && $mixedPayment) {
@@ -1881,13 +1860,19 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                 <?php else: ?>
                                     <?php 
                                     $itemsTotal = 0;
+                                    $voidPendingTotal = 0;
                                     foreach($tabItems as $item): 
                                         $isPrepayLine = is_tab_prepayment_line_name($item['product_name']);
                                         $isPostpaidLine = is_tab_postpaid_line_name($item['product_name']);
                                         $itemTotal = $item['quantity'] * $item['price'];
-                                        $itemsTotal += $itemTotal;
+                                        $itemVoidMarked = tab_item_is_marked_for_void($item);
+                                        if ($itemVoidMarked) {
+                                            $voidPendingTotal += $itemTotal;
+                                        } else {
+                                            $itemsTotal += $itemTotal;
+                                        }
                                     ?>
-                                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors <?= $isPrepayLine ? 'bg-teal-50/60 dark:bg-teal-950/20' : ($isPostpaidLine ? 'bg-amber-50/70 dark:bg-amber-950/20' : '') ?>">
+                                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors <?= $itemVoidMarked ? 'bg-red-50/80 dark:bg-red-950/20' : ($isPrepayLine ? 'bg-teal-50/60 dark:bg-teal-950/20' : ($isPostpaidLine ? 'bg-amber-50/70 dark:bg-amber-950/20' : '')) ?>">
                                             <td class="px-6 py-4 whitespace-nowrap" data-label="Product">
                                                 <div class="flex items-center gap-3">
                                                     <div class="relative w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center <?= $isPrepayLine ? 'bg-teal-100' : ($isPostpaidLine ? 'bg-amber-100' : 'bg-gray-100') ?>">
@@ -1907,6 +1892,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                                     </div>
                                                     <div class="flex flex-col">
                                                         <span class="text-sm font-medium text-gray-800 dark:text-gray-200"><?= htmlspecialchars($item['product_name']) ?></span>
+                                                        <?= tab_item_void_pending_badge_html($item) ?>
                                                         <?php if ($isPrepayLine): ?>
                                                         <span class="text-xs text-teal-700 font-medium">Prepayment · not inventory</span>
                                                         <?php elseif ($isPostpaidLine): ?>
@@ -1921,14 +1907,15 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                             <?php if ($viewTab['status'] === 'open'): ?>
                                             <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium" data-label="Actions">
                                                 <div class="flex items-center justify-center gap-2">
-                                                    <?php if (!$isPrepayLine): ?>
+                                                    <?php if (!$isPrepayLine && !$itemVoidMarked): ?>
                                                     <button onclick="openEditItemModal(<?= $item['id'] ?>, '<?= htmlspecialchars($item['product_name'], ENT_QUOTES) ?>', <?= $item['quantity'] ?>, <?= $item['price'] ?>, <?= $viewTab['id'] ?>)" 
                                                             class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:pointer-events-none dark:text-blue-500 dark:hover:text-blue-400" 
                                                             title="Edit">
                                                         <i data-lucide="pencil" class="w-4 h-4"></i>
                                                     </button>
                                                     <?php endif; ?>
-                                                    <?php if (can_remove_tab_items_from_session()): ?>
+                                                    <?= tab_item_void_mark_action_html($item, (int) $viewTab['id'], $isPrepayLine, $isPostpaidLine) ?>
+                                                    <?php if (can_delete_tab_items_from_session() && !$itemVoidMarked): ?>
                                                     <button type="button"
                                                             onclick="openDeleteTabItemModal(this)"
                                                             data-delete-item-id="<?= (int)$item['id'] ?>"
@@ -1949,6 +1936,15 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                     <tr class="bg-teal-50/40">
                                         <td colspan="<?= $viewTab['status'] === 'open' ? '3' : '3' ?>" class="px-6 py-3 text-end text-sm text-gray-700" data-label="">Gratuity (<?= htmlspecialchars(rtrim(rtrim(number_format($tabGratuityPercent, 2, '.', ''), '0'), '.')) ?>%):</td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-teal-800 text-end" data-label="">N$<?= number_format($tabGratuityAmount, 2) ?></td>
+                                        <?php if ($viewTab['status'] === 'open'): ?>
+                                        <td class="px-6 py-4" data-label=""></td>
+                                        <?php endif; ?>
+                                    </tr>
+                                    <?php endif; ?>
+                                    <?php if ($voidPendingTotal > 0.001): ?>
+                                    <tr class="bg-red-50/50">
+                                        <td colspan="<?= $viewTab['status'] === 'open' ? '3' : '3' ?>" class="px-6 py-3 text-end text-sm text-red-700" data-label="">Excluded (void pending):</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-red-700 text-end" data-label="">N$<?= number_format($voidPendingTotal, 2) ?></td>
                                         <?php if ($viewTab['status'] === 'open'): ?>
                                         <td class="px-6 py-4" data-label=""></td>
                                         <?php endif; ?>
@@ -2717,12 +2713,51 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             if (urlParams.get('payment_success') === '1' && urlParams.get('order_id')) {
                 const orderData = <?= $orderDataForReceipt ? json_encode($orderDataForReceipt) : 'null' ?>;
                 if (orderData) {
-                    printPaymentReceipt(orderData).finally(function() {
+                    const drawerPromise = shouldOpenDrawerForTabPayment(orderData)
+                        ? openCashDrawer(orderData.cashier_username)
+                        : Promise.resolve();
+                    Promise.allSettled([
+                        drawerPromise,
+                        printPaymentReceipt(orderData)
+                    ]).finally(function() {
                         window.history.replaceState({}, document.title, window.location.pathname + '?id=<?= $tabId ?>');
                     });
                 }
             }
         });
+
+        function shouldOpenDrawerForTabPayment(orderData) {
+            if (!orderData) return false;
+            const method = String(orderData.payment_method || '').toLowerCase();
+            const cashBack = parseFloat(orderData.cash_back_amount) || 0;
+            if (cashBack > 0.001) return true;
+            if (method === 'cash') return true;
+            if (method === 'mixed') {
+                const cashAmt = parseFloat(orderData.cash_amount) || parseFloat(orderData.cash_received) || 0;
+                return cashAmt > 0.001;
+            }
+            return false;
+        }
+
+        function openCashDrawer(cashierUsername) {
+            if (typeof sendToPrinter !== 'function') {
+                return Promise.resolve({ success: false, message: 'Printer helper unavailable' });
+            }
+            return sendToPrinter({
+                open_drawer_only: true,
+                cashier_username: cashierUsername || <?= json_encode((string) ($_SESSION['username'] ?? 'Unknown')) ?>
+            }).then(function(result) {
+                if (result && result.success) {
+                    console.log('Cash drawer opened successfully');
+                } else {
+                    console.error('Cash drawer failed:', result && result.message);
+                }
+                return result;
+            }).catch(function(err) {
+                console.error('Drawer opening error:', err);
+                return { success: false, error: err };
+            });
+        }
 
         // Print payment receipt
         function printPaymentReceipt(orderData) {
@@ -3366,6 +3401,9 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             .then(function(r) { return r.json(); })
             .then(function(result) {
                 if (result.success) {
+                    if (data.payment_method === 'cash') {
+                        openCashDrawer();
+                    }
                     Swal.fire({ icon: 'success', title: 'Success', text: result.message || 'Tip recorded', timer: 2000, showConfirmButton: true });
                     closeTabStandaloneTipModal();
                 } else {

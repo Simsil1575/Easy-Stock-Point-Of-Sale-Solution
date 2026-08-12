@@ -24,6 +24,7 @@ $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 require_once __DIR__ . '/../tab_balance_helper.php';
 ensureTabVoidMarkColumns($db);
+ensureTabItemVoidMarkColumns($db);
 // #region agent log
 @file_put_contents(__DIR__ . '/../debug-81774c.log', json_encode(['sessionId'=>'81774c','runId'=>'post-fix','hypothesisId'=>'H1','location'=>'admin/credit-tabs.php:27','message'=>'tab_balance_helper loaded without redeclare conflict','data'=>['recalculateTabBalance_exists'=>function_exists('recalculateTabBalance')],'timestamp'=>(int)round(microtime(true)*1000)])."\n", FILE_APPEND);
 // #endregion
@@ -87,6 +88,7 @@ function getUsernamesByIds($userIds) {
 // Handle POST requests for adding/updating/deleting/closing tabs
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     handle_tab_void_mark_post_request($db);
+    handle_tab_item_void_mark_post_request($db);
 
     if (isset($_POST['delete_item_id'])) {
         // Delete tab item
@@ -306,6 +308,7 @@ $tabsStmt = $db->prepare("
         t.marked_for_void,
         t.void_marked_by,
         t.void_marked_at,
+        (SELECT COUNT(*) FROM tab_items ti WHERE ti.tab_id = t.id AND ti.marked_for_void = 1) AS items_marked_for_void_count,
         c.name as creditor_name,
         c.phone as creditor_phone
     FROM tabs t
@@ -947,11 +950,11 @@ th[onclick]:hover {
                                                 <?php foreach($tabs as $tab): 
                                                     $isUnpaid = $tab['current_balance'] > 0;
                                                 ?>
-                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= (can_view_tab_void_mark_in_list_from_session() && tab_is_marked_for_void($tab)) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
+                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= (can_view_tab_void_mark_in_list_from_session() && tab_has_void_pending_in_list($tab)) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
                                                         data-tab-id="<?= $tab['id'] ?>"
                                                         data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                         data-tab-status="<?= strtolower($tab['status']) ?>"
-                                                        data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
+                                                        data-tab-void-mark="<?= tab_has_void_pending_in_list($tab) ? '1' : '0' ?>"
                                                         data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                         data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                         data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"

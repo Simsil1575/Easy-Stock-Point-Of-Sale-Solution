@@ -98,6 +98,11 @@ try {
         $tab = $tabStmt->fetch(PDO::FETCH_ASSOC);
     } else {
         $tabId = $tab['id'];
+
+        // Only the tab owner may add items (admins/managers included — no bypass)
+        if (!session_owns_tab($tab)) {
+            throw new Exception('You can only add items to tabs that belong to you');
+        }
         
         // If tab is closed, reopen it automatically
         if ($tab['status'] === 'closed') {

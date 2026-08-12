@@ -2317,6 +2317,7 @@ if (!$businessInfo) {
         // Current user info for table ownership
         const currentUserId = <?php echo json_encode($_SESSION['user_id'] ?? null); ?>;
         const currentUserRole = <?php echo json_encode($_SESSION['role'] ?? 'cashier'); ?>;
+        const currentUsername = <?php echo json_encode($_SESSION['username'] ?? ''); ?>;
         
         // Business info for Android native printing
         // Make businessInfo global so sendToPrinter (from receipt.php?js=true) can access it
@@ -5733,9 +5734,6 @@ if (!$businessInfo) {
         }
 
         function displayTableSelectionModal(tables) {
-            // Check if user can select all tables (managers and admins can)
-            const canSelectAllTables = ['manager', 'admin'].includes(currentUserRole);
-
             // Create table list HTML with search
             let tablesListHTML = '';
             if (tables.length === 0) {
@@ -5753,10 +5751,12 @@ if (!$businessInfo) {
                     const balanceClass = balance > 0 ? 'text-orange-500 font-bold' : (balance < -0.005 ? 'text-teal-700 font-semibold' : 'text-teal-600 font-semibold');
                     const balanceText = balance > 0 ? `N$${balance.toFixed(2)}` : (balance < -0.005 ? `Cr N$${Math.abs(balance).toFixed(2)}` : 'N$0.00');
                     
-                    // Check if this table belongs to the current user or if user can select all
+                    // Only the tab owner may add items (admins/managers included)
                     const tableCashierId = table.cashier_id;
-                    const isOwnTable = !tableCashierId || tableCashierId == currentUserId;
-                    const canSelect = canSelectAllTables || isOwnTable;
+                    const isOwnTable = !tableCashierId
+                        || String(tableCashierId) === String(currentUserId)
+                        || String(tableCashierId).toLowerCase() === String(currentUsername || '').toLowerCase();
+                    const canSelect = isOwnTable;
                     
                     // Styling for selectable vs non-selectable tables
                     const containerClass = canSelect 

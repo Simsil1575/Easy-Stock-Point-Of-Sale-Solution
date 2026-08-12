@@ -62,11 +62,168 @@ function ensureDailyStockSummary($db, $productId, $date) {
 
 // Set the default timezone to Namibian time
 
+function getProductSalesForDate($db, $productId, $date) {
+    $salesStmt = $db->prepare("
+        SELECT COALESCE(
+            (SELECT SUM(oi.quantity)
+             FROM order_items oi
+             JOIN orders o ON oi.order_id = o.id
+             WHERE oi.product_name = (SELECT name FROM products WHERE id = ?)
+             AND DATE(o.created_at) = ?
+            ), 0
+        ) + COALESCE(
+            (SELECT SUM(csi.quantity)
+             FROM credit_sale_items csi
+             JOIN credit_sales cs ON csi.sale_id = cs.id
+             WHERE csi.product_name = (SELECT name FROM products WHERE id = ?)
+             AND DATE(cs.created_at) = ?
+            ), 0
+        ) as total_sold
+    ");
+    $salesStmt->execute([$productId, $date, $productId, $date]);
+    return (float)$salesStmt->fetchColumn();
+}
+
+function getReceivedStockForDate($db, $productId, $date) {
+    $receivedStmt = $db->prepare("
+        SELECT COALESCE(SUM(quantity_change), 0)
+        FROM stock_changes
+        WHERE product_id = ?
+        AND action = 'Restock'
+        AND DATE(changed_at) = ?
+    ");
+    $receivedStmt->execute([$productId, $date]);
+    return (float)$receivedStmt->fetchColumn();
+}
+
+function revertStockTakingSubmission($db, $stockType, $category = '') {
+    $today = date('Y-m-d');
+    $tomorrow = date('Y-m-d', strtotime('+1 day'));
+    $stockType = $stockType === 'opening' ? 'opening' : 'closing';
+    $actionName = $stockType === 'opening' ? 'Opening Stock Adjustment' : 'Closing Stock Adjustment';
+
+    if ($category !== '') {
+        $productStmt = $db->prepare("SELECT id FROM products WHERE category = ?");
+        $productStmt->execute([$category]);
+    } else {
+        $productStmt = $db->query("SELECT id FROM products");
+    }
+    $productIds = $productStmt->fetchAll(PDO::FETCH_COLUMN);
+
+    $revertedCount = 0;
+
+    foreach ($productIds as $productId) {
+        if ($stockType === 'opening') {
+            $checkStmt = $db->prepare("
+                SELECT COUNT(*) FROM opening_stock
+                WHERE product_id = ? AND DATE(recorded_at) = ?
+            ");
+        } else {
+            $checkStmt = $db->prepare("
+                SELECT COUNT(*) FROM closing_stock
+                WHERE product_id = ? AND DATE(recorded_at) = ?
+            ");
+        }
+        $checkStmt->execute([$productId, $today]);
+        if ((int)$checkStmt->fetchColumn() === 0) {
+            continue;
+        }
+
+        $adjStmt = $db->prepare("
+            SELECT old_quantity FROM stock_changes
+            WHERE product_id = ? AND action = ? AND DATE(changed_at) = ? AND is_stock_taken = 1
+            ORDER BY changed_at DESC
+            LIMIT 1
+        ");
+        $adjStmt->execute([$productId, $actionName, $today]);
+        $oldQty = $adjStmt->fetchColumn();
+        if ($oldQty !== false) {
+            $updateStmt = $db->prepare("UPDATE products SET quantity = ? WHERE id = ?");
+            $updateStmt->execute([$oldQty, $productId]);
+
+            $delAdj = $db->prepare("
+                DELETE FROM stock_changes
+                WHERE product_id = ? AND action = ? AND DATE(changed_at) = ? AND is_stock_taken = 1
+            ");
+            $delAdj->execute([$productId, $actionName, $today]);
+        }
+
+        if ($stockType === 'opening') {
+            $delOpening = $db->prepare("
+                DELETE FROM opening_stock
+                WHERE product_id = ? AND DATE(recorded_at) = ?
+            ");
+            $delOpening->execute([$productId, $today]);
+
+            $prevOpeningStmt = $db->prepare("
+                SELECT opening_quantity FROM opening_stock
+                WHERE product_id = ? AND DATE(recorded_at) < ?
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            ");
+            $prevOpeningStmt->execute([$productId, $today]);
+            $prevOpening = $prevOpeningStmt->fetchColumn();
+            $prevOpening = $prevOpening !== false ? (float)$prevOpening : 0;
+
+            $soldToday = getProductSalesForDate($db, $productId, $today);
+            $receivedToday = getReceivedStockForDate($db, $productId, $today);
+
+            ensureDailyStockSummary($db, $productId, $today);
+            $updateSummary = $db->prepare("
+                UPDATE daily_stock_summary
+                SET opening_quantity = ?, sold_quantity = ?, received_quantity = ?
+                WHERE product_id = ? AND date = ?
+            ");
+            $updateSummary->execute([$prevOpening, $soldToday, $receivedToday, $productId, $today]);
+        } else {
+            $delClosing = $db->prepare("
+                DELETE FROM closing_stock
+                WHERE product_id = ? AND DATE(recorded_at) = ?
+            ");
+            $delClosing->execute([$productId, $today]);
+
+            $unmarkStmt = $db->prepare("
+                UPDATE stock_changes SET is_stock_taken = 0
+                WHERE product_id = ? AND action = 'Restock' AND DATE(changed_at) = ?
+            ");
+            $unmarkStmt->execute([$productId, $today]);
+
+            $delTomorrowOpening = $db->prepare("
+                DELETE FROM opening_stock
+                WHERE product_id = ?
+                AND DATE(recorded_at) = ?
+                AND notes LIKE '%automatically set from previous day closing stock%'
+            ");
+            $delTomorrowOpening->execute([$productId, $tomorrow]);
+
+            $soldToday = getProductSalesForDate($db, $productId, $today);
+            $receivedToday = getReceivedStockForDate($db, $productId, $today);
+
+            ensureDailyStockSummary($db, $productId, $today);
+            $updateSummary = $db->prepare("
+                UPDATE daily_stock_summary
+                SET closing_quantity = 0, sold_quantity = ?, received_quantity = ?
+                WHERE product_id = ? AND date = ?
+            ");
+            $updateSummary->execute([$soldToday, $receivedToday, $productId, $today]);
+
+            $updateTomorrowSummary = $db->prepare("
+                UPDATE daily_stock_summary
+                SET opening_quantity = 0
+                WHERE product_id = ? AND date = ?
+            ");
+            $updateTomorrowSummary->execute([$productId, $tomorrow]);
+        }
+
+        $revertedCount++;
+    }
+
+    return $revertedCount;
+}
+
 // Handle form submission for stock taking
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        $db->beginTransaction();
-        
         // Handle both JSON and form data
         $stockTakingData = null;
         if (isset($_POST['stock_taking_data'])) {
@@ -76,7 +233,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // JSON submission for AJAX
             $stockTakingData = json_decode(file_get_contents('php://input'), true);
         }
-        
+
+        if (is_array($stockTakingData) && isset($stockTakingData['action']) && $stockTakingData['action'] === 'revert') {
+            $db->beginTransaction();
+
+            $stockType = isset($stockTakingData['stock_type']) ? $stockTakingData['stock_type'] : 'closing';
+            $category = isset($stockTakingData['category']) ? trim((string)$stockTakingData['category']) : '';
+            $revertedCount = revertStockTakingSubmission($db, $stockType, $category);
+
+            $db->commit();
+
+            $stockLabel = $stockType === 'opening' ? 'opening' : 'closing';
+            $scopeLabel = $category !== '' ? " for category \"{$category}\"" : '';
+            http_response_code(200);
+            echo json_encode([
+                'success' => true,
+                'reverted' => $revertedCount,
+                'message' => $revertedCount > 0
+                    ? "Reverted today's {$stockLabel} stock for {$revertedCount} product(s){$scopeLabel}."
+                    : "No {$stockLabel} stock records found for today{$scopeLabel}."
+            ]);
+            exit;
+        }
+
+        $db->beginTransaction();
+
         if (isset($stockTakingData['items']) && is_array($stockTakingData['items'])) {
             $stockTakingItems = []; // Store items for PDF generation
             $today = date('Y-m-d');
@@ -1430,6 +1611,12 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                                         <option value="<?= htmlspecialchars($category) ?>"><?= htmlspecialchars($category) ?></option>
                                     <?php endforeach; ?>
                                 </select>
+                                <button id="revertStockBtn" type="button" title="Undo today's opening/closing stock submission" class="flex-shrink-0 inline-flex items-center justify-center px-2 sm:px-3 py-2 text-xs sm:text-sm lg:text-base border border-amber-300 rounded-md shadow-sm font-medium text-amber-800 bg-amber-50 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 transition duration-150 ease-in-out whitespace-nowrap">
+                                    <svg class="w-4 h-4 sm:w-5 sm:h-5 sm:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path>
+                                    </svg>
+                                    <span class="hidden sm:inline">Revert</span>
+                                </button>
                                 <button id="viewAllBtn" class="flex-1 sm:flex-initial inline-flex items-center justify-center px-2 sm:px-4 py-2 text-xs sm:text-sm lg:text-base border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap">
                                     <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path>
@@ -1747,6 +1934,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
         
         const searchInput = document.getElementById('searchInput');
         const categoryFilter = document.getElementById('categoryFilter');
+        const revertStockBtn = document.getElementById('revertStockBtn');
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
         const bulkActionsPanel = document.getElementById('bulkActionsPanel');
         const selectedCount = document.getElementById('selectedCount');
@@ -1901,6 +2089,53 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             filterRows('');
             // Show all rows without pagination
             showAllRows();
+        });
+
+        revertStockBtn.addEventListener('click', async () => {
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
+            const category = categoryFilter.value;
+            const stockLabel = stockType === 'opening' ? 'opening' : 'closing';
+            const scopeLabel = category ? ` for category "${category}"` : ' for all categories';
+
+            const confirmed = confirm(
+                `Revert today's ${stockLabel} stock submission${scopeLabel}?\n\n` +
+                'This will restore product quantities and remove the recorded stock values. This cannot be undone.'
+            );
+            if (!confirmed) return;
+
+            revertStockBtn.disabled = true;
+            const originalHtml = revertStockBtn.innerHTML;
+            revertStockBtn.innerHTML = `
+                <div class="w-4 h-4 border-2 border-amber-800 border-t-transparent rounded-full animate-spin"></div>
+                <span class="hidden sm:inline ml-1.5">Reverting...</span>
+            `;
+
+            try {
+                const response = await fetch('stock_taking.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'revert',
+                        stock_type: stockType,
+                        category: category
+                    })
+                });
+
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || 'Failed to revert stock taking');
+                }
+
+                showToast(data.message, data.reverted > 0 ? 'success' : 'info');
+                clearCurrentStockTakingDraft();
+                setTimeout(() => location.reload(), 1200);
+            } catch (error) {
+                console.error('Revert error:', error);
+                showToast(error.message || 'Failed to revert stock taking', 'error');
+            } finally {
+                revertStockBtn.disabled = false;
+                revertStockBtn.innerHTML = originalHtml;
+            }
         });
 
         function filterRows(searchTerm) {

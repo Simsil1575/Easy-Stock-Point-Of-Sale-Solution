@@ -178,7 +178,12 @@ $e = fn($v) => htmlspecialchars((string) $v);
     async function invRowAction(id, action) {
         try {
             if (action === 'delete') {
-                const ok = await invConfirm({ title: 'Delete this ' + INV_TYPE + '?', text: 'This action cannot be undone.', confirmText: 'Delete', danger: true });
+                const row = document.querySelector(`tr[data-id="${id}"]`);
+                const isConverted = INV_TYPE === 'quotation' && row && row.dataset.status === 'Converted';
+                const text = isConverted
+                    ? 'The linked invoice will be kept. This cannot be undone.'
+                    : 'This action cannot be undone.';
+                const ok = await invConfirm({ title: 'Delete this ' + INV_TYPE + '?', text, confirmText: 'Delete', danger: true });
                 if (!ok) return;
                 await invApi(INV_TYPE === 'quotation' ? 'delete_quotation' : 'delete_invoice', { id });
                 invToast('Deleted.', 'success');

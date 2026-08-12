@@ -361,6 +361,16 @@ $settingsSectionTitles = [
                                 <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-gray-900">Business info</h3>
                                 <p class="text-sm text-gray-500">Name, VAT, receipts logo/footer</p>
                             </a>
+                            <a href="document_settings" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-12 h-12 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-file-invoice text-emerald-600 text-xl"></i>
+                                    </div>
+                                    <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Invoicing</span>
+                                </div>
+                                <h3 class="font-semibold text-gray-800 mb-1 group-hover:text-emerald-900">Invoice &amp; quotation settings</h3>
+                                <p class="text-sm text-gray-500">Footer banking, tax info, account number &amp; defaults</p>
+                            </a>
                             <a href="logs" class="settings-menu-card group block bg-gray-50 rounded-xl p-5 border border-gray-200 no-underline text-inherit">
                                 <div class="flex items-start justify-between mb-3">
                                     <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
@@ -587,6 +597,7 @@ $settingsSectionTitles = [
                 $drawerOpenOnCheckout = 'on_ok';
                 $showReverseTransaction = 1;
                 $waitressCanTakeTabPayments = 0;
+                $adminEditReportAmounts = 0;
                 $touchKeyboardEnabled = 0;
                 try {
                     if (!isset($posDb) || !($posDb instanceof PDO)) {
@@ -600,6 +611,7 @@ $settingsSectionTitles = [
                         "ALTER TABLE product_settings ADD COLUMN drawer_open_on_checkout TEXT NOT NULL DEFAULT 'on_ok'",
                         "ALTER TABLE product_settings ADD COLUMN show_reverse_transaction BOOLEAN NOT NULL DEFAULT 1",
                         "ALTER TABLE product_settings ADD COLUMN waitress_can_take_tab_payments BOOLEAN NOT NULL DEFAULT 0",
+                        "ALTER TABLE product_settings ADD COLUMN admin_edit_report_amounts BOOLEAN NOT NULL DEFAULT 0",
                         "ALTER TABLE product_settings ADD COLUMN inactivity_role_admin INTEGER NOT NULL DEFAULT 0",
                         "ALTER TABLE product_settings ADD COLUMN inactivity_role_manager INTEGER NOT NULL DEFAULT 0",
                         "ALTER TABLE product_settings ADD COLUMN inactivity_role_cashier INTEGER NOT NULL DEFAULT 1",
@@ -607,7 +619,7 @@ $settingsSectionTitles = [
                     ] as $featSql) {
                         try { $posDb->exec($featSql); } catch (PDOException $e) {}
                     }
-                    $featRow = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, drawer_open_on_checkout, show_reverse_transaction, waitress_can_take_tab_payments, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                    $featRow = $posDb->query("SELECT default_print_receipt, cashier_inactivity_enabled, cashier_idle_timeout_seconds, drawer_open_on_checkout, show_reverse_transaction, waitress_can_take_tab_payments, admin_edit_report_amounts, touch_keyboard_enabled, inactivity_role_admin, inactivity_role_manager, inactivity_role_cashier, inactivity_role_waitress FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
                     if ($featRow) {
                         $defaultPrintReceipt = (int)($featRow['default_print_receipt'] ?? 0);
                         $cashierInactivityEnabled = (int)($featRow['cashier_inactivity_enabled'] ?? 1);
@@ -619,6 +631,7 @@ $settingsSectionTitles = [
                         $drawerOpenOnCheckout = $featRow['drawer_open_on_checkout'] ?? 'on_ok';
                         $showReverseTransaction = (int)($featRow['show_reverse_transaction'] ?? 1);
                         $waitressCanTakeTabPayments = (int)($featRow['waitress_can_take_tab_payments'] ?? 0);
+                        $adminEditReportAmounts = (int)($featRow['admin_edit_report_amounts'] ?? 0);
                         $touchKeyboardEnabled = (int)($featRow['touch_keyboard_enabled'] ?? 0);
                     }
                     if ($cashierIdleTimeoutSeconds < 30) $cashierIdleTimeoutSeconds = 30;
@@ -834,6 +847,35 @@ $settingsSectionTitles = [
                                 </div>
                                 <div class="mt-auto pt-3 flex justify-end">
                                     <button type="submit" name="update_waitress_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Admin permissions -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-user-cog text-indigo-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Admin permissions</h2>
+                                    <p class="text-xs text-gray-500">Report editing options</p>
+                                </div>
+                            </div>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="flex items-center justify-between gap-3 py-2">
+                                    <div class="min-w-0">
+                                        <label for="admin_edit_report_amounts" class="block text-sm font-medium text-gray-700">Allow edit report amounts</label>
+                                        <p class="text-xs text-gray-500 mt-1">When enabled, admins can double-click amounts on reports to edit them and recalculate totals (display/print only).</p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="admin_edit_report_amounts" id="admin_edit_report_amounts" class="sr-only peer" <?php echo $adminEditReportAmounts ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_admin_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save</button>
                                 </div>
                             </form>
                         </section>

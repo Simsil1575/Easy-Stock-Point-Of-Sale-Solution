@@ -24,6 +24,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'default_payment_terms' => trim((string) ($_POST['default_payment_terms'] ?? '')),
             'default_terms_conditions' => trim((string) ($_POST['default_terms_conditions'] ?? '')),
             'default_notes' => trim((string) ($_POST['default_notes'] ?? '')),
+            'footer_bank_name' => trim((string) ($_POST['footer_bank_name'] ?? '')),
+            'footer_account_number' => trim((string) ($_POST['footer_account_number'] ?? '')),
+            'footer_branch_code' => trim((string) ($_POST['footer_branch_code'] ?? '')),
+            'footer_tax_info' => trim((string) ($_POST['footer_tax_info'] ?? '')),
+            'footer_custom_info' => trim((string) ($_POST['footer_custom_info'] ?? '')),
         ];
 
         invSaveDocumentSettings($data);
@@ -45,7 +50,7 @@ include __DIR__ . '/../includes/invoicing/layout_top.php';
         <h1 class="text-2xl font-bold text-gray-800">Document Settings</h1>
         <p class="text-gray-500 text-sm mt-1">Company details, numbering and defaults used on quotations &amp; invoices</p>
     </div>
-    <a href="quotations" class="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100"><i class="fas fa-arrow-left mr-1"></i> Back</a>
+    <a href="settings" class="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100"><i class="fas fa-arrow-left mr-1"></i> Back to Settings</a>
 </div>
 
 <?php if ($flash !== ''): ?>
@@ -130,6 +135,34 @@ include __DIR__ . '/../includes/invoicing/layout_top.php';
             <div class="md:col-span-2">
                 <label class="block text-xs font-medium text-gray-500 mb-1">Default Terms &amp; Conditions</label>
                 <textarea name="default_terms_conditions" rows="3" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"><?= $e($settings['default_terms_conditions'] ?? '') ?></textarea>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+        <h3 class="font-semibold text-gray-800 mb-1">Invoice &amp; Quotation Footer</h3>
+        <p class="text-xs text-gray-500 mb-4">Banking, tax and custom details printed at the bottom of invoices and quotations.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Bank Name</label>
+                <input name="footer_bank_name" value="<?= $e($settings['footer_bank_name'] ?? '') ?>" placeholder="e.g. FNB, Bank Windhoek" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Account Number</label>
+                <input name="footer_account_number" value="<?= $e($settings['footer_account_number'] ?? '') ?>" placeholder="e.g. 62123456789" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Branch Code</label>
+                <input name="footer_branch_code" value="<?= $e($settings['footer_branch_code'] ?? '') ?>" placeholder="Optional" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Footer Tax Info</label>
+                <input name="footer_tax_info" value="<?= $e($settings['footer_tax_info'] ?? '') ?>" placeholder="e.g. Tax No: 12345678 | VAT No: 98765432" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <p class="text-xs text-gray-400 mt-1">Shown in the document footer. Tax/VAT numbers above also appear in the header.</p>
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-xs font-medium text-gray-500 mb-1">Additional Footer Information</label>
+                <textarea name="footer_custom_info" rows="3" placeholder="Any other details (EFT reference, payment instructions, etc.)" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"><?= $e($settings['footer_custom_info'] ?? '') ?></textarea>
             </div>
         </div>
     </div>

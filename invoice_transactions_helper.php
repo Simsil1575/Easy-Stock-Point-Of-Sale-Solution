@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/business_day_helper.php';
+
 /**
  * Invoice payment rows and totals for Transactions / Sales reports.
  */
@@ -18,11 +20,7 @@ function invoicePaymentBusinessDayWhere(
     string $closingTime,
     bool $isAfterMidnight
 ): string {
-    $afterMidnightFlag = $isAfterMidnight ? '1=1' : '1=0';
-    return "(
-        (DATE({$column}) = " . quoteSql($selectedDate) . " AND strftime('%H:%M', {$column}) >= " . quoteSql($closingTime) . ") OR
-        (DATE({$column}) = " . quoteSql($nextDay) . " AND strftime('%H:%M', {$column}) < " . quoteSql($closingTime) . " AND {$afterMidnightFlag})
-    )";
+    return bdSingleDayWhereSql($column, quoteSql($selectedDate), quoteSql($nextDay), $closingTime, $isAfterMidnight);
 }
 
 function invoicePaymentsTableExists(PDO $db): bool

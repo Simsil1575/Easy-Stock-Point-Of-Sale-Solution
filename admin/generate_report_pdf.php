@@ -60,6 +60,19 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+require_once __DIR__ . '/../report_amount_override_helper.php';
+$reportScope = raoBuildReportScope(
+    $reportType,
+    $startDateTime,
+    $endDateTime,
+    $cashierId,
+    $terminalMac,
+    $creditorId,
+    $category,
+    $supplierId
+);
+$reportAmountOverrides = raoLoadActiveOverrides($db, $reportScope);
+
 // Get business info
 $businessInfo = [];
 try {
@@ -1961,6 +1974,68 @@ header('Content-Type: text/html; charset=utf-8');
             color: #9ca3af;
             font-size: 14px;
         }
+
+        .editable-amount {
+            cursor: pointer;
+            outline: none;
+        }
+        .editable-amount:hover {
+            background: #ecfdf5 !important;
+            box-shadow: inset 0 0 0 1px #99f6e4;
+        }
+        .editable-amount.editing {
+            padding: 4px 6px !important;
+            background: #fff !important;
+            box-shadow: inset 0 0 0 2px #14b8a6;
+        }
+        .editable-amount input.amount-edit-input {
+            width: 100%;
+            min-width: 90px;
+            max-width: 160px;
+            border: none;
+            outline: none;
+            background: transparent;
+            font: inherit;
+            font-weight: inherit;
+            color: inherit;
+            text-align: right;
+            padding: 0;
+        }
+        @media print {
+            .editable-amount:hover,
+            .editable-amount.editing,
+            .editable-amount.has-override {
+                background: transparent !important;
+                box-shadow: none !important;
+            }
+            .override-revert-btn {
+                display: none !important;
+            }
+        }
+        .editable-amount.has-override {
+            background: #fffbeb !important;
+            box-shadow: inset 0 0 0 1px #fcd34d;
+        }
+        .override-revert-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 6px;
+            padding: 0 6px;
+            min-width: 18px;
+            height: 18px;
+            border: 1px solid #d97706;
+            border-radius: 9999px;
+            background: #fff;
+            color: #b45309;
+            font-size: 11px;
+            line-height: 1;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+        .override-revert-btn:hover {
+            background: #fef3c7;
+        }
     </style>
 </head>
 <body>
@@ -3842,6 +3917,653 @@ header('Content-Type: text/html; charset=utf-8');
     <?php break; default: ?>
         <div class="no-data">Unknown report type: <?= htmlspecialchars($reportType) ?></div>
     <?php endswitch; ?>
+
+    <?php
+    $canEditReportAmounts = false;
+    if (strtolower((string) ($_SESSION['role'] ?? '')) === 'admin') {
+        try {
+            try {
+                $db->exec("ALTER TABLE product_settings ADD COLUMN admin_edit_report_amounts BOOLEAN NOT NULL DEFAULT 0");
+            } catch (PDOException $e) {
+            }
+            $editAmtRow = $db->query("SELECT admin_edit_report_amounts FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            $canEditReportAmounts = (int) ($editAmtRow['admin_edit_report_amounts'] ?? 0) === 1;
+        } catch (PDOException $e) {
+            $canEditReportAmounts = false;
+        }
+    }
+    ?>
+    <script>
+    window.REPORT_OVERRIDE_META = <?= json_encode([
+        'report_scope' => $reportScope,
+        'report_type' => $reportType,
+        'start_date' => $startDateTime,
+        'end_date' => $endDateTime,
+        'cashier_id' => $cashierId,
+        'terminal_mac' => $terminalMac,
+        'creditor_id' => $creditorId,
+        'category' => $category,
+        'supplier_id' => $supplierId,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    window.REPORT_AMOUNT_OVERRIDES = <?= json_encode($reportAmountOverrides, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    window.REPORT_OVERRIDE_CAN_EDIT = <?= $canEditReportAmounts ? 'true' : 'false' ?>;
+    </script>
+    <script>
+    (function () {
+        const MONEY_RE = /([+\u2212\-]?)\s*N\$\s*([\d,]+(?:\.\d+)?)/i;
+        const CAN_EDIT = !!window.REPORT_OVERRIDE_CAN_EDIT;
+        let overrides = Object.assign({}, window.REPORT_AMOUNT_OVERRIDES || {});
+
+        function parseMoney(text) {
+            if (text == null) return null;
+            const m = String(text).match(MONEY_RE);
+            if (!m) return null;
+            const sign = (m[1] === '-' || m[1] === '\u2212') ? -1 : 1;
+            return sign * parseFloat(m[2].replace(/,/g, ''));
+        }
+
+        function hasCurrency(text) {
+            return parseMoney(text) !== null;
+        }
+
+        function formatMoney(value, sampleText) {
+            const n = Number(value) || 0;
+            const abs = Math.abs(n).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+            const sample = sampleText || '';
+            if (/\+\s*N\$/i.test(sample)) {
+                return (n < 0 ? '\u2212 N$' : '+ N$') + abs;
+            }
+            if (/[\u2212\-]\s*N\$/i.test(sample) || (n < 0 && /N\$/i.test(sample))) {
+                return (n < 0 ? '\u2212 N$' : 'N$') + abs;
+            }
+            return (n < 0 ? '-N$' : 'N$') + abs;
+        }
+
+        function getMoneyText(el) {
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('.override-revert-btn').forEach((node) => node.remove());
+            return (clone.textContent || '').trim();
+        }
+
+        function setMoneyText(el, value) {
+            const sample = el.dataset.moneySample || getMoneyText(el);
+            const formatted = formatMoney(value, sample);
+            const revertBtn = el.querySelector(':scope > .override-revert-btn');
+            const strong = el.querySelector(':scope > strong');
+            if (strong && !revertBtn && el.children.length === 1) {
+                strong.textContent = formatted;
+            } else {
+                Array.from(el.childNodes).forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE && node.classList.contains('override-revert-btn')) {
+                        return;
+                    }
+                    el.removeChild(node);
+                });
+                if (revertBtn) {
+                    el.insertBefore(document.createTextNode(formatted), revertBtn);
+                } else {
+                    el.textContent = formatted;
+                }
+            }
+            el.dataset.moneySample = sample;
+        }
+
+        function normalizeLabel(text) {
+            return String(text || '')
+                .toLowerCase()
+                .replace(/\(.*?\)/g, ' ')
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\b(total|order|orders|sales|amount|n)\b/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function normalizeKeyPart(text) {
+            return String(text || '')
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function labelsMatch(a, b) {
+            const na = normalizeLabel(a);
+            const nb = normalizeLabel(b);
+            if (!na || !nb) return false;
+            if (na === nb) return true;
+            if (na.includes(nb) || nb.includes(na)) return true;
+            const tokensA = new Set(na.split(' ').filter(Boolean));
+            const tokensB = new Set(nb.split(' ').filter(Boolean));
+            let overlap = 0;
+            tokensA.forEach(t => { if (tokensB.has(t)) overlap++; });
+            return overlap > 0 && (overlap >= Math.min(tokensA.size, tokensB.size));
+        }
+
+        function isNestedItemAmount(el) {
+            return !!(el.closest('.tx-items, .tx-item-line, .items-list, .hint'));
+        }
+
+        function isTotalRow(tr) {
+            return tr && tr.classList.contains('total-row');
+        }
+
+        function getHeaderCells(table) {
+            const ths = table.querySelectorAll('thead th');
+            return Array.from(ths).map(th => (th.textContent || '').trim());
+        }
+
+        function visualColIndex(td) {
+            const tr = td.parentElement;
+            let idx = 0;
+            for (const cell of tr.children) {
+                if (cell === td) return idx;
+                idx += parseInt(cell.getAttribute('colspan') || '1', 10);
+            }
+            return td.cellIndex;
+        }
+
+        function cellAtVisualCol(tr, visualCol) {
+            let idx = 0;
+            for (const cell of tr.children) {
+                const span = parseInt(cell.getAttribute('colspan') || '1', 10);
+                if (visualCol >= idx && visualCol < idx + span) return cell;
+                idx += span;
+            }
+            return null;
+        }
+
+        function dataRows(table) {
+            return Array.from(table.querySelectorAll('tbody tr')).filter(tr =>
+                !isTotalRow(tr) && !tr.querySelector('.no-data')
+            );
+        }
+
+        function totalRows(table) {
+            return Array.from(table.querySelectorAll('tbody tr.total-row'));
+        }
+
+        function currencyCellsInRow(tr) {
+            return Array.from(tr.querySelectorAll('td')).filter(td =>
+                !isNestedItemAmount(td) && hasCurrency(getMoneyText(td))
+            );
+        }
+
+        function findRowTotalCell(tr, headers) {
+            const cells = currencyCellsInRow(tr);
+            if (cells.length < 2) return null;
+            for (let i = cells.length - 1; i >= 0; i--) {
+                const col = visualColIndex(cells[i]);
+                const header = (headers[col] || '').toLowerCase();
+                if ((/\b(total|grand)\b/.test(header) && !/subtotal/.test(header)) || header === 'total') {
+                    return cells[i];
+                }
+            }
+            for (const cell of cells) {
+                const header = (headers[visualColIndex(cell)] || '').toLowerCase();
+                if (/outstanding|balance|due/.test(header)) return cell;
+            }
+            const bold = cells.filter(c => c.classList.contains('font-bold'));
+            if (bold.length) return bold[bold.length - 1];
+            return cells[cells.length - 1];
+        }
+
+        function findOutstandingPair(tr, headers, totalCell) {
+            if (!totalCell) return null;
+            const totalHeader = (headers[visualColIndex(totalCell)] || '').toLowerCase();
+            if (!/outstanding|balance|due/.test(totalHeader)) return null;
+            const cells = currencyCellsInRow(tr).filter(c => c !== totalCell);
+            let amountCell = null;
+            let paidCell = null;
+            for (const cell of cells) {
+                const h = (headers[visualColIndex(cell)] || '').toLowerCase();
+                if (/amount|total|sale/.test(h) && !/paid|outstanding/.test(h)) amountCell = cell;
+                if (/paid|received/.test(h)) paidCell = cell;
+            }
+            if (amountCell && paidCell) return { amountCell, paidCell };
+            if (cells.length >= 2) return { amountCell: cells[0], paidCell: cells[1] };
+            return null;
+        }
+
+        function getSectionTitle(el) {
+            const table = el.closest('table');
+            if (table) {
+                let node = table.previousElementSibling;
+                while (node) {
+                    if (node.matches && node.matches('h3.section-title')) {
+                        return normalizeKeyPart(node.textContent);
+                    }
+                    node = node.previousElementSibling;
+                }
+                const caption = table.querySelector('caption');
+                if (caption) return normalizeKeyPart(caption.textContent);
+            }
+            if (el.closest('.summary-card')) return 'summary cards';
+            return 'report';
+        }
+
+        function getRowKey(tr) {
+            if (!tr || isTotalRow(tr)) return '';
+            const firstCell = tr.querySelector('td:first-child');
+            const text = firstCell ? firstCell.textContent.replace(/\s+/g, ' ').trim() : '';
+            if (text && !/^total\b/i.test(text)) return normalizeKeyPart(text);
+            const table = tr.closest('table');
+            if (!table) return 'row';
+            const rows = dataRows(table);
+            return 'row_' + rows.indexOf(tr);
+        }
+
+        function getColumnKey(el, headers) {
+            if (el.classList.contains('value') && el.closest('.summary-card')) {
+                const label = el.closest('.summary-card').querySelector('.label');
+                return normalizeKeyPart(label ? label.textContent : 'value');
+            }
+            const td = el.closest('td') || el;
+            if (td.tagName !== 'TD') return 'amount';
+            const col = visualColIndex(td);
+            return normalizeKeyPart(headers[col] || ('col_' + col));
+        }
+
+        function getCellKey(el) {
+            const td = el.closest('td') || el;
+            const tr = td.closest('tr');
+            const table = td.closest('table');
+            const headers = table ? getHeaderCells(table) : [];
+            return [getSectionTitle(el), getRowKey(tr), getColumnKey(el, headers)].join('|');
+        }
+
+        function markAmountCell(el) {
+            if (!el || el.classList.contains('report-amount-cell')) return;
+            el.classList.add('report-amount-cell');
+            el.dataset.moneySample = getMoneyText(el);
+            if (CAN_EDIT) {
+                el.classList.add('editable-amount');
+                el.title = 'Double-click to edit amount';
+            }
+        }
+
+        function initReportAmountCells() {
+            document.querySelectorAll('table').forEach(table => {
+                const headers = getHeaderCells(table);
+                dataRows(table).forEach(tr => {
+                    const totalCell = findRowTotalCell(tr, headers);
+                    currencyCellsInRow(tr).forEach(td => {
+                        if (totalCell && td === totalCell && currencyCellsInRow(tr).length > 1) {
+                            td.classList.add('amount-row-total');
+                            return;
+                        }
+                        markAmountCell(td);
+                    });
+                });
+            });
+
+            document.querySelectorAll('.summary-card .value').forEach(el => {
+                if (hasCurrency(getMoneyText(el))) markAmountCell(el);
+            });
+
+            document.querySelectorAll('table tbody tr').forEach(tr => {
+                if (isTotalRow(tr)) return;
+                const cells = currencyCellsInRow(tr);
+                if (!tr.closest('table').querySelector('thead') && cells.length) {
+                    cells.forEach(markAmountCell);
+                }
+            });
+        }
+
+        function assignCellKeys() {
+            document.querySelectorAll('.report-amount-cell').forEach(el => {
+                el.dataset.cellKey = getCellKey(el);
+            });
+        }
+
+        function captureOriginalAmounts() {
+            document.querySelectorAll('.report-amount-cell').forEach(el => {
+                if (el.dataset.originalAmount == null) {
+                    const val = parseMoney(getMoneyText(el));
+                    if (val !== null) el.dataset.originalAmount = String(val);
+                }
+            });
+        }
+
+        function ensureRevertButton(el) {
+            if (!CAN_EDIT || el.querySelector('.override-revert-btn')) return;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'override-revert-btn';
+            btn.title = 'Revert to original calculated amount';
+            btn.textContent = '\u21BA';
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                revertOverride(el);
+            });
+            el.appendChild(btn);
+        }
+
+        function markOverrideState(el, ov) {
+            el.classList.add('has-override');
+            el.dataset.overrideId = String(ov.id);
+            ensureRevertButton(el);
+        }
+
+        function clearOverrideState(el) {
+            el.classList.remove('has-override');
+            delete el.dataset.overrideId;
+            el.querySelector('.override-revert-btn')?.remove();
+        }
+
+        function sumColumn(table, visualCol) {
+            let sum = 0;
+            dataRows(table).forEach(tr => {
+                const cell = cellAtVisualCol(tr, visualCol);
+                if (!cell || isNestedItemAmount(cell)) return;
+                const v = parseMoney(getMoneyText(cell));
+                if (v !== null) sum += v;
+            });
+            return sum;
+        }
+
+        function updateRowTotal(tr, headers) {
+            const totalCell = findRowTotalCell(tr, headers);
+            if (!totalCell) return null;
+            const pair = findOutstandingPair(tr, headers, totalCell);
+            let total;
+            if (pair) {
+                const amount = parseMoney(getMoneyText(pair.amountCell)) || 0;
+                const paid = parseMoney(getMoneyText(pair.paidCell)) || 0;
+                total = amount - paid;
+                totalCell.classList.toggle('text-red', total > 0);
+            } else {
+                const components = currencyCellsInRow(tr).filter(c => c !== totalCell);
+                total = components.reduce((s, c) => s + (parseMoney(getMoneyText(c)) || 0), 0);
+            }
+            setMoneyText(totalCell, total);
+            return { totalCell, total, col: visualColIndex(totalCell) };
+        }
+
+        function updateTableTotals(table, editedVisualCol) {
+            const headers = getHeaderCells(table);
+            const colsToRefresh = new Set();
+            if (editedVisualCol != null) colsToRefresh.add(editedVisualCol);
+
+            dataRows(table).forEach(tr => {
+                const result = updateRowTotal(tr, headers);
+                if (result) colsToRefresh.add(result.col);
+            });
+
+            const sampleRow = dataRows(table)[0];
+            if (sampleRow) {
+                currencyCellsInRow(sampleRow).forEach(td => colsToRefresh.add(visualColIndex(td)));
+                const rt = findRowTotalCell(sampleRow, headers);
+                if (rt) colsToRefresh.add(visualColIndex(rt));
+            }
+
+            const footerUpdates = [];
+            totalRows(table).forEach(tr => {
+                colsToRefresh.forEach(col => {
+                    const cell = cellAtVisualCol(tr, col);
+                    if (!cell || !hasCurrency(getMoneyText(cell))) return;
+                    const sum = sumColumn(table, col);
+                    setMoneyText(cell, sum);
+                    footerUpdates.push({
+                        header: headers[col] || '',
+                        value: sum,
+                        col
+                    });
+                });
+            });
+
+            if (!totalRows(table).length && editedVisualCol != null) {
+                footerUpdates.push({
+                    header: headers[editedVisualCol] || '',
+                    value: sumColumn(table, editedVisualCol),
+                    col: editedVisualCol
+                });
+            }
+
+            return footerUpdates;
+        }
+
+        function updateSummaryCards(footerUpdates, table) {
+            const cards = Array.from(document.querySelectorAll('.summary-card'));
+            if (!cards.length) return;
+
+            const headers = table ? getHeaderCells(table) : [];
+
+            footerUpdates.forEach(upd => {
+                cards.forEach(card => {
+                    const label = card.querySelector('.label');
+                    const valueEl = card.querySelector('.value');
+                    if (!label || !valueEl || !hasCurrency(getMoneyText(valueEl))) return;
+                    const labelText = label.textContent || '';
+                    if (labelsMatch(labelText, upd.header) ||
+                        labelsMatch(labelText, upd.header.replace(/\/.*/, '')) ||
+                        (/cash/i.test(labelText) && /^cash$/i.test(upd.header.trim())) ||
+                        (/card|eft/i.test(labelText) && /card|eft/i.test(upd.header)) ||
+                        (/credit/i.test(labelText) && /^credit$/i.test(upd.header.trim()))) {
+                        const isGrandCard = /grand\s*total|total\s*sales|total\s*amount|total\s*cost|total\s*tips/i.test(labelText);
+                        const isTotalCol = /\b(total|grand)\b/i.test(upd.header);
+                        if (isGrandCard && !isTotalCol) return;
+                        if (!isGrandCard && isTotalCol && !labelsMatch(labelText, upd.header)) return;
+                        if (overrides[valueEl.dataset.cellKey]) return;
+                        setMoneyText(valueEl, upd.value);
+                    }
+                });
+            });
+
+            const grandCards = cards.filter(card => {
+                const label = (card.querySelector('.label')?.textContent || '');
+                return /grand\s*total|total\s*sales|total\s*amount|total\s*cost|total\s*tips|net\s*total/i.test(label);
+            });
+
+            if (grandCards.length && table) {
+                let grand = null;
+                const totalColIdx = headers.findIndex(h => {
+                    const x = (h || '').toLowerCase().trim();
+                    return x === 'total' || x === 'grand total' || /^total\b/.test(x);
+                });
+                if (totalColIdx >= 0) {
+                    grand = sumColumn(table, totalColIdx);
+                } else if (footerUpdates.length) {
+                    const seen = new Set();
+                    grand = 0;
+                    footerUpdates.forEach(u => {
+                        if (/\b(total|grand)\b/i.test(u.header) && !/^credit$/i.test(u.header.trim())) return;
+                        if (seen.has(u.col)) return;
+                        seen.add(u.col);
+                        grand += u.value;
+                    });
+                }
+                if (grand != null) {
+                    grandCards.forEach(card => {
+                        const valueEl = card.querySelector('.value');
+                        if (valueEl && !overrides[valueEl.dataset.cellKey]) {
+                            setMoneyText(valueEl, grand);
+                        }
+                    });
+                }
+            }
+        }
+
+        function afterAmountEdit(el) {
+            const td = el.closest('td') || el;
+            const table = td.closest('table');
+            if (table && td.tagName === 'TD') {
+                const col = visualColIndex(td);
+                const updates = updateTableTotals(table, col);
+                updateSummaryCards(updates, table);
+            }
+        }
+
+        function applySavedOverrides() {
+            const tableCells = [];
+            const summaryCells = [];
+
+            document.querySelectorAll('.report-amount-cell').forEach(el => {
+                const key = el.dataset.cellKey;
+                if (!key || !overrides[key]) return;
+                if (el.closest('.summary-card')) summaryCells.push(el);
+                else tableCells.push(el);
+            });
+
+            tableCells.forEach(el => {
+                const ov = overrides[el.dataset.cellKey];
+                setMoneyText(el, ov.adjusted_amount);
+                markOverrideState(el, ov);
+            });
+
+            const touchedTables = new Set();
+            tableCells.forEach(el => {
+                const table = el.closest('table');
+                if (table) touchedTables.add(table);
+            });
+            touchedTables.forEach(table => {
+                const updates = updateTableTotals(table, null);
+                updateSummaryCards(updates, table);
+            });
+
+            summaryCells.forEach(el => {
+                const ov = overrides[el.dataset.cellKey];
+                setMoneyText(el, ov.adjusted_amount);
+                markOverrideState(el, ov);
+            });
+        }
+
+        async function persistOverride(el, originalAmount, adjustedAmount) {
+            if (!CAN_EDIT) return null;
+            const cellKey = el.dataset.cellKey || getCellKey(el);
+            el.dataset.cellKey = cellKey;
+
+            const payload = Object.assign({}, window.REPORT_OVERRIDE_META || {}, {
+                action: 'save',
+                cell_key: cellKey,
+                original_amount: originalAmount,
+                adjusted_amount: adjustedAmount
+            });
+
+            const res = await fetch('report_amount_override_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!data.success) {
+                alert(data.error || 'Failed to save report change');
+                return null;
+            }
+            overrides[cellKey] = data.override;
+            markOverrideState(el, data.override);
+            return data.override;
+        }
+
+        async function revertOverride(el) {
+            if (!CAN_EDIT) return;
+            const cellKey = el.dataset.cellKey;
+            const ov = overrides[cellKey];
+            if (!ov) return;
+
+            const payload = Object.assign({}, window.REPORT_OVERRIDE_META || {}, {
+                action: 'revert',
+                override_id: ov.id,
+                cell_key: cellKey
+            });
+
+            const res = await fetch('report_amount_override_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!data.success) {
+                alert(data.error || 'Failed to revert report change');
+                return;
+            }
+
+            delete overrides[cellKey];
+            clearOverrideState(el);
+            setMoneyText(el, ov.original_amount);
+            afterAmountEdit(el);
+        }
+
+        function startEdit(el) {
+            if (!CAN_EDIT || el.classList.contains('editing')) return;
+            const current = parseMoney(getMoneyText(el));
+            if (current === null) return;
+
+            el.classList.add('editing');
+            el.dataset.moneySample = el.dataset.moneySample || getMoneyText(el);
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.step = '0.01';
+            input.className = 'amount-edit-input';
+            input.value = String(current);
+            const revertBtn = el.querySelector('.override-revert-btn');
+            Array.from(el.childNodes).forEach((node) => {
+                if (node === revertBtn) return;
+                el.removeChild(node);
+            });
+            el.insertBefore(input, revertBtn || null);
+            input.focus();
+            input.select();
+
+            let finished = false;
+            const finish = (commit) => {
+                if (finished) return;
+                finished = true;
+                const raw = input.value.trim();
+                el.classList.remove('editing');
+                input.remove();
+                if (!commit || raw === '') {
+                    setMoneyText(el, current);
+                    return;
+                }
+                const next = parseFloat(raw);
+                if (Number.isNaN(next)) {
+                    setMoneyText(el, current);
+                    return;
+                }
+                setMoneyText(el, next);
+                afterAmountEdit(el);
+
+                const existing = overrides[el.dataset.cellKey];
+                const originalAmount = existing
+                    ? existing.original_amount
+                    : parseFloat(el.dataset.originalAmount || String(current));
+                if (Math.abs(next - originalAmount) < 0.00001) {
+                    if (existing) revertOverride(el);
+                    return;
+                }
+                persistOverride(el, originalAmount, next);
+            };
+
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    finish(true);
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    finish(false);
+                }
+            });
+            input.addEventListener('blur', () => finish(true));
+        }
+
+        initReportAmountCells();
+        assignCellKeys();
+        captureOriginalAmounts();
+        applySavedOverrides();
+
+        if (CAN_EDIT) {
+            document.addEventListener('dblclick', (e) => {
+                const target = e.target.closest('.editable-amount');
+                if (!target || target.classList.contains('editing')) return;
+                e.preventDefault();
+                startEdit(target);
+            });
+        }
+    })();
+    </script>
     
 </body>
 </html>

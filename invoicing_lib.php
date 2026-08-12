@@ -213,6 +213,13 @@ function invGetDocumentSettings(): array
         'default_payment_terms' => 'Due within 30 days',
         'default_terms_conditions' => '',
         'default_notes' => '',
+        'footer_bank_name' => '',
+        'footer_account_number' => '',
+        'footer_branch_code' => '',
+        'footer_tax_info' => '',
+        'footer_custom_info' => '',
+        'invoice_footer_message' => '',
+        'quotation_footer_message' => '',
         'default_vat_rate' => 15.0,
         'footer_text' => '',
     ];
@@ -253,6 +260,62 @@ function invGetDocumentSettings(): array
 }
 
 /**
+ * Payment / banking / tax lines for invoice & quotation footers.
+ *
+ * @param array<string,mixed> $settings
+ * @return list<string>
+ */
+function invBuildDocumentFooterLines(array $settings): array
+{
+    $footerLines = [];
+    $bankName = trim((string) ($settings['footer_bank_name'] ?? ''));
+    $accountNo = trim((string) ($settings['footer_account_number'] ?? ''));
+    $branchCode = trim((string) ($settings['footer_branch_code'] ?? ''));
+    if ($bankName !== '') {
+        $footerLines[] = 'Bank: ' . $bankName;
+    }
+    if ($accountNo !== '') {
+        $acctLine = 'Account No: ' . $accountNo;
+        if ($branchCode !== '') {
+            $acctLine .= ' | Branch: ' . $branchCode;
+        }
+        $footerLines[] = $acctLine;
+    } elseif ($branchCode !== '') {
+        $footerLines[] = 'Branch: ' . $branchCode;
+    }
+    $footerTax = trim((string) ($settings['footer_tax_info'] ?? ''));
+    if ($footerTax !== '') {
+        $footerLines[] = $footerTax;
+    }
+    $footerCustom = trim((string) ($settings['footer_custom_info'] ?? ''));
+    if ($footerCustom !== '') {
+        foreach (preg_split('/\R/', $footerCustom) as $customLine) {
+            $customLine = trim((string) $customLine);
+            if ($customLine !== '') {
+                $footerLines[] = $customLine;
+            }
+        }
+    }
+    return $footerLines;
+}
+
+/**
+ * Closing message for invoice or quotation documents.
+ *
+ * @param array<string,mixed> $settings
+ */
+function invGetDocumentClosingMessage(array $settings, string $type): string
+{
+    $type = $type === 'quotation' ? 'quotation' : 'invoice';
+    $closingKey = $type === 'quotation' ? 'quotation_footer_message' : 'invoice_footer_message';
+    $closing = trim((string) ($settings[$closingKey] ?? ''));
+    if ($closing === '') {
+        $closing = trim((string) ($settings['footer_text'] ?? '')) ?: 'Thank you for your business.';
+    }
+    return $closing;
+}
+
+/**
  * @param array<string,mixed> $data keyed by document_settings columns
  */
 function invSaveDocumentSettings(array $data): void
@@ -263,6 +326,8 @@ function invSaveDocumentSettings(array $data): void
         'company_name', 'company_logo', 'company_address', 'telephone', 'email',
         'website', 'tax_number', 'vat_number', 'currency', 'invoice_prefix',
         'quotation_prefix', 'default_payment_terms', 'default_terms_conditions', 'default_notes',
+        'footer_bank_name', 'footer_account_number', 'footer_branch_code', 'footer_tax_info',
+        'footer_custom_info', 'invoice_footer_message', 'quotation_footer_message',
     ];
     $id = (int) $infoDb->query('SELECT id FROM document_settings ORDER BY id LIMIT 1')->fetchColumn();
 
@@ -656,11 +721,27 @@ function invDeleteQuotation(PDO $db, int $id): void
     if (!$data) {
         throw new RuntimeException('Quotation not found.');
     }
-    $status = (string) $data['quotation']['status'];
-    if ($status === 'Converted') {
-        throw new RuntimeException('A converted quotation cannot be deleted.');
+    if (!invCan('delete')) {
+        throw new RuntimeException('You do not have permission to delete this quotation.');
     }
-    $db->prepare('DELETE FROM quotations WHERE id = ?')->execute([$id]);
+
+    $ownTransaction = !$db->inTransaction();
+    if ($ownTransaction) {
+        $db->beginTransaction();
+    }
+    try {
+        // Keep any invoice created from this quotation; just unlink it.
+        $db->prepare('UPDATE invoices SET quotation_id = NULL WHERE quotation_id = ?')->execute([$id]);
+        $db->prepare('DELETE FROM quotations WHERE id = ?')->execute([$id]);
+        if ($ownTransaction) {
+            $db->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownTransaction && $db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 function invDuplicateQuotation(PDO $db, int $id): int
@@ -903,9 +984,10 @@ function invDeleteInvoice(PDO $db, int $id): void
         throw new RuntimeException('Invoice not found.');
     }
     $inv = $data['invoice'];
-    if ((string) $inv['status'] === 'Paid' && !invCan('delete_paid_invoice')) {
-        throw new RuntimeException('You do not have permission to delete a paid invoice.');
+    if (!invCanDeleteInvoice($inv)) {
+        throw new RuntimeException('You do not have permission to delete this invoice.');
     }
+    $quotationId = !empty($inv['quotation_id']) ? (int) $inv['quotation_id'] : 0;
     $ownTransaction = !$db->inTransaction();
     if ($ownTransaction) {
         $db->beginTransaction();
@@ -914,6 +996,10 @@ function invDeleteInvoice(PDO $db, int $id): void
         // Restore stock if it had been applied.
         if ((int) $inv['stock_applied'] === 1) {
             invReverseStock($db, $id);
+        }
+        if ($quotationId > 0) {
+            $db->prepare("UPDATE quotations SET status = 'Accepted', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'Converted'")
+                ->execute([$quotationId]);
         }
         $db->prepare('DELETE FROM invoices WHERE id = ?')->execute([$id]);
         if ($ownTransaction) {

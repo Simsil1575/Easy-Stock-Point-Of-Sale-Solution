@@ -20,39 +20,31 @@ if ($activationStatus == 0) {
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00'; // Default to 00:00 if not set
-} catch (PDOException $e) {
-    // Default closing time if DB error
-    $closingTime = '00:00';
-}
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../invoice_transactions_helper.php';
+require_once __DIR__ . '/../terminal_helper.php';
 
-// Database connection
+$bdCtx = bdLoadClosingContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$openingTime = $bdCtx['opening_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
+
 $db = new PDO('sqlite:../pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
+
 require_once __DIR__ . '/../ensure_laybye_schema.php';
 ensureLaybyeSchema($db);
 
-// Ensure tab tips column exists (ignore if already added)
 try {
     $db->exec("ALTER TABLE tab_payments ADD COLUMN tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0");
 } catch (PDOException $e) {
     // Column may already exist
 }
 
-// Calculate business day boundaries based on closing time
-require_once __DIR__ . '/../business_day_helper.php';
-require_once __DIR__ . '/../invoice_transactions_helper.php';
-require_once __DIR__ . '/../terminal_helper.php';
 ensureTerminalSchema($db);
 
-$isAfterMidnight = bdIsOvernightClosing($closingTime);
 $bdCaseCreated = bdBusinessDateCaseSql('created_at', $closingTime, $isAfterMidnight);
 $bdCasePayment = bdBusinessDateCaseSql('payment_date', $closingTime, $isAfterMidnight);
 $bdCaseOCreated = bdBusinessDateCaseSql('o.created_at', $closingTime, $isAfterMidnight);

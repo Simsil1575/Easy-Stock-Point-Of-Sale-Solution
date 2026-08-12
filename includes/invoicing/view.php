@@ -16,7 +16,6 @@ $grand = $isQuote ? (float) $doc['total'] : (float) $doc['grand_total'];
 $e = fn($v) => htmlspecialchars((string) $v);
 $m = fn($v) => $currency . ' ' . number_format((float) $v, 2);
 
-$canDeletePaid = invCan('delete_paid_invoice');
 $isReadonly = $isQuote ? ($status === 'Converted') : in_array($status, ['Paid', 'Cancelled'], true);
 $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
 ?>
@@ -147,9 +146,8 @@ $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
                 <?php endif; ?>
 
                 <?php
-                $showDelete = true;
-                if ($isQuote && $status === 'Converted') { $showDelete = false; }
-                if (!$isQuote && $status === 'Paid' && !$canDeletePaid) { $showDelete = false; }
+                $showDelete = invCan('delete');
+                if (!$isQuote && !invCanDeleteInvoice($doc)) { $showDelete = false; }
                 if ($showDelete): ?>
                 <button onclick="invDelete(<?= $id ?>)" class="w-full px-4 py-2.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 text-sm font-medium"><i class="fas fa-trash mr-1"></i> Delete</button>
                 <?php endif; ?>
@@ -204,7 +202,11 @@ $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
         } catch (err) { invToast(err.message, 'error'); }
     }
     async function invDelete(id) {
-        const ok = await invConfirm({ title: 'Delete this ' + INV_TYPE + '?', text: 'This cannot be undone.', confirmText: 'Delete', danger: true });
+        const isConverted = <?= $isQuote ? 'true' : 'false' ?> && <?= json_encode($status) ?> === 'Converted';
+        const text = isConverted
+            ? 'The linked invoice will be kept. This cannot be undone.'
+            : 'This cannot be undone.';
+        const ok = await invConfirm({ title: 'Delete this ' + INV_TYPE + '?', text, confirmText: 'Delete', danger: true });
         if (!ok) return;
         try { await invApi(INV_TYPE === 'quotation' ? 'delete_quotation' : 'delete_invoice', { id }); invToast('Deleted.', 'success'); setTimeout(() => location.href = '<?= $listPage ?>', 500); }
         catch (err) { invToast(err.message, 'error'); }

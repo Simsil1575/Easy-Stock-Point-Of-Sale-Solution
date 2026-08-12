@@ -72,13 +72,17 @@ function tab_is_gratuity_enabled_for_tab(array $tab): bool
     return (int) ($tab['gratuity_enabled'] ?? 0) === 1;
 }
 
-/** Subtotal for gratuity % — all tab lines except prepayment credits and legacy Gratuity product lines. */
+/** Subtotal for gratuity % — payable tab lines only (excludes prepayment credits, legacy gratuity, void-pending). */
 function tab_gratuity_base_subtotal(PDO $db, int $tabId): float
 {
-    $stmt = $db->prepare('SELECT product_name, quantity, price FROM tab_items WHERE tab_id = ?');
+    ensureTabItemVoidMarkColumns($db);
+    $stmt = $db->prepare('SELECT product_name, quantity, price, COALESCE(marked_for_void, 0) AS marked_for_void FROM tab_items WHERE tab_id = ?');
     $stmt->execute([$tabId]);
     $subtotal = 0.0;
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $line) {
+        if ((int) ($line['marked_for_void'] ?? 0) === 1) {
+            continue;
+        }
         $name = $line['product_name'] ?? '';
         if (is_tab_prepayment_line_name($name) || is_tab_legacy_gratuity_line_name($name)) {
             continue;
@@ -282,11 +286,73 @@ function ensureTabVoidMarkColumns(PDO $db): void
     }
 }
 
-/** Waitress, cashier, or manager may request that a tab be voided (manager/admin perform the actual void). */
+function ensureTabItemVoidMarkColumns(PDO $db): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        $db->exec('ALTER TABLE tab_items ADD COLUMN marked_for_void INTEGER NOT NULL DEFAULT 0');
+    } catch (PDOException $e) {
+        // Column already exists
+    }
+    try {
+        $db->exec('ALTER TABLE tab_items ADD COLUMN void_marked_by TEXT');
+    } catch (PDOException $e) {
+        // Column already exists
+    }
+    try {
+        $db->exec('ALTER TABLE tab_items ADD COLUMN void_marked_at DATETIME');
+    } catch (PDOException $e) {
+        // Column already exists
+    }
+}
+
+/**
+ * Whether the current session user owns a tab (tabs.cashier_id stores username, or older numeric user id).
+ * Unclaimed tabs (empty cashier_id) are treated as selectable by anyone.
+ */
+function session_owns_tab(?array $tab): bool
+{
+    if (!$tab) {
+        return false;
+    }
+    $owner = trim((string) ($tab['cashier_id'] ?? ''));
+    if ($owner === '') {
+        return true;
+    }
+    $username = trim((string) ($_SESSION['username'] ?? ''));
+    $userId = trim((string) ($_SESSION['user_id'] ?? ''));
+    if ($username !== '' && strcasecmp($owner, $username) === 0) {
+        return true;
+    }
+    if ($userId !== '' && (string) $owner === $userId) {
+        return true;
+    }
+    return false;
+}
+
+/** Manager may request that an entire tab be voided (admin/manager perform the actual void). */
 function can_mark_tab_for_void_from_session(): bool
 {
     $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
-    return in_array($r, ['waitress', 'cashier', 'manager'], true);
+    return $r === 'manager';
+}
+
+/** Hubbly, waitress, or cashier may mark individual tab lines for void review. */
+function can_mark_tab_item_for_void_from_session(): bool
+{
+    $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+    return in_array($r, ['hubbly', 'waitress', 'cashier'], true);
+}
+
+/** Admin and manager may approve or clear item void requests. */
+function can_approve_tab_item_void_from_session(): bool
+{
+    $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+    return in_array($r, ['admin', 'manager'], true);
 }
 
 /** Admin and manager see void-pending tabs highlighted in credit-tabs lists. */
@@ -299,6 +365,128 @@ function can_view_tab_void_mark_in_list_from_session(): bool
 function tab_is_marked_for_void(array $tab): bool
 {
     return (int) ($tab['marked_for_void'] ?? 0) === 1;
+}
+
+function tab_has_void_pending_in_list(array $tab): bool
+{
+    return tab_is_marked_for_void($tab) || ((int) ($tab['items_marked_for_void_count'] ?? 0) > 0);
+}
+
+function tab_item_is_marked_for_void(array $item): bool
+{
+    return (int) ($item['marked_for_void'] ?? 0) === 1;
+}
+
+function tab_count_items_marked_for_void(PDO $db, int $tabId): int
+{
+    ensureTabItemVoidMarkColumns($db);
+    $stmt = $db->prepare('SELECT COUNT(*) FROM tab_items WHERE tab_id = ? AND marked_for_void = 1');
+    $stmt->execute([$tabId]);
+
+    return (int) $stmt->fetchColumn();
+}
+
+function tab_has_items_marked_for_void(PDO $db, int $tabId): bool
+{
+    return tab_count_items_marked_for_void($db, $tabId) > 0;
+}
+
+/**
+ * Unpaid tab lines that count toward balance and can receive payment (excludes void-pending).
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function tab_fetch_unpaid_payable_items(PDO $db, int $tabId, bool $orderFifo = false): array
+{
+    ensureTabItemVoidMarkColumns($db);
+    $sql = "
+        SELECT ti.*,
+               (ti.quantity * ti.price) AS item_total,
+               COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) AS paid_amount
+        FROM tab_items ti
+        WHERE ti.tab_id = ?
+            AND COALESCE(ti.marked_for_void, 0) = 0
+            AND (
+                (ti.quantity * ti.price) < 0
+                OR COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) < (ti.quantity * ti.price)
+            )";
+    if ($orderFifo) {
+        $sql .= ' ORDER BY ti.added_at ASC';
+    }
+    $stmt = $db->prepare($sql);
+    $stmt->execute([$tabId]);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Remove a tab line and restore stock (used for direct delete and approved item voids).
+ */
+function void_tab_item_remove_from_tab(PDO $db, int $itemId): array
+{
+    ensureTabItemVoidMarkColumns($db);
+
+    $itemStmt = $db->prepare('SELECT id, tab_id, quantity, product_name FROM tab_items WHERE id = ?');
+    $itemStmt->execute([$itemId]);
+    $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$item) {
+        return ['ok' => false, 'error' => 'Item not found', 'tab_id' => 0];
+    }
+
+    $tabId = (int) $item['tab_id'];
+
+    $tabStmt = $db->prepare('SELECT status FROM tabs WHERE id = ?');
+    $tabStmt->execute([$tabId]);
+    $tab = $tabStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$tab || ($tab['status'] ?? '') !== 'open') {
+        return ['ok' => false, 'error' => 'Item can only be voided on an open tab', 'tab_id' => $tabId];
+    }
+
+    $db->beginTransaction();
+    try {
+        if (!is_tab_non_inventory_tab_line_name($item['product_name'])) {
+            $restoreStmt = $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?');
+            $restoreStmt->execute([$item['quantity'], $item['product_name']]);
+
+            $currentDate = date('Y-m-d');
+            $resolveProductStmt = $db->prepare('SELECT id FROM products WHERE name = ? LIMIT 1');
+            $resolveProductStmt->execute([$item['product_name']]);
+            if ($resolveProductStmt->fetchColumn()) {
+                $stmtEnsureDailySummary = $db->prepare("
+                    INSERT OR IGNORE INTO daily_stock_summary
+                    (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
+                    VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
+                ");
+                $stmtEnsureDailySummary->execute([$currentDate, $item['product_name']]);
+
+                $stmtUpdateDailySummary = $db->prepare("
+                    UPDATE daily_stock_summary
+                    SET sold_quantity = CASE
+                        WHEN sold_quantity - ? < 0 THEN 0
+                        ELSE sold_quantity - ?
+                    END
+                    WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
+                ");
+                $stmtUpdateDailySummary->execute([$item['quantity'], $item['quantity'], $currentDate, $item['product_name']]);
+            }
+        }
+
+        $deletePaymentsStmt = $db->prepare('DELETE FROM tab_item_payments WHERE tab_item_id = ?');
+        $deletePaymentsStmt->execute([$itemId]);
+
+        $deleteStmt = $db->prepare('DELETE FROM tab_items WHERE id = ?');
+        $deleteStmt->execute([$itemId]);
+
+        recalculateTabBalance($db, $tabId);
+
+        $db->commit();
+
+        return ['ok' => true, 'tab_id' => $tabId, 'product_name' => $item['product_name']];
+    } catch (Exception $e) {
+        $db->rollBack();
+
+        return ['ok' => false, 'error' => $e->getMessage(), 'tab_id' => $tabId];
+    }
 }
 
 /**
@@ -377,6 +565,108 @@ function handle_tab_void_mark_post_request(PDO $db): void
     exit();
 }
 
+/**
+ * Handle per-item mark/clear/approve void POST actions. Exits after redirect when handled.
+ */
+function handle_tab_item_void_mark_post_request(PDO $db): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        return;
+    }
+
+    $isMark = isset($_POST['mark_tab_item_for_void']);
+    $isClear = isset($_POST['clear_tab_item_void_mark']);
+    $isApprove = isset($_POST['approve_tab_item_void']);
+    if (!$isMark && !$isClear && !$isApprove) {
+        return;
+    }
+
+    ensureTabItemVoidMarkColumns($db);
+
+    $itemId = (int) ($_POST['tab_item_id'] ?? 0);
+    $tabId = (int) ($_POST['tab_id'] ?? 0);
+    $redirect = trim((string) ($_POST['void_mark_redirect'] ?? ''));
+    if ($redirect === '') {
+        $redirect = $tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs';
+    }
+
+    if ($itemId <= 0 || $tabId <= 0) {
+        $_SESSION['error'] = 'Invalid tab item';
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    $itemStmt = $db->prepare('SELECT ti.*, t.status AS tab_status FROM tab_items ti JOIN tabs t ON t.id = ti.tab_id WHERE ti.id = ? AND ti.tab_id = ?');
+    $itemStmt->execute([$itemId, $tabId]);
+    $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$item) {
+        $_SESSION['error'] = 'Tab item not found';
+        header('Location: ' . $redirect);
+        exit();
+    }
+    if (($item['tab_status'] ?? '') !== 'open') {
+        $_SESSION['error'] = 'Only items on open tabs can be voided';
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    if ($isApprove) {
+        if (!can_approve_tab_item_void_from_session()) {
+            $_SESSION['error'] = 'You do not have permission to void tab items';
+            header('Location: ' . $redirect);
+            exit();
+        }
+        if (!tab_item_is_marked_for_void($item)) {
+            $_SESSION['error'] = 'This item is not marked for void';
+            header('Location: ' . $redirect);
+            exit();
+        }
+
+        $result = void_tab_item_remove_from_tab($db, $itemId);
+        if (!$result['ok']) {
+            $_SESSION['error'] = 'Failed to void item: ' . ($result['error'] ?? 'Unknown error');
+        } else {
+            $_SESSION['success'] = 'Item voided and stock restored';
+        }
+        header('Location: view-tab.php?id=' . (int) ($result['tab_id'] ?: $tabId));
+        exit();
+    }
+
+    if ($isMark) {
+        if (!can_mark_tab_item_for_void_from_session()) {
+            $_SESSION['error'] = 'You do not have permission to mark items for void';
+            header('Location: ' . $redirect);
+            exit();
+        }
+        if (tab_item_is_marked_for_void($item)) {
+            $_SESSION['success'] = 'Item is already marked for void';
+            header('Location: ' . $redirect);
+            exit();
+        }
+
+        $username = trim((string) ($_SESSION['username'] ?? 'Unknown'));
+        $updateStmt = $db->prepare('UPDATE tab_items SET marked_for_void = 1, void_marked_by = ?, void_marked_at = CURRENT_TIMESTAMP WHERE id = ?');
+        $updateStmt->execute([$username, $itemId]);
+        recalculateTabBalance($db, $tabId);
+        $_SESSION['success'] = 'Item marked for void. Tab balance updated — pay only for remaining items.';
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    if (!can_mark_tab_item_for_void_from_session() && !can_approve_tab_item_void_from_session()) {
+        $_SESSION['error'] = 'You do not have permission to clear void marks';
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    $clearStmt = $db->prepare('UPDATE tab_items SET marked_for_void = 0, void_marked_by = NULL, void_marked_at = NULL WHERE id = ?');
+    $clearStmt->execute([$itemId]);
+    recalculateTabBalance($db, $tabId);
+    $_SESSION['success'] = 'Void request cleared for item';
+    header('Location: ' . $redirect);
+    exit();
+}
+
 function tab_status_badges_html(array $tab, bool $showVoidPending = false): string
 {
     $status = strtolower((string) ($tab['status'] ?? 'open'));
@@ -386,6 +676,10 @@ function tab_status_badges_html(array $tab, bool $showVoidPending = false): stri
         $by = trim((string) ($tab['void_marked_by'] ?? ''));
         $title = $by !== '' ? ' title="Requested by ' . htmlspecialchars($by, ENT_QUOTES, 'UTF-8') . '"' : '';
         $html .= ' <span class="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800"' . $title . '>Void pending</span>';
+    }
+    $itemVoidCount = (int) ($tab['items_marked_for_void_count'] ?? 0);
+    if ($showVoidPending && $itemVoidCount > 0) {
+        $html .= ' <span class="px-2 py-1 text-xs font-semibold rounded-full bg-orange-100 text-orange-900" title="' . $itemVoidCount . ' item(s) marked for void">Item void (' . $itemVoidCount . ')</span>';
     }
     return $html;
 }
@@ -794,6 +1088,101 @@ function tab_void_mark_list_action_html(array $tab): string
         . '</button></form>';
 }
 
+function tab_item_void_pending_badge_html(array $item): string
+{
+    if (!tab_item_is_marked_for_void($item)) {
+        return '';
+    }
+    $by = trim((string) ($item['void_marked_by'] ?? ''));
+    $title = $by !== '' ? ' title="Requested by ' . htmlspecialchars($by, ENT_QUOTES, 'UTF-8') . '"' : '';
+
+    return '<span class="inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded-full bg-red-100 text-red-800"' . $title . '>Void pending</span>';
+}
+
+function tab_item_void_mark_action_html(array $item, int $tabId, bool $isPrepayLine = false, bool $isPostpaidLine = false): string
+{
+    if ($isPrepayLine || $isPostpaidLine) {
+        return '';
+    }
+
+    $itemId = (int) ($item['id'] ?? 0);
+    if ($itemId <= 0 || $tabId <= 0) {
+        return '';
+    }
+
+    $redirect = 'view-tab.php?id=' . $tabId;
+
+    if (can_approve_tab_item_void_from_session() && tab_item_is_marked_for_void($item)) {
+        $approveOnsubmit = tab_pos_confirm_form_onsubmit_attr([
+            'title' => 'Void this item?',
+            'text' => 'The line will be removed and stock restored.',
+            'confirmButtonText' => 'Void item',
+            'variant' => 'danger',
+        ]);
+        $clearOnsubmit = tab_pos_confirm_form_onsubmit_attr([
+            'title' => 'Cancel void request?',
+            'text' => 'This item will no longer be marked for void.',
+            'confirmButtonText' => 'Clear request',
+            'variant' => 'warning',
+        ]);
+
+        return '<form method="POST" class="inline" ' . $approveOnsubmit . '>'
+            . '<input type="hidden" name="tab_item_id" value="' . $itemId . '">'
+            . '<input type="hidden" name="tab_id" value="' . $tabId . '">'
+            . '<input type="hidden" name="approve_tab_item_void" value="1">'
+            . '<input type="hidden" name="void_mark_redirect" value="' . htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8') . '">'
+            . '<button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-700 hover:text-red-900" title="Approve void">'
+            . '<i data-lucide="check-circle" class="w-4 h-4"></i>'
+            . '</button></form>'
+            . '<form method="POST" class="inline" ' . $clearOnsubmit . '>'
+            . '<input type="hidden" name="tab_item_id" value="' . $itemId . '">'
+            . '<input type="hidden" name="tab_id" value="' . $tabId . '">'
+            . '<input type="hidden" name="clear_tab_item_void_mark" value="1">'
+            . '<input type="hidden" name="void_mark_redirect" value="' . htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8') . '">'
+            . '<button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-amber-700 hover:text-amber-900" title="Clear void request">'
+            . '<i data-lucide="undo-2" class="w-4 h-4"></i>'
+            . '</button></form>';
+    }
+
+    if (!can_mark_tab_item_for_void_from_session()) {
+        return '';
+    }
+
+    if (tab_item_is_marked_for_void($item)) {
+        $onsubmit = tab_pos_confirm_form_onsubmit_attr([
+            'title' => 'Cancel void request?',
+            'text' => 'This item will no longer be marked for void.',
+            'confirmButtonText' => 'Cancel void request',
+            'variant' => 'warning',
+        ]);
+
+        return '<form method="POST" class="inline" ' . $onsubmit . '>'
+            . '<input type="hidden" name="tab_item_id" value="' . $itemId . '">'
+            . '<input type="hidden" name="tab_id" value="' . $tabId . '">'
+            . '<input type="hidden" name="clear_tab_item_void_mark" value="1">'
+            . '<input type="hidden" name="void_mark_redirect" value="' . htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8') . '">'
+            . '<button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-amber-700 hover:text-amber-900" title="Cancel void request">'
+            . '<i data-lucide="undo-2" class="w-4 h-4"></i>'
+            . '</button></form>';
+    }
+
+    $onsubmit = tab_pos_confirm_form_onsubmit_attr([
+        'title' => 'Mark this item for void?',
+        'text' => 'A manager or admin will need to approve the void.',
+        'confirmButtonText' => 'Mark for void',
+        'variant' => 'danger',
+    ]);
+
+    return '<form method="POST" class="inline" ' . $onsubmit . '>'
+        . '<input type="hidden" name="tab_item_id" value="' . $itemId . '">'
+        . '<input type="hidden" name="tab_id" value="' . $tabId . '">'
+        . '<input type="hidden" name="mark_tab_item_for_void" value="1">'
+        . '<input type="hidden" name="void_mark_redirect" value="' . htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8') . '">'
+        . '<button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-600 hover:text-red-800" title="Mark for void">'
+        . '<i data-lucide="flag" class="w-4 h-4"></i>'
+        . '</button></form>';
+}
+
 function tab_debug_log(string $location, string $message, array $data = [], string $hypothesisId = ''): void
 {
     // #region agent log
@@ -879,6 +1268,7 @@ function tab_log_payment_allocation(PDO $db, int $tabId, float $paymentAmount, a
 function recalculateTabBalance(PDO $db, $tabId) {
     ensureTabPrepaidBalanceColumn($db);
     ensureTabGratuityColumns($db);
+    ensureTabItemVoidMarkColumns($db);
     $balanceStmt = $db->prepare("
         SELECT 
             COALESCE(SUM(ti.quantity * ti.price), 0) as total_items,
@@ -887,9 +1277,11 @@ function recalculateTabBalance(PDO $db, $tabId) {
                 FROM tab_item_payments tip
                 INNER JOIN tab_items ti2 ON tip.tab_item_id = ti2.id
                 WHERE ti2.tab_id = ?
+                    AND COALESCE(ti2.marked_for_void, 0) = 0
             ), 0) as total_paid
         FROM tab_items ti
         WHERE ti.tab_id = ?
+            AND COALESCE(ti.marked_for_void, 0) = 0
     ");
     $balanceStmt->execute([$tabId, $tabId]);
     $balance = $balanceStmt->fetch(PDO::FETCH_ASSOC);

@@ -37,10 +37,57 @@
         }
     }
 
+    var qzSecurityConfigured = false;
+
+    function getReceiptAssetBase() {
+        var base = (typeof window !== 'undefined' && window.TERMINAL_API_BASE) ? window.TERMINAL_API_BASE : '';
+        return base + 'receipt/';
+    }
+
+    // Same certificate signing as qzreceipt.php so QZ Tray skips the Allow prompt
+    function ensureQzSecurity() {
+        if (qzSecurityConfigured || typeof qz === 'undefined' || !qz.security) {
+            return;
+        }
+        var assetBase = getReceiptAssetBase();
+
+        qz.security.setCertificatePromise(function (resolve, reject) {
+            fetch(assetBase + 'digital-certificate.txt', {
+                cache: 'no-store',
+                headers: { 'Content-Type': 'text/plain' }
+            })
+                .then(function (data) {
+                    data.ok ? resolve(data.text()) : reject(data.text());
+                })
+                .catch(function (err) {
+                    reject(err);
+                });
+        });
+
+        qz.security.setSignatureAlgorithm('SHA512');
+        qz.security.setSignaturePromise(function (toSign) {
+            return function (resolve, reject) {
+                fetch(assetBase + 'assets/signing/sign-message.php?request=' + encodeURIComponent(toSign), {
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'text/plain' }
+                })
+                    .then(function (data) {
+                        data.ok ? resolve(data.text()) : reject(data.text());
+                    })
+                    .catch(function (err) {
+                        reject(err);
+                    });
+            };
+        });
+
+        qzSecurityConfigured = true;
+    }
+
     function connectQzIfNeeded() {
         if (typeof qz === 'undefined' || !qz.websocket) {
             return Promise.reject(new Error('QZ Tray not loaded'));
         }
+        ensureQzSecurity();
         if (qz.websocket.isActive()) {
             return Promise.resolve();
         }

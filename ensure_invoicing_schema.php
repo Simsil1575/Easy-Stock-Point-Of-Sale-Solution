@@ -187,6 +187,13 @@ function ensureDocumentSettingsSchema(PDO $infoDb): void
             default_payment_terms TEXT NOT NULL DEFAULT 'Due within 30 days',
             default_terms_conditions TEXT NOT NULL DEFAULT '',
             default_notes TEXT NOT NULL DEFAULT '',
+            footer_bank_name TEXT NOT NULL DEFAULT '',
+            footer_account_number TEXT NOT NULL DEFAULT '',
+            footer_branch_code TEXT NOT NULL DEFAULT '',
+            footer_tax_info TEXT NOT NULL DEFAULT '',
+            footer_custom_info TEXT NOT NULL DEFAULT '',
+            invoice_footer_message TEXT NOT NULL DEFAULT '',
+            quotation_footer_message TEXT NOT NULL DEFAULT '',
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ");
@@ -211,6 +218,13 @@ function ensureDocumentSettingsSchema(PDO $infoDb): void
         'default_payment_terms' => "TEXT NOT NULL DEFAULT 'Due within 30 days'",
         'default_terms_conditions' => "TEXT NOT NULL DEFAULT ''",
         'default_notes' => "TEXT NOT NULL DEFAULT ''",
+        'footer_bank_name' => "TEXT NOT NULL DEFAULT ''",
+        'footer_account_number' => "TEXT NOT NULL DEFAULT ''",
+        'footer_branch_code' => "TEXT NOT NULL DEFAULT ''",
+        'footer_tax_info' => "TEXT NOT NULL DEFAULT ''",
+        'footer_custom_info' => "TEXT NOT NULL DEFAULT ''",
+        'invoice_footer_message' => "TEXT NOT NULL DEFAULT ''",
+        'quotation_footer_message' => "TEXT NOT NULL DEFAULT ''",
     ];
     foreach ($wanted as $name => $ddl) {
         if (!isset($cols[$name])) {

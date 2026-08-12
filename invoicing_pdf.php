@@ -217,18 +217,55 @@ class InvoicingPDF extends FPDF
 
     function Footer(): void
     {
-        $this->SetY(-18);
-        $this->SetDrawColor(226, 232, 240);
-        $this->Line(12, $this->GetY(), 198, $this->GetY());
-        $this->Ln(2);
+        $this->SetY(-12);
         $this->SetFont('Arial', 'I', 8);
         $this->SetTextColor(120, 120, 120);
-        $thanks = trim((string) ($this->s['footer_text'] ?? ''));
-        if ($thanks === '') {
-            $thanks = 'Thank you for your business.';
-        }
-        $this->Cell(0, 5, pdfText($thanks), 0, 1, 'C');
         $this->Cell(0, 5, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
+        $this->SetTextColor(0, 0, 0);
+    }
+
+    /** Draw payment details bottom-left on the last page. */
+    function drawDocumentBottomBlock(array $footerLines): void
+    {
+        if ($footerLines === []) {
+            return;
+        }
+
+        $lineH = 5.5;
+        $pad = 4.0;
+        $headingH = 7.0;
+        $boxW = 118.0;
+        $textX = 17.0;
+        $textW = $boxW - 10.0;
+        $contentH = $headingH + ($pad * 2) + (count($footerLines) * $lineH);
+        $blockBottom = 278.0;
+        $blockTop = $blockBottom - $contentH;
+
+        if ($this->GetY() > $blockTop - 10) {
+            $this->AddPage();
+            $blockTop = $blockBottom - $contentH;
+        }
+
+        $this->SetFillColor(240, 253, 250);
+        $this->SetDrawColor(153, 246, 228);
+        $this->SetLineWidth(0.5);
+        $this->Rect(12, $blockTop, $boxW, $contentH, 'DF');
+
+        $this->SetFillColor(13, 148, 136);
+        $this->Rect(12, $blockTop, 3, $contentH, 'F');
+
+        $this->SetXY($textX, $blockTop + $pad);
+        $this->SetFont('Arial', 'B', 10);
+        $this->SetTextColor(15, 118, 110);
+        $this->Cell($textW, $headingH, pdfText('Payment & Business Details'), 0, 2, 'L');
+
+        $this->SetFont('Arial', '', 9);
+        $this->SetTextColor(31, 41, 55);
+        foreach ($footerLines as $line) {
+            $this->SetX($textX);
+            $this->Cell($textW, $lineH, pdfText($line), 0, 2, 'L');
+        }
+
         $this->SetTextColor(0, 0, 0);
     }
 }
@@ -421,6 +458,9 @@ $pdf->Cell(60, 5, pdfText('Customer Signature'), 0, 0, 'C');
 $pdf->SetXY(20, $sigY + 6);
 $pdf->SetFont('Arial', 'B', 9);
 $pdf->Cell(60, 5, pdfText((string) ($doc['approved_by'] ?? $doc['created_by'] ?? '')), 0, 0, 'C');
+
+$footerLines = invBuildDocumentFooterLines($settings);
+$pdf->drawDocumentBottomBlock($footerLines);
 
 $filename = ($type === 'quotation' ? 'Quotation_' : 'Invoice_') . preg_replace('/[^A-Za-z0-9_-]/', '', $number) . '.pdf';
 $pdf->Output($disposition, $filename);

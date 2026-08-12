@@ -30,7 +30,8 @@ if ($logo !== '') {
 <style>
     * { box-sizing: border-box; }
     body { font-family: 'Segoe UI', Arial, sans-serif; color: #1f2937; margin: 0; background: #f3f4f6; }
-    .sheet { background: #fff; width: 210mm; min-height: 297mm; margin: 12px auto; padding: 18mm 16mm; box-shadow: 0 0 10px rgba(0,0,0,.1); }
+    .sheet { background: #fff; width: 210mm; min-height: 297mm; margin: 12px auto; padding: 18mm 16mm; box-shadow: 0 0 10px rgba(0,0,0,.1); display: flex; flex-direction: column; }
+    .sheet-main { flex: 1 0 auto; }
     .toolbar { text-align: center; padding: 12px; }
     .toolbar button { padding: 8px 18px; margin: 0 4px; border: 0; border-radius: 6px; cursor: pointer; font-size: 14px; }
     .btn-print { background: #0d9488; color: #fff; }
@@ -60,11 +61,15 @@ if ($logo !== '') {
     .notes h4 { font-size: 11px; text-transform: uppercase; color: #0d9488; margin: 0 0 3px; }
     .signs { display: flex; justify-content: space-between; margin-top: 48px; }
     .signs .sig { width: 44%; border-top: 1px solid #9ca3af; padding-top: 4px; font-size: 11px; text-align: center; color: #6b7280; }
-    .foot { text-align: center; margin-top: 26px; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 10px; }
+    .sheet-bottom { margin-top: auto; padding-top: 32px; display: flex; justify-content: flex-start; align-items: flex-end; border-top: 2px solid #e5e7eb; }
+    .payment-info { text-align: left; font-size: 12px; color: #1f2937; max-width: 62%; background: #f0fdfa; border: 1.5px solid #99f6e4; border-left: 4px solid #0d9488; border-radius: 8px; padding: 12px 14px; box-shadow: 0 1px 3px rgba(13, 148, 136, 0.08); }
+    .payment-info h4 { font-size: 12px; font-weight: 700; text-transform: uppercase; color: #0f766e; margin: 0 0 8px; letter-spacing: 0.5px; }
+    .payment-info p { margin: 4px 0; line-height: 1.55; font-weight: 500; color: #374151; }
     @media print {
         body { background: #fff; }
         .toolbar { display: none !important; }
-        .sheet { box-shadow: none; margin: 0; width: auto; min-height: auto; padding: 0; }
+        .sheet { box-shadow: none; margin: 0; width: auto; min-height: 297mm; padding: 0; display: flex; flex-direction: column; }
+        .sheet-bottom { margin-top: auto; }
         @page { size: A4; margin: 14mm; }
     }
 </style>
@@ -75,6 +80,7 @@ if ($logo !== '') {
     <button class="btn-close" onclick="window.close()">Close</button>
 </div>
 <div class="sheet">
+    <div class="sheet-main">
     <div class="head">
         <div class="company">
             <?php if ($logoSrc !== ''): ?><img src="<?= $e($logoSrc) ?>" class="logo" alt="Logo"><?php endif; ?>
@@ -149,8 +155,19 @@ if ($logo !== '') {
         <div class="sig"><?= $e($doc['approved_by'] ?? $doc['created_by'] ?? '') ?><br>Prepared / Authorized By</div>
         <div class="sig">&nbsp;<br>Customer Signature</div>
     </div>
+    </div>
 
-    <div class="foot"><?= $e(trim((string) ($settings['footer_text'] ?? '')) ?: 'Thank you for your business.') ?></div>
+    <?php
+    $footerLines = invBuildDocumentFooterLines($settings);
+    ?>
+    <?php if ($footerLines !== []): ?>
+    <div class="sheet-bottom">
+        <div class="payment-info">
+            <h4>Payment &amp; Business Details</h4>
+            <?php foreach ($footerLines as $line): ?><p><?= $e($line) ?></p><?php endforeach; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 <script>window.addEventListener('load', function(){ setTimeout(function(){ window.print(); }, 350); });</script>
 </body>

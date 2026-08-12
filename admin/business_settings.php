@@ -101,7 +101,7 @@ try {
     }
     
     // Handle form submission
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['save_manager_void_pin']) && !isset($_POST['update_receipt_setting']) && !isset($_POST['import_csv']) && !isset($_POST['update_cashier_permissions']) && !isset($_POST['update_cashier_inactivity']) && !isset($_POST['update_waitress_permissions']) && !isset($_POST['update_pos_interface'])) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['save_manager_void_pin']) && !isset($_POST['update_receipt_setting']) && !isset($_POST['import_csv']) && !isset($_POST['update_cashier_permissions']) && !isset($_POST['update_cashier_inactivity']) && !isset($_POST['update_waitress_permissions']) && !isset($_POST['update_admin_permissions']) && !isset($_POST['update_pos_interface'])) {
         // Validate inputs
         $name = trim($_POST['name'] ?? '');
         $location = trim($_POST['location'] ?? '');
@@ -568,6 +568,39 @@ try {
             exit;
         }
 
+    }
+
+    // Handle admin permissions form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_admin_permissions'])) {
+        try {
+            $posDb = new PDO('sqlite:../pos.db');
+            $posDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            try {
+                $posDb->exec("ALTER TABLE product_settings ADD COLUMN admin_edit_report_amounts BOOLEAN NOT NULL DEFAULT 0");
+            } catch (PDOException $e) {
+            }
+
+            $checkStmt = $posDb->query('SELECT COUNT(*) FROM product_settings')->fetchColumn();
+            if ((int) $checkStmt === 0) {
+                $posDb->exec('INSERT INTO product_settings (show_all_products, default_print_receipt, admin_edit_report_amounts) VALUES (0, 0, 0)');
+            }
+
+            $enabled = isset($_POST['admin_edit_report_amounts']) ? 1 : 0;
+            $posDb->prepare('UPDATE product_settings SET admin_edit_report_amounts = ? WHERE id = 1')->execute([$enabled]);
+            $successMessage = 'Admin permissions updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating admin permissions: ' . $e->getMessage();
+        }
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
+            }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
+        }
     }
     
     // Handle CSV import

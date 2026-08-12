@@ -20,24 +20,20 @@ if ($activationCheck['status'] === 'not_activated' || $activationCheck['status']
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00'; // Default to 00:00 if not set
-} catch (PDOException $e) {
-    // Default closing time if DB error
-    $closingTime = '00:00';
-}
+require_once __DIR__ . '/business_day_helper.php';
+require_once __DIR__ . '/invoice_transactions_helper.php';
+require_once __DIR__ . '/ensure_laybye_schema.php';
+
+$bdCtx = bdLoadClosingContext(__DIR__ . '/info.db');
+$closingTime = $bdCtx['closing_time'];
+$openingTime = $bdCtx['opening_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Database connection
 $db = new PDO('sqlite:pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
-require_once __DIR__ . '/ensure_laybye_schema.php';
-require_once __DIR__ . '/invoice_transactions_helper.php';
 ensureLaybyeSchema($db);
 
 // Ensure tab tips column exists (ignore if already added)
@@ -70,54 +66,34 @@ function getUsernameById($userId) {
     }
 }
 
-// Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-
-// If closing time is after midnight (e.g., 2:00 AM), we need to consider transactions
-// that happened after midnight but before closing time as part of the previous day
-$isAfterMidnight = $closingHour < 12;
-
-// Prepare date calculation snippet for SQL
-$dateSql = "
-    CASE 
-        WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-        THEN date(datetime(created_at, '-1 day'))
-        ELSE date(created_at)
-    END AS business_date
-";
+// Business-day SQL fragments from settings (opening/closing times in info.db)
+$bdCaseCreated = bdBusinessDateCaseSql('created_at', $closingTime, $isAfterMidnight);
+$bdCasePayment = bdBusinessDateCaseSql('payment_date', $closingTime, $isAfterMidnight);
+$bdCaseOCreated = bdBusinessDateCaseSql('o.created_at', $closingTime, $isAfterMidnight);
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePayment = bdSingleDayWhereSql('payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCsCreated = bdSingleDayWhereSql('cs.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereTCreated = bdSingleDayWhereSql('t.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePaymentDate = bdSingleDayWhereSql('payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$dateSql = $bdCaseCreated . ' AS business_date';
 
 // Optimized: Single query to get all distinct dates with better performance
 $distinctDatesQuery = $db->prepare("
     WITH all_dates AS (
-        SELECT DISTINCT
-            CASE 
-                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(created_at, '-1 day'))
-                ELSE date(created_at)
-            END AS business_date
+        SELECT DISTINCT {$bdCaseCreated} AS business_date
         FROM orders
         WHERE created_at IS NOT NULL
         
         UNION
         
-        SELECT DISTINCT
-            CASE 
-                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(created_at, '-1 day'))
-                ELSE date(created_at)
-            END AS business_date
+        SELECT DISTINCT {$bdCaseCreated} AS business_date
         FROM credit_sales
         WHERE created_at IS NOT NULL
         
         UNION
         
-        SELECT DISTINCT
-            CASE 
-                WHEN strftime('%H:%M', payment_date) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(payment_date, '-1 day'))
-                ELSE date(payment_date)
-            END AS business_date
+        SELECT DISTINCT {$bdCasePayment} AS business_date
         FROM payments
         WHERE payment_date IS NOT NULL
     )
@@ -130,20 +106,10 @@ $distinctDatesQuery->execute();
 $distinctDates = $distinctDatesQuery->fetchAll(PDO::FETCH_COLUMN);
 
 if (invoicePaymentsTableExists($db)) {
-    $ipTs = invoicePaymentTimestampExpr();
-    $ipDatesSql = "
-        SELECT DISTINCT
-            CASE
-                WHEN strftime('%H:%M', {$ipTs}) BETWEEN '00:00' AND " . $db->quote($closingTime) . " AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime({$ipTs}, '-1 day'))
-                ELSE date({$ipTs})
-            END AS business_date
-        FROM invoice_payments ip
-        WHERE ip.payment_method != 'Credit'
-          AND {$ipTs} IS NOT NULL
-    ";
+    $ipTs = invoicePaymentTimestampExpr('ip');
+    $ipBdCase = bdBusinessDateCaseSql($ipTs, $closingTime, $isAfterMidnight);
     try {
-        foreach ($db->query($ipDatesSql)->fetchAll(PDO::FETCH_COLUMN) as $ipDate) {
+        foreach ($db->query("SELECT DISTINCT {$ipBdCase} AS business_date FROM invoice_payments ip WHERE ip.payment_method != 'Credit' AND {$ipTs} IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN) as $ipDate) {
             if ($ipDate && !in_array($ipDate, $distinctDates, true)) {
                 $distinctDates[] = $ipDate;
             }
@@ -166,12 +132,7 @@ if (!in_array($yesterday, $distinctDates)) {
     array_unshift($distinctDates, $yesterday); // Add yesterday at the beginning of the array
 }
 
-// Determine which date to show by default based on current time vs closing time
-$currentTime = date('H:i');
-
-// If current time is before closing time, show yesterday's data
-// If current time is after closing time, show today's data
-$defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
+$defaultDate = bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 
 // Handle date selection
 $selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
@@ -180,15 +141,8 @@ $selectedDate = isset($_POST['date']) ? $_POST['date'] : $defaultDate;
 $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
 
 // Pre-calculate date conditions for reuse
-$dateCondition = "(
-    (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= '$closingTime') OR
-    (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-)";
-
-$paymentDateCondition = "(
-    (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
-    (DATE(payment_date) = :nextDay AND strftime('%H:%M', payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-)";
+$dateCondition = $bdWhereCreated;
+$paymentDateCondition = $bdWherePayment;
 
 // Optimized: Single query to get all financial data for the selected date
 $financialDataQuery = $db->prepare("
@@ -391,10 +345,7 @@ $topProductsQuery = $db->prepare("
         JOIN credit_sales cs ON credit_sale_items.sale_id = cs.id
     ) t
     LEFT JOIN products p ON t.product_name = p.name
-    WHERE (
-        (DATE(t.created_at) = :selectedDate AND strftime('%H:%M', t.created_at) >= '$closingTime') OR
-        (DATE(t.created_at) = :nextDay AND strftime('%H:%M', t.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereTCreated)
     GROUP BY t.product_name
     ORDER BY total_qty DESC
 ");
@@ -440,10 +391,7 @@ $ordersQuery = $db->prepare("
         LEFT JOIN order_products op ON op.order_id = o.id
         LEFT JOIN order_tab_info oti ON oti.order_id = o.id
         LEFT JOIN order_laybye olb ON olb.order_id = o.id
-        WHERE (
-            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWhereOCreated)
         GROUP BY o.id
     )
     SELECT id, cash_amount AS total, tips, created_at, products, 'cash' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
@@ -487,19 +435,13 @@ $creditQuery = $db->prepare("
         LEFT JOIN payments p ON cs.id = p.sale_id
         WHERE (
             -- Show unpaid/partial credit sales on their original creation date
-            (
-                (DATE(cs.created_at) = :selectedDate AND strftime('%H:%M', cs.created_at) >= '$closingTime') OR
-                (DATE(cs.created_at) = :nextDay AND strftime('%H:%M', cs.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-            ) AND cs.payment_status IN ('unpaid', 'partial')
+            ($bdWhereCsCreated) AND cs.payment_status IN ('unpaid', 'partial')
         )
         OR (
             -- Show paid/eft credit sales only on their payment date
             cs.payment_status IN ('paid', 'eft', 'partial') AND cs.id IN (
                 SELECT sale_id FROM payments 
-                WHERE (
-                    (DATE(payment_date) = :selectedDate AND strftime('%H:%M', payment_date) >= '$closingTime') OR
-                    (DATE(payment_date) = :nextDay AND strftime('%H:%M', payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-                )
+                WHERE ($bdWherePaymentDate)
             )
         )
         GROUP BY cs.id, p.id
