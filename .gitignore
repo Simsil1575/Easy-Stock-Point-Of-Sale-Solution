@@ -4,6 +4,9 @@ pos.db
 active.db
 user.db
 
+# Local database backups
+backups/
+
 # Local product data
 products/
 

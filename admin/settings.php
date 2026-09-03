@@ -15,6 +15,47 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 require_once '../activation_helper.php';
 require_once __DIR__ . '/../pos_reset_helper.php';
 require_once __DIR__ . '/../terminal_helper.php';
+require_once __DIR__ . '/../database_backup_helper.php';
+
+$backupSettings = loadDatabaseBackupSettings();
+$databaseBackups = listDatabaseBackups();
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_database_backup_settings'])) {
+    try {
+        saveDatabaseBackupSettings(isset($_POST['backup_on_logout']));
+        $_SESSION['settings_flash_success'] = 'Database backup settings saved.';
+    } catch (Throwable $e) {
+        $_SESSION['settings_flash_error'] = 'Could not save backup settings: ' . $e->getMessage();
+    }
+    header('Location: settings?s=system');
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_database_backup'])) {
+    try {
+        $result = createDatabaseBackup('manual', $_SESSION['username'] ?? null);
+        if ($result['success']) {
+            $_SESSION['settings_flash_success'] = 'Database backup created: ' . ($result['folder'] ?? 'backup');
+        } else {
+            $_SESSION['settings_flash_error'] = implode(' ', $result['errors']);
+        }
+    } catch (Throwable $e) {
+        $_SESSION['settings_flash_error'] = 'Backup failed: ' . $e->getMessage();
+    }
+    header('Location: settings?s=system');
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_database_backup'])) {
+    $folder = (string) ($_POST['backup_folder'] ?? '');
+    if (deleteDatabaseBackup($folder)) {
+        $_SESSION['settings_flash_success'] = 'Backup deleted.';
+    } else {
+        $_SESSION['settings_flash_error'] = 'Could not delete backup.';
+    }
+    header('Location: settings?s=system');
+    exit;
+}
 
 $settingsSection = isset($_GET['s']) && is_string($_GET['s']) ? preg_replace('/[^a-z]/', '', $_GET['s']) : '';
 $settingsSectionAllowed = ['display', 'account', 'activation', 'cashout', 'system', 'terminal'];
@@ -2103,6 +2144,11 @@ $settingsSectionTitles = [
                             Export Product Images
                         </button>
                     </div>
+
+                    <?php
+                    $settingsBaseUrl = 'settings?s=system';
+                    include __DIR__ . '/../includes/database_backup_section.php';
+                    ?>
 
                     <!-- App updater (GitHub) -->
                     <div class="mt-8 pt-6 border-t border-gray-200">

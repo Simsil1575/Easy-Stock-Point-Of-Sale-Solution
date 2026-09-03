@@ -87,6 +87,22 @@ function reprintFormatLineItems(array $items, bool $dbPriceIsUnit): array
     return $formattedItems;
 }
 
+function reprintResolveCashierName(PDO $dbPos, ?string $cashierId, ?int $saleId = null, ?string $paymentStatus = null): string
+{
+    $cashierName = trim((string) $cashierId);
+
+    if ($saleId !== null && in_array((string) $paymentStatus, ['paid', 'eft', 'partial'], true)) {
+        $paymentStmt = $dbPos->prepare('SELECT cashier_id FROM payments WHERE sale_id = ? ORDER BY payment_date DESC LIMIT 1');
+        $paymentStmt->execute([$saleId]);
+        $paymentCashier = $paymentStmt->fetchColumn();
+        if ($paymentCashier !== false && trim((string) $paymentCashier) !== '') {
+            $cashierName = trim((string) $paymentCashier);
+        }
+    }
+
+    return $cashierName !== '' ? $cashierName : 'Unknown';
+}
+
 // Get POST parameters
 $transactionId = $_POST['transaction_id'] ?? '';
 $saleType = $_POST['sale_type'] ?? '';
@@ -189,7 +205,12 @@ try {
             'total_amount' => $creditData['total_amount'],
             'due_date' => $creditData['due_date'],
             'items' => $formattedItems,
-            'cashier_username' => $_SESSION['username'],
+            'cashier_username' => reprintResolveCashierName(
+                $dbPos,
+                $creditData['cashier_id'] ?? null,
+                (int) $creditData['sale_id'],
+                $paymentStatus !== '' ? $paymentStatus : ($creditData['payment_status'] ?? null)
+            ),
             'created_at' => $creditData['created_at']
         ];
         
@@ -250,7 +271,7 @@ try {
             'wallet_provider' => $eftData['wallet_provider'],
             'transaction_ref' => $eftData['transaction_ref'],
             'items' => $formattedItems,
-            'cashier_username' => $_SESSION['username'],
+            'cashier_username' => reprintResolveCashierName($dbPos, $eftData['cashier_id'] ?? null),
             'created_at' => $eftData['created_at']
         ];
         reprintEnrichLaybyeContext($dbPos, $receiptData);
@@ -302,7 +323,7 @@ try {
             'order_id' => $cashData['order_id'],
             'cash_received' => $cashData['cash_received'] ?? $cashData['total'] ?? $total, // Use actual cash_received from order
             'items' => $formattedItems,
-            'cashier_username' => $_SESSION['username'],
+            'cashier_username' => reprintResolveCashierName($dbPos, $cashData['cashier_id'] ?? null),
             'created_at' => $cashData['created_at'],
             'payment_method' => 'cash'
         ];
@@ -481,7 +502,7 @@ try {
         $printer->text($businessInfo['location'] . "\n");
         $printer->setEmphasis(false);
         $printer->text("Tel: " . $businessInfo['phone'] . "\n");
-        $printer->text("Cashier: " . $_SESSION['username'] . "\n");
+        $printer->text("Cashier: " . ($receiptData['cashier_username'] ?? 'Unknown') . "\n");
         $printer->feed();
         
         // Print receipt content based on transaction type (size-responsive)
