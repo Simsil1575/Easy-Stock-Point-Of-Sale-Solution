@@ -54,6 +54,9 @@ function sendToPrinter(receiptData) {
     var isTabBalanceReceipt = receiptData.is_tab_balance_receipt === true;
     var isPaymentReceipt = receiptData.is_payment_receipt === true;
     var isRefundReceipt = receiptData.is_refund_receipt === true;
+    var isExchangeReceipt = receiptData.is_exchange_receipt === true;
+    var isVoidReceipt = receiptData.is_void_receipt === true;
+    var isCashBackReceipt = receiptData.is_cash_back_receipt === true;
     var isTabSale = !!(receiptData.tab_id || receiptData.table_id);
     var isCreditSale = !!receiptData.sale_id;
     var isDrawerOnly = receiptData.open_drawer_only === true;
@@ -61,7 +64,7 @@ function sendToPrinter(receiptData) {
     // Ensure print_only flag is set for regular receipts (not special types)
     var isLaybyeBalanceReceipt = receiptData.is_laybye_balance_receipt === true;
     var isTabCopyReceipt = receiptData.is_tab_copy_receipt === true;
-    if (!receiptData.print_only && !isCashupReport && !isBalanceReceipt && !isTabBalanceReceipt && !isTabCopyReceipt && !isLaybyeBalanceReceipt && !isPaymentReceipt && !isRefundReceipt && !isDrawerOnly) {
+    if (!receiptData.print_only && !isCashupReport && !isBalanceReceipt && !isTabBalanceReceipt && !isTabCopyReceipt && !isLaybyeBalanceReceipt && !isPaymentReceipt && !isRefundReceipt && !isExchangeReceipt && !isVoidReceipt && !isCashBackReceipt && !isDrawerOnly) {
         receiptData.print_only = true;
     }
     
@@ -70,6 +73,7 @@ function sendToPrinter(receiptData) {
     var businessInfoSource = window.businessInfo || (typeof businessInfo !== 'undefined' ? businessInfo : null);
     var dataWithBusiness = Object.assign({}, receiptData, {
         business_name: receiptData.business_name || (businessInfoSource ? businessInfoSource.business_name : null),
+        business_name_secondary: receiptData.business_name_secondary || (businessInfoSource ? businessInfoSource.business_name_secondary : null),
         location: receiptData.location || (businessInfoSource ? businessInfoSource.location : null),
         phone: receiptData.phone || (businessInfoSource ? businessInfoSource.phone : null),
         footer_text: receiptData.footer_text || (businessInfoSource ? businessInfoSource.footer_text : null),
@@ -105,6 +109,9 @@ function sendToPrinter(receiptData) {
     else if (isBalanceReceipt) receiptType = 'Balance Receipt';
     else if (isPaymentReceipt) receiptType = 'Payment Receipt';
     else if (isRefundReceipt) receiptType = 'Refund Receipt';
+    else if (isVoidReceipt) receiptType = 'Void Receipt';
+    else if (isCashBackReceipt) receiptType = receiptData.is_cash_back_copy ? 'Cash Back Copy Receipt' : 'Cash Back Receipt';
+    else if (isExchangeReceipt) receiptType = 'Exchange Receipt';
     else if (isTabSale) receiptType = 'Tab Sale / Kitchen Ticket';
     else if (isCreditSale) receiptType = 'Credit Sale';
     else if (isDrawerOnly) receiptType = 'Cash Drawer Only';
@@ -121,6 +128,31 @@ function sendToPrinter(receiptData) {
     }
     // #endregion
     
+    // Drawer-only (non-QZ): always use receipt.php so ESC/POS pulse bytes are generated server-side.
+    if (isDrawerOnly && !(useQzTray && !isAndroidLike)) {
+        var drawerUrlOnly = (window.location && window.location.origin ? window.location.origin : '') + '/receipt.php';
+        return fetch(drawerUrlOnly, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dataWithBusiness)
+        }).then(function(r) {
+            return r.json().then(function(result) {
+                result.receipt_type = receiptType;
+                if (window.AndroidReceiptHandler && typeof window.AndroidReceiptHandler.handleReceipt === 'function' && result.order_data) {
+                    try {
+                        window.AndroidReceiptHandler.handleReceipt(JSON.stringify(result.order_data));
+                    } catch (e) {
+                        console.error('[sendToPrinter] Android drawer fallback failed:', e.message);
+                    }
+                }
+                return result;
+            });
+        }).catch(function(error) {
+            console.error('[sendToPrinter] Drawer-only print error:', error);
+            return { success: false, message: 'Drawer open failed: ' + error.message, receipt_type: receiptType };
+        });
+    }
+
     // QZ Tray printing (desktop/web)
     var ua = (navigator.userAgent || '').toLowerCase();
     var isAndroidLike = ua.indexOf('android') !== -1 || ua.indexOf('median') !== -1;
@@ -192,7 +224,7 @@ function sendToPrinter(receiptData) {
     }
 
     // Check for AndroidReceiptHandler (the correct interface name from MainActivity.java)
-    if (window.AndroidReceiptHandler && typeof window.AndroidReceiptHandler.handleReceipt === 'function') {
+    if (!isDrawerOnly && window.AndroidReceiptHandler && typeof window.AndroidReceiptHandler.handleReceipt === 'function') {
         console.log('[sendToPrinter] Found AndroidReceiptHandler, using native printing');
         try {
             var jsonData = JSON.stringify(dataWithBusiness);
@@ -247,6 +279,112 @@ function sendToPrinter(receiptData) {
         return { success: false, message: 'Print failed: ' + error.message, receipt_type: receiptType };
     });
 }
+
+function buildVoidReceiptFromTransaction(transactionData, voidId) {
+    var items = (transactionData.items || []).map(function(item) {
+        return {
+            product_name: item.product_name || item.name || 'Unknown',
+            quantity: item.quantity || 1,
+            price: item.price || 0
+        };
+    });
+    return {
+        is_void_receipt: true,
+        void_id: voidId || null,
+        order_id: transactionData.order_id || null,
+        items: items,
+        total: transactionData.total || 0,
+        payment_method: transactionData.payment_method || 'cash',
+        cash_received: transactionData.cash_received || transactionData.cash_amount || 0,
+        transaction_ref: transactionData.transaction_ref || null,
+        wallet_provider: transactionData.wallet_provider || transactionData.provider || null,
+        eft_amount: transactionData.eft_amount || null,
+        cashier_username: transactionData.cashier_username || 'Unknown',
+        print_only: true
+    };
+}
+
+function printVoidReceiptIfPresent(voidReceipt) {
+    if (!voidReceipt || typeof sendToPrinter !== 'function') {
+        return Promise.resolve();
+    }
+    var businessInfoSource = window.businessInfo || (typeof businessInfo !== 'undefined' ? businessInfo : null);
+    var receiptData = Object.assign({}, voidReceipt, {
+        business_name: voidReceipt.business_name || (businessInfoSource ? businessInfoSource.business_name : null),
+        business_name_secondary: voidReceipt.business_name_secondary || (businessInfoSource ? businessInfoSource.business_name_secondary : null),
+        location: voidReceipt.location || (businessInfoSource ? businessInfoSource.location : null),
+        phone: voidReceipt.phone || (businessInfoSource ? businessInfoSource.phone : null),
+        footer_text: voidReceipt.footer_text || (businessInfoSource ? businessInfoSource.footer_text : null),
+        logo_path: voidReceipt.logo_path || (businessInfoSource ? businessInfoSource.logo_path : null),
+        vat_inclusive: voidReceipt.vat_inclusive || (businessInfoSource ? businessInfoSource.vat_inclusive : null),
+        vat_rate: voidReceipt.vat_rate || (businessInfoSource ? businessInfoSource.vat_rate : null)
+    });
+    return sendToPrinter(receiptData).catch(function(printError) {
+        console.error('Void receipt printing error:', printError);
+    });
+}
+
+function enrichReceiptWithBusinessInfo(receiptData) {
+    var businessInfoSource = window.businessInfo || (typeof businessInfo !== 'undefined' ? businessInfo : null);
+    return Object.assign({}, receiptData, {
+        business_name: receiptData.business_name || (businessInfoSource ? businessInfoSource.business_name : null),
+        business_name_secondary: receiptData.business_name_secondary || (businessInfoSource ? businessInfoSource.business_name_secondary : null),
+        location: receiptData.location || (businessInfoSource ? businessInfoSource.location : null),
+        phone: receiptData.phone || (businessInfoSource ? businessInfoSource.phone : null),
+        footer_text: receiptData.footer_text || (businessInfoSource ? businessInfoSource.footer_text : null),
+        logo_path: receiptData.logo_path || (businessInfoSource ? businessInfoSource.logo_path : null),
+        vat_inclusive: receiptData.vat_inclusive || (businessInfoSource ? businessInfoSource.vat_inclusive : null),
+        vat_rate: receiptData.vat_rate || (businessInfoSource ? businessInfoSource.vat_rate : null)
+    });
+}
+
+function handleCashBackCompleted(response, options) {
+    options = options || {};
+    if (!response || !response.success) {
+        return Promise.resolve();
+    }
+
+    var printPromise = Promise.resolve().then(function() {
+        if (!response.cash_back_receipt || typeof sendToPrinter !== 'function') {
+            return Promise.resolve();
+        }
+        var baseReceipt = enrichReceiptWithBusinessInfo(response.cash_back_receipt);
+        var customerReceipt = Object.assign({}, baseReceipt, { is_cash_back_copy: false });
+        var copyReceipt = Object.assign({}, baseReceipt, { is_cash_back_copy: true });
+        return sendToPrinter(customerReceipt)
+            .then(function() { return sendToPrinter(copyReceipt); })
+            .catch(function(err) {
+                console.error('Cash back receipt printing error:', err);
+            });
+    });
+
+    return printPromise.then(function() {
+        if (typeof options.onDone === 'function') {
+            options.onDone();
+        }
+    });
+}
+
+function openCashDrawerShared(cashierUsername) {
+    var drawerData = {
+        open_drawer_only: true,
+        cashier_username: cashierUsername || ''
+    };
+    if (typeof sendToPrinter === 'function') {
+        return sendToPrinter(drawerData);
+    }
+    var drawerUrl = (window.location && window.location.origin ? window.location.origin : '') + '/open_drawer.php';
+    return fetch(drawerUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(drawerData)
+    }).then(function(r) { return r.json(); }).then(function(result) {
+        if (result && result.requires_client_print && typeof sendToPrinter === 'function') {
+            return sendToPrinter(result.receipt_data || result.order_data || drawerData);
+        }
+        return result;
+    });
+}
     <?php
     exit;
 }
@@ -274,6 +412,8 @@ try {
 }
 
 require_once __DIR__ . '/receipt_payment_helper.php';
+require_once __DIR__ . '/receipt_header_helper.php';
+require_once __DIR__ . '/receipt_printer_helper.php';
 
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
@@ -597,6 +737,12 @@ function emitRawModeJson(array $orderData, string $rawBytes, array $businessInfo
 function enrichOrderDataWithBusinessInfo(array &$orderData, array $businessInfo): void
 {
     $orderData['business_name'] = $businessInfo['name'] ?? 'POS SOLUTION';
+    $secondaryName = trim((string)($businessInfo['name_secondary'] ?? ''));
+    if ($secondaryName !== '') {
+        $orderData['business_name_secondary'] = $secondaryName;
+    } else {
+        unset($orderData['business_name_secondary']);
+    }
     $orderData['location'] = $businessInfo['location'] ?? '';
     $orderData['phone'] = $businessInfo['phone'] ?? '';
     $orderData['footer_text'] = $businessInfo['footer_text'] ?? 'Thank you for your purchase!';
@@ -699,55 +845,26 @@ if ($rawMode) {
 // Open cash drawer without printing when requested
 if (isset($orderData['open_drawer_only']) && $orderData['open_drawer_only']) {
     try {
-        // Determine printer to use based on client IP (same logic as below)
-        $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
-        $printerName = '';
-        $isNetworkPrinter = false;
-        if ($clientIP === '127.0.0.1' || $clientIP === '::1' || $clientIP === 'localhost' || $clientIP === $_SERVER['SERVER_ADDR']) {
-            $printerName = "XP-58SERIES";
-            $isNetworkPrinter = false;
-        } else if ($clientIP === '192.168.178.87') {
-            $printerName = "POSPrinter POS-80C";
-            $isNetworkPrinter = true;
-        } else {
-            $printerName = "XP-58SERIES";
-            $isNetworkPrinter = false;
-        }
+        $businessInfo = receipt_load_business_info();
+        enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
+        $printerTarget = receipt_create_printer_connector($businessInfo);
+        $printerName = $printerTarget['label'];
+        $isNetworkPrinter = $printerTarget['is_network'];
 
-        error_log("Opening cash drawer - Client IP: $clientIP, Printer: $printerName, Network: " . ($isNetworkPrinter ? 'Yes' : 'No'));
+        error_log('Opening cash drawer - Printer: ' . $printerName . ', Network: ' . ($isNetworkPrinter ? 'Yes' : 'No'));
 
         if ($rawMode) {
             $connector = new RawCaptureConnector();
             $rawConnector = $connector;
-        } else if ($isNetworkPrinter) {
-            $connector = new NetworkPrintConnector("192.168.1.7", 9100);
         } else {
-            $connector = new WindowsPrintConnector($printerName);
+            $connector = $printerTarget['connector'];
         }
 
         $printer = new Printer($connector);
-        $printer->pulse();
-        // Initialize printer to stop further printing
-        $printer->initialize();
+        receipt_pulse_cash_drawer($printer);
         $printer->close();
 
-        error_log("Cash drawer opened successfully");
-        
-        // Get business info for Android interceptor
-        $db = new PDO('sqlite:info.db');
-        $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        if (!$businessInfo) {
-            $businessInfo = [
-                'name' => 'POS SOLUTION',
-                'location' => 'Your Business Address',
-                'phone' => 'Your Phone Number',
-                'footer_text' => 'Thank you for your purchase!',
-                'vat_inclusive' => 'exclusive',
-                'vat_rate' => 15.0
-            ];
-        }
-        
-        enrichOrderDataWithBusinessInfo($orderData, $businessInfo);
+        error_log('Cash drawer opened successfully');
 
         if ($rawMode) {
             $rawBytes = $rawConnector ? $rawConnector->getData() : '';
@@ -758,14 +875,13 @@ if (isset($orderData['open_drawer_only']) && $orderData['open_drawer_only']) {
                 'success' => true,
                 'message' => 'Drawer opened',
                 'printer_used' => $printerName,
-                'client_ip' => $clientIP,
                 'connection_type' => $isNetworkPrinter ? 'network' : 'local',
-                'order_data' => $orderData  // Include enriched orderData for Android
+                'order_data' => $orderData
             ]);
             exit;
         }
     } catch (\Throwable $e) {
-        error_log("Cash drawer opening failed: " . $e->getMessage());
+        error_log('Cash drawer opening failed: ' . $e->getMessage());
         header('Content-Type: application/json');
         http_response_code(500);
         echo json_encode([
@@ -1146,9 +1262,7 @@ if (isset($orderData['is_cashup_master_report']) && $orderData['is_cashup_master
         // Print header
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         printBusinessLogo($printer, $businessInfo, receiptCharsToPaperMm($receiptWidth), !$rawMode);
-        $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
-        $printer->text($businessInfo['name'] . "\n");
-        $printer->selectPrintMode();
+        printBusinessNameHeader($printer, $businessInfo, $receiptWidth);
         $printer->setEmphasis(true);
         if ($isIndividualCashout) {
             $printer->text("CASHOUT REPORT\n");
@@ -1367,9 +1481,7 @@ if (isset($orderData['is_inventory_receipt']) && $orderData['is_inventory_receip
         // Print header
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         printBusinessLogo($printer, $businessInfo, receiptCharsToPaperMm($receiptWidth), !$rawMode);
-        $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
-        $printer->text($businessInfo['name'] . "\n");
-        $printer->selectPrintMode();
+        printBusinessNameHeader($printer, $businessInfo, $receiptWidth);
         $printer->setEmphasis(true);
         $printer->text("INVENTORY REPORT\n");
 
@@ -1591,9 +1703,7 @@ if (isset($orderData['is_cashup_report']) && $orderData['is_cashup_report']) {
 
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         printBusinessLogo($printer, $businessInfo, receiptCharsToPaperMm($receiptWidth), !$rawMode);
-        $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
-        $printer->text($businessInfo['name'] . "\n");
-        $printer->selectPrintMode();
+        printBusinessNameHeader($printer, $businessInfo, $receiptWidth);
         $printer->setEmphasis(true);
         if ($isIndividual) {
             $printer->text("CASHOUT / Z-REPORT\n");
@@ -1763,6 +1873,7 @@ try {
                    !empty($orderData['is_tab_copy_receipt']) ||
                    isset($orderData['is_laybye_balance_receipt']) ||
                    isset($orderData['is_payment_receipt']) ||
+                   !empty($orderData['is_cash_back_receipt']) ||
                    isset($orderData['open_drawer_only']) ||
                    !empty($orderData['print_to_kitchen_printer']);
 
@@ -2058,40 +2169,28 @@ try {
         return '';
     };
     
-    // Detect client IP address to determine which printer to use
+    // Detect client IP address (legacy fallback only when printer_port is unset)
     $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
     
-    // Determine printer connection based on client IP
     $printerName = '';
     $isNetworkPrinter = false;
-    
-    if ($clientIP === '127.0.0.1' || $clientIP === '::1' || $clientIP === 'localhost' || $clientIP === $_SERVER['SERVER_ADDR']) {
-        // Local PC - use XP-58SERIES printer
-        $printerName = "XP-58SERIES";
-        $isNetworkPrinter = false;
-    } else if ($clientIP === '192.168.178.87') {
-        // Network PC - use POS-80C printer over network
-        $printerName = "POSPrinter POS-80C";
-        $isNetworkPrinter = true;
-    } else {
-        // Default to local printer for any other IP
-        $printerName = "XP-58SERIES";
-        $isNetworkPrinter = false;
-    }
-    
-    // Create printer connection based on type
+    $printerConnector = null;
+
+    // Create printer connection based on business settings / kitchen printer
     try {
         if ($rawMode) {
             $connector = new RawCaptureConnector();
             $rawConnector = $connector;
+            $printerName = 'raw-capture';
         } else if (!empty($orderData['print_to_kitchen_printer']) && $kitchenPrinterIp !== '') {
             $connector = new NetworkPrintConnector($kitchenPrinterIp, $kitchenPrinterPort);
-        } else if ($isNetworkPrinter) {
-            // Network printer connection
-            $connector = new NetworkPrintConnector("192.168.1.7", 9100);
+            $printerName = $kitchenPrinterIp . ':' . $kitchenPrinterPort;
+            $isNetworkPrinter = true;
         } else {
-            // Local Windows printer connection
-            $connector = new WindowsPrintConnector($printerName);
+            $printerTarget = receipt_create_printer_connector($businessInfo);
+            $connector = $printerTarget['connector'];
+            $printerName = $printerTarget['label'];
+            $isNetworkPrinter = $printerTarget['is_network'];
         }
         $printer = new Printer($connector);
     } catch (Exception $e) {
@@ -2101,12 +2200,10 @@ try {
         throw new Exception("Printer connection failed for $connLabel: " . $e->getMessage());
     }
 
-    // Open the cash drawer BEFORE printing for eligible payments
+    // Open the cash drawer BEFORE printing for eligible payments (cash, mixed cash, EFT change, cash back)
     try {
-        if (!isset($orderData['print_only']) && !isset($orderData['creditor_id']) && !isset($orderData['is_cashup_report']) && !isset($orderData['is_balance_receipt']) && !isset($orderData['is_tab_balance_receipt'])) {
-            if (!isset($orderData['payment_method']) || ($orderData['payment_method'] !== 'e-wallet' && $orderData['payment_method'] !== 'credit')) {
-                $printer->pulse();
-            }
+        if (receipt_should_pulse_drawer_for_print($orderData)) {
+            receipt_pulse_cash_drawer($printer);
         }
     } catch (Exception $e) {
         error_log("Initial drawer open failed: " . $e->getMessage());
@@ -2121,10 +2218,7 @@ try {
         try {
             $printer->setJustification(Printer::JUSTIFY_CENTER);
             printBusinessLogo($printer, $businessInfo, $receiptWidthMm, !$rawMode);
-            // Highlight business name with bold double-size text (readable on thermal paper).
-            $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
-            $printer->text($businessInfo['name'] . "\n");
-            $printer->selectPrintMode(); // Reset print mode
+            printBusinessNameHeader($printer, $businessInfo, $receiptWidth);
             $printer->text("\n");
 
             $printer->setEmphasis(false);
@@ -2323,6 +2417,198 @@ try {
         $printer->setJustification(Printer::JUSTIFY_CENTER);
         $printer->text($businessInfo['footer_text'] . "\n");
         $printer->feed(3); // Feed enough to ensure footer is fully printed before cut
+    } else if (isset($orderData['is_void_receipt']) && $orderData['is_void_receipt']) {
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setEmphasis(true);
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text("VOID RECEIPT\n");
+        $printer->setEmphasis(false);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text("Void #: " . ($orderData['void_id'] ?? 'N/A') . "\n");
+        if (!empty($orderData['order_id'])) {
+            $printer->text("Order #: " . $orderData['order_id'] . "\n");
+        }
+        if (!empty($orderData['credit_sale_id'])) {
+            $printer->text("Credit Sale #: " . $orderData['credit_sale_id'] . "\n");
+        }
+        $printer->text("Date: " . date('Y-m-d H:i') . "\n");
+        $printer->text("Cashier: " . ($orderData['cashier_username'] ?? 'Unknown') . "\n");
+        if (!empty($orderData['creditor_name'])) {
+            $printer->text("Creditor: " . $orderData['creditor_name'] . "\n");
+        }
+        if (!empty($orderData['payment_method'])) {
+            $printer->text("Payment: " . $orderData['payment_method'] . "\n");
+        }
+        if (!empty($orderData['reason'])) {
+            $printer->text("Reason: " . $orderData['reason'] . "\n");
+        }
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+
+        if (isset($orderData['items']) && !empty($orderData['items'])) {
+            $printer->setEmphasis(true);
+            $printItemHeader($printer);
+            $printer->setEmphasis(false);
+            $printer->text($separatorLine('thin'));
+
+            $subtotal = 0;
+            foreach ($orderData['items'] as $item) {
+                $name = $item['product_name'] ?? $item['name'] ?? 'Unknown';
+                $quantity = intval($item['quantity'] ?? 0);
+                $price = floatval($item['price'] ?? 0);
+                $amount = $quantity * $price;
+                $subtotal += $amount;
+
+                $printItemRow($printer, $quantity, $name, $amount);
+            }
+
+            $printer->text($separatorLine('heavy'));
+            $printer->setEmphasis(true);
+            $printer->text($lineLabelAmount("VOID TOTAL:", $subtotal));
+            $printer->setEmphasis(false);
+            $printer->text($separatorLine('heavy'));
+        }
+
+        if (!empty($orderData['transaction_ref'])) {
+            $printer->text(sprintf("%-12s %s\n", "Ref:", $orderData['transaction_ref']));
+        }
+        if (!empty($orderData['wallet_provider'])) {
+            $printer->text(sprintf("%-12s %s\n", "Provider:", $orderData['wallet_provider']));
+        }
+        if (isset($orderData['eft_amount']) && floatval($orderData['eft_amount']) > 0) {
+            $printer->text(sprintf("%-12s N$%8.2f\n", "EFT:", floatval($orderData['eft_amount'])));
+        }
+        if (isset($orderData['cash_received']) && floatval($orderData['cash_received']) > 0) {
+            $printer->text(sprintf("%-12s N$%8.2f\n", "Cash:", floatval($orderData['cash_received'])));
+        }
+
+        $printer->text($separatorLine('thin'));
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text($businessInfo['footer_text'] . "\n");
+        $printer->feed(3);
+    } else if (isset($orderData['is_exchange_receipt']) && $orderData['is_exchange_receipt']) {
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->setEmphasis(true);
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text("EXCHANGE RECEIPT\n");
+        $printer->setEmphasis(false);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+        $printer->text("Exchange #: " . ($orderData['exchange_id'] ?? 'N/A') . "\n");
+        $printer->text("Original Order #: " . ($orderData['order_id'] ?? 'N/A') . "\n");
+        if (!empty($orderData['new_order_id'])) {
+            $printer->text("New Order #: " . $orderData['new_order_id'] . "\n");
+        }
+        $printer->text("Date: " . date('Y-m-d H:i') . "\n");
+        $printer->text("Cashier: " . ($orderData['cashier_username'] ?? 'Unknown') . "\n");
+        if (isset($orderData['reason'])) {
+            $printer->text("Reason: " . $orderData['reason'] . "\n");
+        }
+        $printer->text(str_repeat('-', $receiptWidth) . "\n");
+
+        if (!empty($orderData['return_items'])) {
+            $printer->setEmphasis(true);
+            $printer->text("RETURNED ITEMS\n");
+            $printer->setEmphasis(false);
+            $printItemHeader($printer);
+            $printer->text($separatorLine('thin'));
+
+            $returnSubtotal = 0.0;
+            foreach ($orderData['return_items'] as $item) {
+                $name = $item['product_name'] ?? $item['name'] ?? 'Unknown';
+                $quantity = intval($item['quantity'] ?? 0);
+                $price = floatval($item['price'] ?? 0);
+                $amount = $quantity * $price;
+                $returnSubtotal += $amount;
+                $printItemRow($printer, $quantity, $name, $amount);
+            }
+            $printer->text($separatorLine('thin'));
+            $printer->text($lineLabelAmount('RETURN TOTAL:', $returnSubtotal));
+        }
+
+        if (!empty($orderData['exchange_items'])) {
+            $printer->text(str_repeat('-', $receiptWidth) . "\n");
+            $printer->setEmphasis(true);
+            $printer->text("EXCHANGED FOR\n");
+            $printer->setEmphasis(false);
+            $printItemHeader($printer);
+            $printer->text($separatorLine('thin'));
+
+            $exchangeSubtotal = 0.0;
+            foreach ($orderData['exchange_items'] as $item) {
+                $name = $item['product_name'] ?? $item['name'] ?? 'Unknown';
+                $quantity = intval($item['quantity'] ?? 0);
+                $price = floatval($item['price'] ?? 0);
+                $amount = $quantity * $price;
+                $exchangeSubtotal += $amount;
+                $printItemRow($printer, $quantity, $name, $amount);
+            }
+            $printer->text($separatorLine('thin'));
+            $printer->text($lineLabelAmount('EXCHANGE TOTAL:', $exchangeSubtotal));
+        }
+
+        $difference = floatval($orderData['difference'] ?? 0);
+        $printer->text($separatorLine('heavy'));
+        $printer->setEmphasis(true);
+        if (abs($difference) < 0.005) {
+            $printer->text($lineLabelAmount('DIFFERENCE:', 0.0));
+            $printer->text("Even exchange\n");
+        } elseif ($difference > 0) {
+            $printer->text($lineLabelAmount('CUSTOMER PAID:', $difference));
+        } else {
+            $printer->text($lineLabelAmount('REFUNDED:', abs($difference)));
+        }
+        $printer->setEmphasis(false);
+        $printer->text($separatorLine('heavy'));
+
+        $printer->text($separatorLine('thin'));
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text($businessInfo['footer_text'] . "\n");
+        $printer->feed(3);
+    } else if (!empty($orderData['is_cash_back_receipt'])) {
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->setEmphasis(true);
+        if (!empty($orderData['is_cash_back_copy'])) {
+            $printer->text("*Copy Receipt*\n");
+        } else {
+            $printer->text("CASH BACK RECEIPT\n");
+        }
+        $printer->setEmphasis(false);
+        $printer->feed(1);
+        $printer->setJustification(Printer::JUSTIFY_LEFT);
+        $printer->text($separatorLine('thin'));
+
+        if (!empty($orderData['order_id'])) {
+            $printer->text("Order #: " . $orderData['order_id'] . "\n");
+        }
+        if (!empty($orderData['cash_transaction_id'])) {
+            $printer->text("Txn #: " . $orderData['cash_transaction_id'] . "\n");
+        }
+        $printer->text("Date: " . date('Y-m-d H:i') . "\n");
+        if (!empty($orderData['transaction_date'])) {
+            $printer->text("Cash Back Date: " . $orderData['transaction_date'] . "\n");
+        }
+        $printer->text("Cashier: " . ($orderData['cashier_username'] ?? 'Unknown') . "\n");
+        if (!empty($orderData['wallet_provider'])) {
+            $printer->text("Provider: " . $orderData['wallet_provider'] . "\n");
+        }
+        if (!empty($orderData['transaction_ref'])) {
+            $printer->text("Ref: " . $orderData['transaction_ref'] . "\n");
+        }
+        $printer->text($separatorLine('thin'));
+
+        $amount = floatval($orderData['amount'] ?? $orderData['total'] ?? 0);
+        $printer->setEmphasis(true);
+        $printer->text($lineLabelAmount('CASH BACK:', $amount));
+        $printer->setEmphasis(false);
+        $printer->text($separatorLine('heavy'));
+
+        $printer->text($separatorLine('thin'));
+        $printer->setJustification(Printer::JUSTIFY_CENTER);
+        $printer->text($businessInfo['footer_text'] . "\n");
+        $printer->feed(3);
     } else if (!empty($orderData['is_tab_copy_receipt'])) {
         // TAB COPY / GUEST CHECK (itemized, VAT, gratuity, balance due) — N$
         $printer->setJustification(Printer::JUSTIFY_CENTER);
@@ -3147,7 +3433,23 @@ try {
 
             $tenderTotal = isset($orderData['total']) ? round(floatval($orderData['total']), 2) : $regularGrandTotal;
             
-            if (isset($orderData['creditor_id'])) {
+            if (isset($orderData['is_medical_aid_sale']) || (isset($orderData['payment_method']) && $orderData['payment_method'] === 'medical_aid')) {
+                $printer->text("Method: Medical Aid\n");
+                $printer->text("Status: Claim pending\n");
+                if (!empty($orderData['patient_name'])) {
+                    $printer->text(sprintf("%-10s %s\n", "Patient:", $orderData['patient_name']));
+                }
+                if (!empty($orderData['scheme_name'])) {
+                    $printer->text(sprintf("%-10s %s\n", "Scheme:", $orderData['scheme_name']));
+                }
+                if (!empty($orderData['member_number'])) {
+                    $printer->text(sprintf("%-10s %s\n", "Member:", $orderData['member_number']));
+                }
+                if (!empty($orderData['auth_reference'])) {
+                    $printer->text(sprintf("%-10s %s\n", "Auth:", $orderData['auth_reference']));
+                }
+                $printer->feed();
+            } elseif (isset($orderData['creditor_id'])) {
                 // Credit payment
             $printer->text("Method: Credit\n");
             $printer->text(sprintf("%-10s %s\n", "ID:", $orderData['creditor_id']));

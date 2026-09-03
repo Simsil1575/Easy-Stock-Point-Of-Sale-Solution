@@ -5,11 +5,13 @@ header('Content-Type: application/json');
 // Set timezone
 date_default_timezone_set('Africa/Harare');
 
+require_once __DIR__ . '/tab_balance_helper.php';
+
 $db = new PDO('sqlite:pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 try {
-    // Fetch all open tabs from the database
+    $ownerFilter = tab_list_owner_filter_for_session('cashier_id');
     $tabsStmt = $db->prepare("
         SELECT 
             id,
@@ -19,10 +21,11 @@ try {
             opened_at,
             creditor_id,
             cashier_id
-        FROM tabs 
+        FROM tabs
+        WHERE {$ownerFilter['sql']}
         ORDER BY opened_at DESC
     ");
-    $tabsStmt->execute();
+    $tabsStmt->execute($ownerFilter['params']);
     $tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Format tabs for the modal
@@ -63,4 +66,3 @@ try {
         'message' => $e->getMessage()
     ]);
 }
-

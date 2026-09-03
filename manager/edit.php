@@ -545,6 +545,15 @@ if (isset($_GET['id'])) {
                                     <input type="hidden" name="cropped_image" id="cropped-image" />
                                 </div>
                                 <p class="mt-2 text-sm text-gray-500">Upload a product image (JPEG, PNG, max 5MB)</p>
+                                <button type="button" id="resetCropBtn" disabled
+                                    title="Reset cropper"
+                                    aria-label="Reset cropper"
+                                    class="mt-2 hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                    </svg>
+                                    Reset
+                                </button>
                             </div>
                         </div>
                         <div class="flex justify-end space-x-4 mt-6">
@@ -581,7 +590,22 @@ if (isset($_GET['id'])) {
         const discountEndField = document.getElementById('discountEndField');
         const discountStartInput = document.getElementById('discount_start');
         const discountEndInput = document.getElementById('discount_end');
+        const resetCropBtn = document.getElementById('resetCropBtn');
         let cropper = null;
+
+        function updateCropperControls() {
+            if (resetCropBtn) {
+                resetCropBtn.disabled = !cropper;
+                resetCropBtn.classList.toggle('hidden', !cropper);
+            }
+        }
+
+        function resetCropperView() {
+            if (!cropper) {
+                return;
+            }
+            cropper.reset();
+        }
 
         function getGoogleImagesUrl(query) {
             const params = new URLSearchParams({
@@ -616,11 +640,13 @@ if (isset($_GET['id'])) {
                 zoomable: true,
                 zoomOnTouch: true,
                 zoomOnWheel: true,
-                wheelZoomRatio: 0.1
+                wheelZoomRatio: 0.1,
+                ready() {
+                    updateCropperControls();
+                }
             });
         }
 
-        // Initialize cropper if existing image is present
         if (!previewContainer.classList.contains('hidden')) {
             cropper = createCropperInstance();
         }
@@ -645,8 +671,13 @@ if (isset($_GET['id'])) {
                     cropper.destroy();
                     cropper = null;
                 }
+                updateCropperControls();
             }
         });
+
+        if (resetCropBtn) {
+            resetCropBtn.addEventListener('click', resetCropperView);
+        }
 
         googleSearchBtn.addEventListener('click', () => {
             const query = (productNameInput?.value || '').trim();

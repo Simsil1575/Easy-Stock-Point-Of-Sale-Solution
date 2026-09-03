@@ -5,12 +5,14 @@
 /** @var bool $showHiddenUiCards */
 /** @var bool $uiCardsCustomizeMode */
 /** @var string $uiCardsApiUrl */
+/** @var bool $uiCardsCanCustomize */
 $uiCardsPosConfirmUrl = $uiCardsPosConfirmUrl ?? '../js/pos-confirm.js';
 $hiddenUiCardsJson = json_encode($hiddenUiCards, JSON_HEX_TAG | JSON_HEX_APOS | JSON_UNESCAPED_UNICODE);
 $orderedUiCards = $orderedUiCards ?? [];
 $orderedUiCardsJson = json_encode($orderedUiCards, JSON_HEX_TAG | JSON_HEX_APOS | JSON_UNESCAPED_UNICODE);
 $hiddenCount = count($hiddenUiCards);
-$uiCardsCustomizeMode = $uiCardsCustomizeMode ?? ($showHiddenUiCards || isset($_GET['customize']));
+$uiCardsCanCustomize = $uiCardsCanCustomize ?? true;
+$uiCardsCustomizeMode = $uiCardsCanCustomize && ($uiCardsCustomizeMode ?? ($showHiddenUiCards || isset($_GET['customize'])));
 ?>
 <style>
     .ui-selectable-card { position: relative; }
@@ -72,6 +74,7 @@ $uiCardsCustomizeMode = $uiCardsCustomizeMode ?? ($showHiddenUiCards || isset($_
       ?>
     </div>
     <div class="flex flex-wrap items-center gap-3 shrink-0 ml-auto">
+      <?php if (!empty($uiCardsCanCustomize)): ?>
       <?php if ($hiddenCount > 0): ?>
         <a href="?show_hidden=1" class="text-sm text-gray-500 hover:text-gray-800 whitespace-nowrap">
           <i class="fas fa-eye-slash mr-1"></i> Hidden cards (<?= $hiddenCount ?>)
@@ -80,6 +83,7 @@ $uiCardsCustomizeMode = $uiCardsCustomizeMode ?? ($showHiddenUiCards || isset($_
       <a href="?customize=1" class="text-sm text-gray-500 hover:text-gray-800 whitespace-nowrap">
         <i class="fas fa-sliders-h mr-1"></i> Customize cards
       </a>
+      <?php endif; ?>
     </div>
   </div>
 

@@ -4,6 +4,7 @@
  * current_balance = opening_balance + (sum of tab line totals − payments allocated to lines) − prepaid_balance + unpaid gratuity
  */
 require_once __DIR__ . '/ensure_tab_gratuity_columns.php';
+require_once __DIR__ . '/recipe_stock_helper.php';
 
 /** Reserved tab line name: stored as qty 1 × negative unit price (credit). Not a catalog product. */
 if (!defined('TAB_PREPAYMENT_LINE_NAME')) {
@@ -189,6 +190,13 @@ function can_delete_tab_items_from_session() {
     return in_array($r, ['manager', 'admin'], true);
 }
 
+/** Cashier, hubbly, and waitress cannot edit quantities on tab lines (manager/admin may). */
+function can_edit_tab_item_quantities_from_session(): bool
+{
+    $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+    return !in_array($r, ['cashier', 'hubbly', 'waitress'], true);
+}
+
 /** Cashier or waitress may remove tab lines when a valid manager void PIN is supplied. */
 function requires_manager_void_pin_to_delete_tab_items_from_session(): bool
 {
@@ -334,11 +342,115 @@ function session_owns_tab(?array $tab): bool
     return false;
 }
 
-/** Manager may request that an entire tab be voided (admin/manager perform the actual void). */
+/** Admin and manager may view or manage any tab. */
+function session_role_can_view_all_tabs(): bool
+{
+    $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+
+    return in_array($r, ['admin', 'manager'], true);
+}
+
+/** Username and user id values that identify tabs owned by the current session user. */
+function tab_owner_match_values_for_session(): array
+{
+    return array_values(array_unique(array_filter(
+        [trim((string) ($_SESSION['username'] ?? '')), trim((string) ($_SESSION['user_id'] ?? ''))],
+        static function ($value) {
+            return $value !== '';
+        }
+    )));
+}
+
+/** Whether the current user may view or act on this tab. */
+function session_can_view_tab(?array $tab): bool
+{
+    if (!$tab) {
+        return false;
+    }
+    if (session_role_can_view_all_tabs()) {
+        return true;
+    }
+
+    return session_owns_tab($tab);
+}
+
+/**
+ * SQL filter for tab list queries. Admins/managers see all tabs; others see only their own.
+ *
+ * @return array{sql: string, params: array<int, string>}
+ */
+function tab_list_owner_filter_for_session(string $column = 't.cashier_id'): array
+{
+    if (session_role_can_view_all_tabs()) {
+        return ['sql' => '1=1', 'params' => []];
+    }
+
+    $owners = tab_owner_match_values_for_session();
+    if (empty($owners)) {
+        return ['sql' => '0=1', 'params' => []];
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($owners), '?'));
+
+    return ['sql' => "$column IN ($placeholders)", 'params' => $owners];
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function tab_require_session_access(PDO $db, int $tabId, string $redirect = 'credit-tabs'): array
+{
+    $stmt = $db->prepare('SELECT * FROM tabs WHERE id = ?');
+    $stmt->execute([$tabId]);
+    $tab = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$tab || !session_can_view_tab($tab)) {
+        $_SESSION['error'] = 'You do not have access to this tab';
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    return $tab;
+}
+
+/** Block POST actions on tabs the current user does not own (except admin/manager). */
+function tab_enforce_session_access_on_post(PDO $db): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || session_role_can_view_all_tabs()) {
+        return;
+    }
+
+    $tabId = 0;
+    if (!empty($_POST['tab_id'])) {
+        $tabId = (int) $_POST['tab_id'];
+    } elseif (!empty($_POST['void_tab_id'])) {
+        $tabId = (int) $_POST['void_tab_id'];
+    } elseif (!empty($_POST['delete_id'])) {
+        $tabId = (int) $_POST['delete_id'];
+    } elseif (!empty($_POST['close_id'])) {
+        $tabId = (int) $_POST['close_id'];
+    } elseif (!empty($_POST['reopen_id'])) {
+        $tabId = (int) $_POST['reopen_id'];
+    } elseif (!empty($_POST['delete_item_id']) || !empty($_POST['edit_item_id'])) {
+        $itemId = (int) ($_POST['delete_item_id'] ?? $_POST['edit_item_id'] ?? 0);
+        if ($itemId > 0) {
+            $itemStmt = $db->prepare('SELECT tab_id FROM tab_items WHERE id = ?');
+            $itemStmt->execute([$itemId]);
+            $tabId = (int) ($itemStmt->fetchColumn() ?: 0);
+        }
+    } elseif (!empty($_POST['id']) && (isset($_POST['tab_name']) || isset($_POST['edit_tab_name']))) {
+        $tabId = (int) $_POST['id'];
+    }
+
+    if ($tabId > 0) {
+        tab_require_session_access($db, $tabId);
+    }
+}
+
+/** Cashier, hubbly, waitress, or manager may request that an entire tab be voided (admin/manager perform the actual void). */
 function can_mark_tab_for_void_from_session(): bool
 {
     $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
-    return $r === 'manager';
+    return in_array($r, ['cashier', 'hubbly', 'waitress', 'manager'], true);
 }
 
 /** Hubbly, waitress, or cashier may mark individual tab lines for void review. */
@@ -362,6 +474,24 @@ function can_view_tab_void_mark_in_list_from_session(): bool
     return in_array($r, ['admin', 'manager'], true);
 }
 
+/** Admin and manager may permanently void an entire tab. */
+function can_void_entire_tab_from_session(): bool
+{
+    $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+    return in_array($r, ['admin', 'manager'], true);
+}
+
+/** Whether a void POST should put items back into inventory. Defaults to yes. */
+function tab_void_restore_stock_from_post(): bool
+{
+    if (!isset($_POST['restore_stock'])) {
+        return true;
+    }
+    $v = strtolower(trim((string) $_POST['restore_stock']));
+
+    return !in_array($v, ['0', 'false', 'no', 'off'], true);
+}
+
 function tab_is_marked_for_void(array $tab): bool
 {
     return (int) ($tab['marked_for_void'] ?? 0) === 1;
@@ -372,9 +502,91 @@ function tab_has_void_pending_in_list(array $tab): bool
     return tab_is_marked_for_void($tab) || ((int) ($tab['items_marked_for_void_count'] ?? 0) > 0);
 }
 
+/** Cashier, hubbly, and waitress cannot delete tabs that still have void-pending marks. */
+function tab_roles_blocked_from_deleting_void_pending_from_session(): bool
+{
+    $r = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+
+    return in_array($r, ['cashier', 'hubbly', 'waitress'], true);
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function tab_fetch_for_delete_check(PDO $db, int $tabId): ?array
+{
+    ensureTabVoidMarkColumns($db);
+    ensureTabItemVoidMarkColumns($db);
+    $stmt = $db->prepare("
+        SELECT
+            t.id,
+            t.current_balance,
+            t.status,
+            t.cashier_id,
+            t.marked_for_void,
+            (SELECT COUNT(*) FROM tab_items ti WHERE ti.tab_id = t.id AND ti.marked_for_void = 1) AS items_marked_for_void_count
+        FROM tabs t
+        WHERE t.id = ?
+    ");
+    $stmt->execute([$tabId]);
+    $tab = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return $tab ?: null;
+}
+
+function tab_delete_blocked_reason(array $tab): ?string
+{
+    if ((float) ($tab['current_balance'] ?? 0) > 0) {
+        return 'Cannot delete tab with outstanding balance. Please close it first.';
+    }
+    if (tab_roles_blocked_from_deleting_void_pending_from_session() && tab_has_void_pending_in_list($tab)) {
+        return 'Cannot delete tab with items marked for void. Wait for a manager to approve or clear the void request.';
+    }
+
+    return null;
+}
+
+function tab_can_show_delete_action(array $tab): bool
+{
+    return tab_delete_blocked_reason($tab) === null;
+}
+
 function tab_item_is_marked_for_void(array $item): bool
 {
     return (int) ($item['marked_for_void'] ?? 0) === 1;
+}
+
+function tab_is_open(array $tab): bool
+{
+    return strtolower((string) ($tab['status'] ?? 'open')) === 'open';
+}
+
+/** Show edit/delete/void controls — also when a closed tab still has void-pending lines for manager/admin review. */
+function tab_show_item_row_actions(PDO $db, array $tab): bool
+{
+    if (tab_is_open($tab)) {
+        return true;
+    }
+
+    return can_approve_tab_item_void_from_session()
+        && tab_has_items_marked_for_void($db, (int) ($tab['id'] ?? 0));
+}
+
+function tab_item_table_colspan(PDO $db, array $tab): int
+{
+    return tab_show_item_row_actions($db, $tab) ? 5 : 4;
+}
+
+function tab_has_unresolved_void_pending(PDO $db, int $tabId, ?array $tabRow = null): bool
+{
+    ensureTabVoidMarkColumns($db);
+    if ($tabRow === null) {
+        $stmt = $db->prepare('SELECT marked_for_void FROM tabs WHERE id = ?');
+        $stmt->execute([$tabId]);
+        $tabRow = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    return tab_is_marked_for_void($tabRow) || tab_has_items_marked_for_void($db, $tabId);
 }
 
 function tab_count_items_marked_for_void(PDO $db, int $tabId): int
@@ -420,13 +632,13 @@ function tab_fetch_unpaid_payable_items(PDO $db, int $tabId, bool $orderFifo = f
 }
 
 /**
- * Remove a tab line and restore stock (used for direct delete and approved item voids).
+ * Remove a tab line (used for approved item voids). Stock restore is optional.
  */
-function void_tab_item_remove_from_tab(PDO $db, int $itemId): array
+function void_tab_item_remove_from_tab(PDO $db, int $itemId, bool $allowClosedTab = false, bool $restoreStock = true): array
 {
     ensureTabItemVoidMarkColumns($db);
 
-    $itemStmt = $db->prepare('SELECT id, tab_id, quantity, product_name FROM tab_items WHERE id = ?');
+    $itemStmt = $db->prepare('SELECT id, tab_id, quantity, product_name, COALESCE(marked_for_void, 0) AS marked_for_void FROM tab_items WHERE id = ?');
     $itemStmt->execute([$itemId]);
     $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
     if (!$item) {
@@ -438,37 +650,20 @@ function void_tab_item_remove_from_tab(PDO $db, int $itemId): array
     $tabStmt = $db->prepare('SELECT status FROM tabs WHERE id = ?');
     $tabStmt->execute([$tabId]);
     $tab = $tabStmt->fetch(PDO::FETCH_ASSOC);
-    if (!$tab || ($tab['status'] ?? '') !== 'open') {
+    if (!$tab) {
+        return ['ok' => false, 'error' => 'Tab not found', 'tab_id' => $tabId];
+    }
+    if (!$allowClosedTab && !tab_is_open($tab)) {
         return ['ok' => false, 'error' => 'Item can only be voided on an open tab', 'tab_id' => $tabId];
+    }
+    if ($allowClosedTab && !tab_is_open($tab) && !tab_item_is_marked_for_void($item)) {
+        return ['ok' => false, 'error' => 'Only void-pending items can be removed from a closed tab', 'tab_id' => $tabId];
     }
 
     $db->beginTransaction();
     try {
-        if (!is_tab_non_inventory_tab_line_name($item['product_name'])) {
-            $restoreStmt = $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?');
-            $restoreStmt->execute([$item['quantity'], $item['product_name']]);
-
-            $currentDate = date('Y-m-d');
-            $resolveProductStmt = $db->prepare('SELECT id FROM products WHERE name = ? LIMIT 1');
-            $resolveProductStmt->execute([$item['product_name']]);
-            if ($resolveProductStmt->fetchColumn()) {
-                $stmtEnsureDailySummary = $db->prepare("
-                    INSERT OR IGNORE INTO daily_stock_summary
-                    (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
-                    VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
-                ");
-                $stmtEnsureDailySummary->execute([$currentDate, $item['product_name']]);
-
-                $stmtUpdateDailySummary = $db->prepare("
-                    UPDATE daily_stock_summary
-                    SET sold_quantity = CASE
-                        WHEN sold_quantity - ? < 0 THEN 0
-                        ELSE sold_quantity - ?
-                    END
-                    WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
-                ");
-                $stmtUpdateDailySummary->execute([$item['quantity'], $item['quantity'], $currentDate, $item['product_name']]);
-            }
+        if ($restoreStock && !tab_product_skips_inventory($item['product_name'])) {
+            restoreSaleLineStock($db, (string) $item['product_name'], floatval($item['quantity']));
         }
 
         $deletePaymentsStmt = $db->prepare('DELETE FROM tab_item_payments WHERE tab_item_id = ?');
@@ -487,6 +682,274 @@ function void_tab_item_remove_from_tab(PDO $db, int $itemId): array
 
         return ['ok' => false, 'error' => $e->getMessage(), 'tab_id' => $tabId];
     }
+}
+
+function tab_product_skips_inventory(string $productName): bool
+{
+    return is_tab_non_inventory_tab_line_name($productName)
+        || trim($productName) === 'EFT Income'
+        || trim($productName) === 'Lay-bye Payment';
+}
+
+/**
+ * @return array{id: int, quantity: float, category: string}|null
+ */
+function tab_product_inventory_row(PDO $db, string $productName): ?array
+{
+    if (tab_product_skips_inventory($productName)) {
+        return null;
+    }
+    $stmt = $db->prepare('SELECT id, quantity, category FROM products WHERE name = ? LIMIT 1');
+    $stmt->execute([$productName]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return $row ?: null;
+}
+
+function tab_update_daily_sold_summary(PDO $db, string $productName, float $soldQtyDelta): void
+{
+    if (abs($soldQtyDelta) < 0.0001) {
+        return;
+    }
+    $resolveProductStmt = $db->prepare('SELECT id FROM products WHERE name = ? LIMIT 1');
+    $resolveProductStmt->execute([$productName]);
+    if (!$resolveProductStmt->fetchColumn()) {
+        return;
+    }
+    $currentDate = date('Y-m-d');
+    $stmtEnsureDailySummary = $db->prepare('
+        INSERT OR IGNORE INTO daily_stock_summary
+        (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
+        VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
+    ');
+    $stmtEnsureDailySummary->execute([$currentDate, $productName]);
+    if ($soldQtyDelta > 0) {
+        $stmtUpdateDailySummary = $db->prepare('
+            UPDATE daily_stock_summary
+            SET sold_quantity = sold_quantity + ?
+            WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
+        ');
+        $stmtUpdateDailySummary->execute([$soldQtyDelta, $currentDate, $productName]);
+        return;
+    }
+    $restoreQty = abs($soldQtyDelta);
+    $stmtUpdateDailySummary = $db->prepare('
+        UPDATE daily_stock_summary
+        SET sold_quantity = CASE
+            WHEN sold_quantity - ? < 0 THEN 0
+            ELSE sold_quantity - ?
+        END
+        WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
+    ');
+    $stmtUpdateDailySummary->execute([$restoreQty, $restoreQty, $currentDate, $productName]);
+}
+
+/**
+ * Enforce stock when tab line qty increases (same rules as process_tab.php / lay-bye adds).
+ *
+ * @throws Exception
+ */
+function tab_assert_stock_for_quantity_increase(PDO $db, string $productName, int $additionalQty): void
+{
+    if ($additionalQty <= 0) {
+        return;
+    }
+    require_once __DIR__ . '/recipe_stock_helper.php';
+    if (isSkipStockChecks($db)) {
+        return;
+    }
+    $productInfo = tab_product_inventory_row($db, $productName);
+    if (!$productInfo) {
+        return;
+    }
+    laybyeAssertStockForAddItem($db, $productName, $additionalQty, $productInfo, false);
+}
+
+/**
+ * Adjust inventory when a tab line quantity changes (deduct on increase, restore on decrease).
+ *
+ * @throws Exception
+ */
+function tab_apply_stock_for_item_quantity_change(PDO $db, string $productName, int $oldQty, int $newQty): void
+{
+    if ($oldQty === $newQty || tab_product_skips_inventory($productName)) {
+        return;
+    }
+
+    require_once __DIR__ . '/recipe_stock_helper.php';
+    $delta = $newQty - $oldQty;
+    if ($delta === 0) {
+        return;
+    }
+
+    $allowNegative = isSkipStockChecks($db);
+    $productInfo = tab_product_inventory_row($db, $productName);
+
+    if ($delta > 0) {
+        tab_assert_stock_for_quantity_increase($db, $productName, $delta);
+        deductRecipeStockByProductName($db, $productName, floatval($delta), $allowNegative);
+        deductProductStockByName($db, $productName, floatval($delta), $allowNegative);
+        tab_update_daily_sold_summary($db, $productName, floatval($delta));
+        return;
+    }
+
+    $restoreQty = floatval(abs($delta));
+    restoreRecipeStockByProductName($db, $productName, $restoreQty);
+    if ($productInfo) {
+        $restoreStmt = $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?');
+        $restoreStmt->execute([$restoreQty, $productName]);
+    }
+    tab_update_daily_sold_summary($db, $productName, -$restoreQty);
+}
+
+/**
+ * Handle edit tab item POST (quantity change with stock checks + inventory movement).
+ */
+function handle_tab_edit_item_post_request(PDO $db): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['edit_item_id'])) {
+        return;
+    }
+
+    $itemId = (int) ($_POST['edit_item_id'] ?? 0);
+    $tabId = (int) ($_POST['tab_id'] ?? 0);
+    $newQuantity = (int) ($_POST['edit_item_quantity'] ?? 0);
+
+    if (!can_edit_tab_item_quantities_from_session()) {
+        $_SESSION['error'] = 'You do not have permission to edit quantities on a tab. Ask a manager.';
+        header('Location: ' . ($tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs'));
+        exit();
+    }
+
+    if ($newQuantity <= 0) {
+        $_SESSION['error'] = 'Quantity must be greater than zero';
+        header('Location: ' . ($tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs'));
+        exit();
+    }
+
+    $itemStmt = $db->prepare('SELECT id, tab_id, quantity, price, product_name FROM tab_items WHERE id = ?');
+    $itemStmt->execute([$itemId]);
+    $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$item) {
+        header('Location: credit-tabs');
+        exit();
+    }
+
+    $tabId = (int) ($item['tab_id'] ?? $tabId);
+    $productName = (string) ($item['product_name'] ?? '');
+
+    if (is_tab_prepayment_line_name($productName) || is_tab_postpaid_line_name($productName)) {
+        $_SESSION['error'] = 'This tab line cannot be edited. Remove it and add a new amount if needed.';
+        header('Location: view-tab.php?id=' . $tabId);
+        exit();
+    }
+
+    $oldQuantity = (int) ($item['quantity'] ?? 0);
+    if ($newQuantity === $oldQuantity) {
+        $_SESSION['success'] = 'Product updated successfully';
+        header('Location: view-tab.php?id=' . $tabId);
+        exit();
+    }
+
+    $db->beginTransaction();
+    try {
+        tab_apply_stock_for_item_quantity_change($db, $productName, $oldQuantity, $newQuantity);
+
+        $updateStmt = $db->prepare('UPDATE tab_items SET quantity = ? WHERE id = ?');
+        $updateStmt->execute([$newQuantity, $itemId]);
+
+        recalculateTabBalance($db, $tabId);
+
+        $db->commit();
+        $_SESSION['success'] = 'Product updated successfully';
+    } catch (Exception $e) {
+        $db->rollBack();
+        $_SESSION['error'] = 'Failed to update item: ' . $e->getMessage();
+    }
+
+    header('Location: view-tab.php?id=' . $tabId);
+    exit();
+}
+
+/** Client-side stock guard for the edit-item modal (pairs with handle_tab_edit_item_post_request). */
+function tab_edit_item_stock_scripts_html(PDO $db): string
+{
+    static $done = false;
+    if ($done) {
+        return '';
+    }
+    $done = true;
+    require_once __DIR__ . '/recipe_stock_helper.php';
+    $skip = isSkipStockChecks($db) ? 'true' : 'false';
+
+    return <<<HTML
+<script>
+(function () {
+    var skipStockChecks = {$skip};
+    var editOldQty = 0;
+    var editAvailableStock = null;
+    var installed = false;
+
+    function installTabEditStockGuard() {
+        if (installed) {
+            return;
+        }
+        var nativeOpen = window.openEditItemModal;
+        if (typeof nativeOpen !== 'function') {
+            return;
+        }
+        window.openEditItemModal = function (itemId, productName, quantity, price, tabId, availableStock) {
+            editOldQty = parseInt(quantity, 10) || 0;
+            var stock = parseFloat(availableStock);
+            editAvailableStock = Number.isFinite(stock) ? stock : null;
+            return nativeOpen(itemId, productName, quantity, price, tabId);
+        };
+
+        var form = document.getElementById('editItemForm');
+        if (form && !skipStockChecks && !form.dataset.tabStockGuard) {
+            form.dataset.tabStockGuard = '1';
+            form.addEventListener('submit', function (e) {
+                var qtyInput = document.getElementById('edit_item_quantity');
+                if (!qtyInput) {
+                    return;
+                }
+                var newQty = parseInt(qtyInput.value, 10) || 0;
+                if (newQty <= editOldQty || editAvailableStock === null) {
+                    return;
+                }
+                var extra = newQty - editOldQty;
+                if (editAvailableStock + 0.0001 < extra) {
+                    e.preventDefault();
+                    var availText = Number.isInteger(editAvailableStock)
+                        ? String(editAvailableStock)
+                        : editAvailableStock.toFixed(2);
+                    if (typeof Swal !== 'undefined') {
+                        Swal.fire({
+                            icon: 'warning',
+                            title: 'Insufficient stock',
+                            text: 'Only ' + availText + ' more unit(s) available for this product.',
+                            confirmButtonColor: '#0d9488'
+                        });
+                    } else {
+                        alert('Insufficient stock: only ' + availText + ' more unit(s) available.');
+                    }
+                }
+            });
+        }
+
+        installed = true;
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', installTabEditStockGuard);
+    } else {
+        installTabEditStockGuard();
+    }
+    window.addEventListener('load', installTabEditStockGuard);
+})();
+</script>
+HTML;
 }
 
 /**
@@ -566,6 +1029,200 @@ function handle_tab_void_mark_post_request(PDO $db): void
 }
 
 /**
+ * Permanently void a tab. Optionally restore catalog quantities (skip non-inventory lines).
+ *
+ * @return array{ok: bool, error?: string, restore_stock?: bool}
+ */
+function void_entire_tab(PDO $db, int $tabId, bool $restoreStock = true): array
+{
+    $tabStmt = $db->prepare('SELECT * FROM tabs WHERE id = ?');
+    $tabStmt->execute([$tabId]);
+    $tab = $tabStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$tab) {
+        return ['ok' => false, 'error' => 'Tab not found'];
+    }
+    if (($tab['status'] ?? '') === 'closed') {
+        return ['ok' => false, 'error' => 'Cannot void a closed tab'];
+    }
+
+    $db->beginTransaction();
+    try {
+        $ordersStmt = $db->prepare('SELECT DISTINCT order_id FROM tab_payments WHERE tab_id = ? AND order_id IS NOT NULL');
+        $ordersStmt->execute([$tabId]);
+        $orderIds = $ordersStmt->fetchAll(PDO::FETCH_COLUMN);
+
+        if ($restoreStock) {
+            $productsToRestore = [];
+
+            if (!empty($orderIds)) {
+                $placeholders = str_repeat('?,', count($orderIds) - 1) . '?';
+                $orderItemsStmt = $db->prepare("SELECT product_name, SUM(quantity) as total_quantity FROM order_items WHERE order_id IN ($placeholders) GROUP BY product_name");
+                $orderItemsStmt->execute($orderIds);
+                foreach ($orderItemsStmt->fetchAll(PDO::FETCH_ASSOC) as $orderItem) {
+                    $productName = (string) $orderItem['product_name'];
+                    if (tab_product_skips_inventory($productName)) {
+                        continue;
+                    }
+                    $quantity = (float) $orderItem['total_quantity'];
+                    if (!isset($productsToRestore[$productName])) {
+                        $productsToRestore[$productName] = 0.0;
+                    }
+                    $productsToRestore[$productName] += $quantity;
+                }
+            }
+
+            $tabItemsStmt = $db->prepare('SELECT product_name, SUM(quantity) as total_quantity FROM tab_items WHERE tab_id = ? GROUP BY product_name');
+            $tabItemsStmt->execute([$tabId]);
+            foreach ($tabItemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
+                $productName = (string) $item['product_name'];
+                if (tab_product_skips_inventory($productName)) {
+                    continue;
+                }
+                $quantity = (float) $item['total_quantity'];
+                if (!isset($productsToRestore[$productName])) {
+                    $productsToRestore[$productName] = 0.0;
+                }
+                $productsToRestore[$productName] += $quantity;
+            }
+
+            if (!empty($productsToRestore)) {
+                foreach ($productsToRestore as $productName => $quantity) {
+                    if ($quantity <= 0 || tab_product_skips_inventory($productName)) {
+                        continue;
+                    }
+                    restoreSaleLineStock($db, $productName, floatval($quantity));
+                }
+            }
+        }
+
+        if (!empty($orderIds)) {
+            $placeholders = str_repeat('?,', count($orderIds) - 1) . '?';
+
+            $deleteEftStmt = $db->prepare("DELETE FROM eft_payments WHERE order_id IN ($placeholders)");
+            $deleteEftStmt->execute($orderIds);
+
+            $deleteMixedStmt = $db->prepare("DELETE FROM mixed_payments WHERE order_id IN ($placeholders)");
+            $deleteMixedStmt->execute($orderIds);
+
+            $deleteOrderItemsStmt = $db->prepare("DELETE FROM order_items WHERE order_id IN ($placeholders)");
+            $deleteOrderItemsStmt->execute($orderIds);
+
+            $deleteOrdersStmt = $db->prepare("DELETE FROM orders WHERE id IN ($placeholders)");
+            $deleteOrdersStmt->execute($orderIds);
+        }
+
+        $deleteTabItemPaymentsStmt = $db->prepare('DELETE FROM tab_item_payments WHERE tab_item_id IN (SELECT id FROM tab_items WHERE tab_id = ?)');
+        $deleteTabItemPaymentsStmt->execute([$tabId]);
+
+        $deleteTabPaymentsStmt = $db->prepare('DELETE FROM tab_payments WHERE tab_id = ?');
+        $deleteTabPaymentsStmt->execute([$tabId]);
+
+        $deleteTabItemsStmt = $db->prepare('DELETE FROM tab_items WHERE tab_id = ?');
+        $deleteTabItemsStmt->execute([$tabId]);
+
+        $deleteTabStmt = $db->prepare('DELETE FROM tabs WHERE id = ?');
+        $deleteTabStmt->execute([$tabId]);
+
+        $db->commit();
+
+        return ['ok' => true, 'restore_stock' => $restoreStock];
+    } catch (Exception $e) {
+        $db->rollBack();
+
+        return ['ok' => false, 'error' => $e->getMessage()];
+    }
+}
+
+/**
+ * Handle full-tab void POST from view-tab. Exits after redirect when handled.
+ */
+function handle_tab_void_post_request(PDO $db): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['void_tab_id'])) {
+        return;
+    }
+
+    $tabId = (int) $_POST['void_tab_id'];
+    $redirect = $tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs';
+
+    if (!can_void_entire_tab_from_session()) {
+        $_SESSION['error'] = 'Only admins or managers can void tabs';
+        header('Location: ' . $redirect);
+        exit();
+    }
+
+    $restoreStock = tab_void_restore_stock_from_post();
+    $result = void_entire_tab($db, $tabId, $restoreStock);
+    if (!$result['ok']) {
+        $_SESSION['error'] = ($result['error'] ?? 'Failed to void tab') === 'Tab not found'
+            ? 'Tab not found'
+            : 'Failed to void tab: ' . ($result['error'] ?? 'Unknown error');
+        if (($result['error'] ?? '') === 'Tab not found') {
+            header('Location: credit-tabs');
+        } else {
+            header('Location: ' . $redirect);
+        }
+        exit();
+    }
+
+    $_SESSION['success'] = $restoreStock
+        ? 'Tab voided successfully. All items have been restored to stock.'
+        : 'Tab voided successfully. Stock was not changed.';
+    header('Location: credit-tabs');
+    exit();
+}
+
+/**
+ * Handle direct remove-line POST (trash button on view-tab). Exits after redirect when handled.
+ */
+function handle_tab_delete_item_post_request(PDO $db): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['delete_item_id'])) {
+        return;
+    }
+
+    $itemId = (int) $_POST['delete_item_id'];
+    $tabId = (int) ($_POST['tab_id'] ?? 0);
+
+    assert_tab_item_delete_allowed($tabId, $_POST['manager_pin'] ?? null);
+
+    $restoreStock = tab_void_restore_stock_from_post();
+    $result = void_tab_item_remove_from_tab($db, $itemId, false, $restoreStock);
+
+    if (!$result['ok']) {
+        $_SESSION['error'] = 'Failed to delete item: ' . ($result['error'] ?? 'Unknown error');
+    } else {
+        $_SESSION['success'] = $restoreStock
+            ? 'Product removed from tab and restored to stock successfully'
+            : 'Product removed from tab. Stock was not changed.';
+    }
+
+    header('Location: ' . ($tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs'));
+    exit();
+}
+
+/** Hidden form used by openDeleteTabItemModal on view-tab. */
+function tab_delete_item_form_html(): string
+{
+    static $done = false;
+    if ($done) {
+        return '';
+    }
+    $done = true;
+
+    $pinField = requires_manager_void_pin_to_delete_tab_items_from_session()
+        ? '<input type="hidden" name="manager_pin" id="deleteTabItemManagerPin" value="">'
+        : '';
+
+    return '<form id="deleteTabItemForm" method="POST" class="hidden" aria-hidden="true">'
+        . '<input type="hidden" name="delete_item_id" value="">'
+        . '<input type="hidden" name="tab_id" value="">'
+        . $pinField
+        . '</form>';
+}
+
+/**
  * Handle per-item mark/clear/approve void POST actions. Exits after redirect when handled.
  */
 function handle_tab_item_void_mark_post_request(PDO $db): void
@@ -604,10 +1261,22 @@ function handle_tab_item_void_mark_post_request(PDO $db): void
         header('Location: ' . $redirect);
         exit();
     }
-    if (($item['tab_status'] ?? '') !== 'open') {
-        $_SESSION['error'] = 'Only items on open tabs can be voided';
+    if (($item['tab_status'] ?? '') !== 'open' && $isMark) {
+        $_SESSION['error'] = 'Only items on open tabs can be marked for void';
         header('Location: ' . $redirect);
         exit();
+    }
+
+    $tabOwnerStmt = $db->prepare('SELECT cashier_id FROM tabs WHERE id = ?');
+    $tabOwnerStmt->execute([$tabId]);
+    $tabOwnerRow = $tabOwnerStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    if ($isMark || $isClear) {
+        if (!session_can_view_tab($tabOwnerRow)) {
+            $_SESSION['error'] = 'You do not have access to this tab';
+            header('Location: ' . $redirect);
+            exit();
+        }
     }
 
     if ($isApprove) {
@@ -622,13 +1291,17 @@ function handle_tab_item_void_mark_post_request(PDO $db): void
             exit();
         }
 
-        $result = void_tab_item_remove_from_tab($db, $itemId);
+        $allowClosedTab = !tab_is_open(['status' => $item['tab_status'] ?? '']);
+        $restoreStock = tab_void_restore_stock_from_post();
+        $result = void_tab_item_remove_from_tab($db, $itemId, $allowClosedTab, $restoreStock);
         if (!$result['ok']) {
             $_SESSION['error'] = 'Failed to void item: ' . ($result['error'] ?? 'Unknown error');
         } else {
-            $_SESSION['success'] = 'Item voided and stock restored';
+            $_SESSION['success'] = $restoreStock
+                ? 'Item voided and stock restored'
+                : 'Item voided. Stock was not changed.';
         }
-        header('Location: view-tab.php?id=' . (int) ($result['tab_id'] ?: $tabId));
+        header('Location: ' . $redirect);
         exit();
     }
 
@@ -645,6 +1318,7 @@ function handle_tab_item_void_mark_post_request(PDO $db): void
         }
 
         $username = trim((string) ($_SESSION['username'] ?? 'Unknown'));
+        tab_transfer_item_payments_to_prepaid($db, $itemId, $tabId);
         $updateStmt = $db->prepare('UPDATE tab_items SET marked_for_void = 1, void_marked_by = ?, void_marked_at = CURRENT_TIMESTAMP WHERE id = ?');
         $updateStmt->execute([$username, $itemId]);
         recalculateTabBalance($db, $tabId);
@@ -996,6 +1670,281 @@ function tab_pos_confirm_script_tag(string $prefix = ''): string
     return '<script src="' . $src . '"></script>';
 }
 
+/** SweetAlert void-tab modal with optional stock restore (admin/manager). */
+function tab_void_entire_tab_modal_scripts_html(): string
+{
+    static $done = false;
+    if ($done || !can_void_entire_tab_from_session()) {
+        return '';
+    }
+    $done = true;
+
+    return <<<'HTML'
+<script>
+        function openVoidTabModal(tabId, tabName) {
+            if (typeof Swal === 'undefined') {
+                if (!confirm('Void this tab?')) {
+                    return;
+                }
+                var fallbackForm = document.createElement('form');
+                fallbackForm.method = 'POST';
+                fallbackForm.action = 'view-tab.php';
+                var fallbackId = document.createElement('input');
+                fallbackId.type = 'hidden';
+                fallbackId.name = 'void_tab_id';
+                fallbackId.value = tabId;
+                fallbackForm.appendChild(fallbackId);
+                var fallbackStock = document.createElement('input');
+                fallbackStock.type = 'hidden';
+                fallbackStock.name = 'restore_stock';
+                fallbackStock.value = '1';
+                fallbackForm.appendChild(fallbackStock);
+                document.body.appendChild(fallbackForm);
+                fallbackForm.submit();
+                return;
+            }
+            Swal.fire({
+                icon: 'warning',
+                title: 'Void Tab',
+                html: `
+                    <div class="text-left">
+                        <p class="text-sm text-gray-700 mb-3">Are you sure you want to void this tab?</p>
+                        <p class="text-sm font-semibold text-gray-900 mb-2">Tab: <span class="text-gray-700"></span></p>
+                        <div class="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+                            <p class="text-xs text-red-800 font-semibold mb-1">This action cannot be undone!</p>
+                            <ul class="text-xs text-red-700 space-y-1 list-disc list-inside">
+                                <li id="voidTabStockBullet">All items will be restored to stock</li>
+                                <li>All payments and orders will be deleted</li>
+                                <li>The tab will be permanently deleted</li>
+                            </ul>
+                        </div>
+                        <label class="mt-3 flex items-start gap-2 cursor-pointer select-none">
+                            <input type="checkbox" id="voidTabRestoreStock" checked class="mt-1 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500">
+                            <span class="text-sm text-gray-800">
+                                Restore items to stock
+                                <span class="block text-xs text-gray-500 font-normal">Uncheck if items were already consumed and should not go back into inventory.</span>
+                            </span>
+                        </label>
+                    </div>
+                `,
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Void Tab',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#DC2626',
+                cancelButtonColor: '#6B7280',
+                focusConfirm: false,
+                customClass: {
+                    popup: 'rounded-xl shadow-lg'
+                },
+                didOpen: () => {
+                    var nameEl = Swal.getHtmlContainer() && Swal.getHtmlContainer().querySelector('span.text-gray-700');
+                    if (nameEl) {
+                        nameEl.textContent = tabName;
+                    }
+                    var checkbox = document.getElementById('voidTabRestoreStock');
+                    var bullet = document.getElementById('voidTabStockBullet');
+                    var syncBullet = function () {
+                        if (!bullet || !checkbox) return;
+                        bullet.textContent = checkbox.checked
+                            ? 'All items will be restored to stock'
+                            : 'Stock will not be changed';
+                    };
+                    if (checkbox) {
+                        checkbox.addEventListener('change', syncBullet);
+                        syncBullet();
+                    }
+                },
+                preConfirm: () => {
+                    var checkbox = document.getElementById('voidTabRestoreStock');
+                    // SweetAlert treats boolean false from preConfirm as validation failure — use '0'/'1'.
+                    return checkbox ? (checkbox.checked ? '1' : '0') : '1';
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = 'view-tab.php';
+
+                    const tabIdInput = document.createElement('input');
+                    tabIdInput.type = 'hidden';
+                    tabIdInput.name = 'void_tab_id';
+                    tabIdInput.value = tabId;
+                    form.appendChild(tabIdInput);
+
+                    const restoreInput = document.createElement('input');
+                    restoreInput.type = 'hidden';
+                    restoreInput.name = 'restore_stock';
+                    restoreInput.value = result.value === '0' ? '0' : '1';
+                    form.appendChild(restoreInput);
+
+                    document.body.appendChild(form);
+                    form.submit();
+                }
+            });
+        }
+</script>
+HTML;
+}
+
+/** Remove-line modal (trash) with optional stock restore + manager PIN when required. */
+function tab_delete_item_modal_scripts_html(): string
+{
+    static $done = false;
+    if ($done) {
+        return '';
+    }
+    $done = true;
+
+    $canRemove = can_remove_tab_items_from_session();
+    $needsPin = requires_manager_void_pin_to_delete_tab_items_from_session();
+
+    return '<script>'
+        . 'var canRemoveTabItems = ' . ($canRemove ? 'true' : 'false') . ';'
+        . 'var needsManagerPinToDeleteTabItems = ' . ($needsPin ? 'true' : 'false') . ';'
+        . <<<'JS'
+
+if (typeof window.promptManagerVoidPin === 'undefined') {
+    window.promptManagerVoidPin = function (options) {
+        const opts = options || {};
+        return Swal.fire({
+            title: opts.title || 'Manager authorization',
+            text: opts.text || 'Enter manager void PIN to continue.',
+            icon: 'warning',
+            input: 'password',
+            inputLabel: 'Manager void PIN',
+            inputAttributes: { autocapitalize: 'off', autocomplete: 'off', inputmode: 'numeric' },
+            showCancelButton: true,
+            confirmButtonText: opts.confirmButtonText || 'Confirm',
+            cancelButtonText: 'Cancel',
+            confirmButtonColor: opts.confirmButtonColor || '#dc2626',
+            cancelButtonColor: '#6B7280',
+            focusConfirm: false
+        });
+    };
+}
+
+function submitDeleteTabItemForm(itemId, tabId, managerPin, restoreStock) {
+    const form = document.getElementById('deleteTabItemForm');
+    if (!form) {
+        return;
+    }
+    const delInput = form.querySelector('[name="delete_item_id"]');
+    const tabInput = form.querySelector('[name="tab_id"]');
+    const pinInput = document.getElementById('deleteTabItemManagerPin');
+    if (delInput) {
+        delInput.value = itemId;
+    }
+    if (tabInput) {
+        tabInput.value = tabId;
+    }
+    if (pinInput) {
+        pinInput.value = managerPin || '';
+    }
+    let restoreInput = form.querySelector('[name="restore_stock"]');
+    if (!restoreInput) {
+        restoreInput = document.createElement('input');
+        restoreInput.type = 'hidden';
+        restoreInput.name = 'restore_stock';
+        form.appendChild(restoreInput);
+    }
+    restoreInput.value = restoreStock === '0' ? '0' : '1';
+    form.submit();
+}
+
+function openDeleteTabItemModal(btn) {
+    if (!canRemoveTabItems) {
+        return;
+    }
+    const itemId = btn.getAttribute('data-delete-item-id');
+    const tabId = btn.getAttribute('data-tab-id');
+    const lineKind = btn.getAttribute('data-line-kind') || 'product';
+    const productName = btn.getAttribute('data-product-name') || '';
+
+    const kindMeta = {
+        prepay: {
+            title: 'Remove prepayment credit?',
+            hint: 'This removes the credit line from the tab. Inventory is not changed.'
+        },
+        postpaid: {
+            title: 'Remove postpaid charge?',
+            hint: 'This removes the charge line from the tab. Inventory is not changed.'
+        },
+        product: {
+            title: 'Remove product from tab?',
+            hint: 'This line will be removed from the tab.'
+        }
+    };
+    const meta = kindMeta[lineKind] || kindMeta.product;
+    const showRestoreCheckbox = lineKind === 'product';
+
+    let html = '<p class="text-gray-600 text-sm leading-relaxed">' + meta.hint + '</p>'
+        + '<p class="text-xs font-medium text-gray-500 uppercase tracking-wide mt-4 mb-1">Line</p>'
+        + '<p id="swal-delete-tab-item-name" class="text-sm font-semibold text-gray-900 px-3 py-2.5 rounded-xl bg-gray-50 border border-gray-100/80"></p>';
+    if (showRestoreCheckbox) {
+        html += '<label class="mt-3 flex items-start gap-2 cursor-pointer select-none">'
+            + '<input type="checkbox" id="deleteTabItemRestoreStock" checked class="mt-1 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500">'
+            + '<span class="text-sm text-gray-800">Restore this item to stock'
+            + '<span class="block text-xs text-gray-500 font-normal">Uncheck if it was already consumed and should not go back into inventory.</span>'
+            + '</span></label>';
+    }
+
+    Swal.fire({
+        title: meta.title,
+        icon: 'warning',
+        iconColor: '#d97706',
+        showCancelButton: true,
+        focusCancel: true,
+        confirmButtonText: 'Remove',
+        cancelButtonText: 'Cancel',
+        buttonsStyling: false,
+        reverseButtons: true,
+        customClass: {
+            popup: 'rounded-2xl shadow-2xl border border-gray-200/90 px-5 py-4 max-w-md !bg-white',
+            title: 'text-xl font-semibold text-gray-900 tracking-tight pb-0',
+            htmlContainer: 'text-left !mt-3',
+            actions: 'flex flex-row-reverse flex-wrap gap-2 justify-end w-full mt-6 !mb-0 pt-2 border-t border-gray-100',
+            confirmButton: 'inline-flex items-center justify-center rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-5 py-2.5 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1',
+            cancelButton: 'inline-flex items-center justify-center rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-semibold px-5 py-2.5 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300 focus:ring-offset-1'
+        },
+        html: html,
+        didOpen: () => {
+            const el = document.getElementById('swal-delete-tab-item-name');
+            if (el) {
+                el.textContent = productName;
+            }
+        },
+        preConfirm: () => {
+            if (!showRestoreCheckbox) {
+                return '1';
+            }
+            const checkbox = document.getElementById('deleteTabItemRestoreStock');
+            return checkbox ? (checkbox.checked ? '1' : '0') : '1';
+        }
+    }).then((result) => {
+        if (!result.isConfirmed) {
+            return;
+        }
+        const restoreStock = showRestoreCheckbox ? (result.value === '0' ? '0' : '1') : '1';
+        if (needsManagerPinToDeleteTabItems) {
+            promptManagerVoidPin({
+                title: 'Remove line',
+                text: 'Enter manager void PIN to remove this line from the tab.',
+                confirmButtonText: 'Remove'
+            }).then((pinResult) => {
+                if (!pinResult.isConfirmed) {
+                    return;
+                }
+                submitDeleteTabItemForm(itemId, tabId, pinResult.value || '', restoreStock);
+            });
+            return;
+        }
+        submitDeleteTabItemForm(itemId, tabId, '', restoreStock);
+    });
+}
+JS
+        . '</script>';
+}
+
 function tab_void_mark_action_html(array $tab, string $redirect = ''): string
 {
     if (($tab['status'] ?? '') !== 'open' || !can_mark_tab_for_void_from_session()) {
@@ -1115,9 +2064,15 @@ function tab_item_void_mark_action_html(array $item, int $tabId, bool $isPrepayL
     if (can_approve_tab_item_void_from_session() && tab_item_is_marked_for_void($item)) {
         $approveOnsubmit = tab_pos_confirm_form_onsubmit_attr([
             'title' => 'Void this item?',
-            'text' => 'The line will be removed and stock restored.',
+            'text' => 'The line will be removed from the tab.',
             'confirmButtonText' => 'Void item',
             'variant' => 'danger',
+            'checkbox' => [
+                'name' => 'restore_stock',
+                'label' => 'Restore this item to stock',
+                'hint' => 'Uncheck if it was already consumed and should not go back into inventory.',
+                'checked' => true,
+            ],
         ]);
         $clearOnsubmit = tab_pos_confirm_form_onsubmit_attr([
             'title' => 'Cancel void request?',
@@ -1131,16 +2086,16 @@ function tab_item_void_mark_action_html(array $item, int $tabId, bool $isPrepayL
             . '<input type="hidden" name="tab_id" value="' . $tabId . '">'
             . '<input type="hidden" name="approve_tab_item_void" value="1">'
             . '<input type="hidden" name="void_mark_redirect" value="' . htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8') . '">'
-            . '<button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-700 hover:text-red-900" title="Approve void">'
-            . '<i data-lucide="check-circle" class="w-4 h-4"></i>'
+            . '<button type="submit" class="inline-flex items-center gap-x-1.5 px-2.5 py-1.5 text-sm font-semibold rounded-lg border border-red-300 text-red-800 bg-red-50 hover:bg-red-100" title="Approve void — optionally restore stock">'
+            . '<i data-lucide="check-circle" class="w-4 h-4 shrink-0"></i>Approve void'
             . '</button></form>'
             . '<form method="POST" class="inline" ' . $clearOnsubmit . '>'
             . '<input type="hidden" name="tab_item_id" value="' . $itemId . '">'
             . '<input type="hidden" name="tab_id" value="' . $tabId . '">'
             . '<input type="hidden" name="clear_tab_item_void_mark" value="1">'
             . '<input type="hidden" name="void_mark_redirect" value="' . htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8') . '">'
-            . '<button type="submit" class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-amber-700 hover:text-amber-900" title="Clear void request">'
-            . '<i data-lucide="undo-2" class="w-4 h-4"></i>'
+            . '<button type="submit" class="inline-flex items-center gap-x-1.5 px-2.5 py-1.5 text-sm font-semibold rounded-lg border border-amber-300 text-amber-900 bg-amber-50 hover:bg-amber-100" title="Clear void request">'
+            . '<i data-lucide="undo-2" class="w-4 h-4 shrink-0"></i>Clear'
             . '</button></form>';
     }
 
@@ -1219,6 +2174,133 @@ function tab_agent_debug_log(string $location, string $message, array $data = []
 }
 
 /** Log payment FIFO allocation — call from view-tab payment handler before committing. */
+/** Remove tab lines that are fully paid (positive lines only; keeps prepayment credits). */
+function tab_remove_fully_paid_tab_items(PDO $db, int $tabId): void
+{
+    $checkPaidItemsStmt = $db->prepare('
+        SELECT ti.id, ti.quantity, ti.price,
+               COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) AS total_paid
+        FROM tab_items ti
+        WHERE ti.tab_id = ?
+    ');
+    $checkPaidItemsStmt->execute([$tabId]);
+    $deletePaidStmt = $db->prepare('DELETE FROM tab_items WHERE id = ?');
+    $deleteItemPaymentsStmt = $db->prepare('DELETE FROM tab_item_payments WHERE tab_item_id = ?');
+
+    foreach ($checkPaidItemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
+        $itemTotal = floatval($item['quantity']) * floatval($item['price']);
+        $totalPaid = floatval($item['total_paid']);
+        if ($itemTotal <= 0.01) {
+            continue;
+        }
+        if ($totalPaid >= ($itemTotal - 0.01)) {
+            $deleteItemPaymentsStmt->execute([(int) $item['id']]);
+            $deletePaidStmt->execute([(int) $item['id']]);
+        }
+    }
+}
+
+/**
+ * Move payments allocated to a void-pending line into prepaid_balance so credit is not lost.
+ */
+function tab_transfer_item_payments_to_prepaid(PDO $db, int $itemId, int $tabId): float
+{
+    ensureTabPrepaidBalanceColumn($db);
+
+    $paidStmt = $db->prepare('SELECT COALESCE(SUM(amount), 0) FROM tab_item_payments WHERE tab_item_id = ?');
+    $paidStmt->execute([$itemId]);
+    $paidTotal = round(floatval($paidStmt->fetchColumn()), 2);
+    if ($paidTotal <= 0.001) {
+        return 0.0;
+    }
+
+    $deletePaymentsStmt = $db->prepare('DELETE FROM tab_item_payments WHERE tab_item_id = ?');
+    $deletePaymentsStmt->execute([$itemId]);
+
+    $updPrepaid = $db->prepare('UPDATE tabs SET prepaid_balance = COALESCE(prepaid_balance, 0) + ? WHERE id = ?');
+    $updPrepaid->execute([$paidTotal, $tabId]);
+
+    return $paidTotal;
+}
+
+/**
+ * Apply tabs.prepaid_balance to unpaid payable lines (FIFO) so advance credit covers re-added items
+ * after a void-pending mark instead of leaving a phantom advance + unpaid duplicate line.
+ */
+function tab_apply_prepaid_balance_to_items(PDO $db, int $tabId): float
+{
+    ensureTabPrepaidBalanceColumn($db);
+    ensureTabItemVoidMarkColumns($db);
+
+    try {
+        $db->exec('
+            CREATE TABLE IF NOT EXISTS tab_item_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tab_item_id INTEGER NOT NULL,
+                payment_id INTEGER NOT NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                FOREIGN KEY(tab_item_id) REFERENCES tab_items(id),
+                FOREIGN KEY(payment_id) REFERENCES tab_payments(id)
+            )
+        ');
+    } catch (PDOException $e) {
+        // Table already exists
+    }
+
+    $tabStmt = $db->prepare('SELECT COALESCE(prepaid_balance, 0) AS prepaid_balance FROM tabs WHERE id = ?');
+    $tabStmt->execute([$tabId]);
+    $prepaidRemaining = round(floatval($tabStmt->fetchColumn()), 2);
+    if ($prepaidRemaining <= 0.001) {
+        return 0.0;
+    }
+
+    $unpaidItems = tab_fetch_unpaid_payable_items($db, $tabId, true);
+    if (empty($unpaidItems)) {
+        return 0.0;
+    }
+
+    $anchorPaymentId = null;
+    $appliedTotal = 0.0;
+    $linkStmt = $db->prepare('INSERT INTO tab_item_payments (tab_item_id, payment_id, amount) VALUES (?, ?, ?)');
+
+    foreach ($unpaidItems as $item) {
+        if ($prepaidRemaining <= 0.001) {
+            break;
+        }
+
+        $itemTotal = floatval($item['item_total']);
+        $alreadyPaid = floatval($item['paid_amount'] ?? 0);
+        $unpaidAmount = round($itemTotal - $alreadyPaid, 2);
+        if ($unpaidAmount <= 0.001) {
+            continue;
+        }
+
+        $applyAmount = round(min($prepaidRemaining, $unpaidAmount), 2);
+        if ($applyAmount <= 0.001) {
+            continue;
+        }
+
+        if ($anchorPaymentId === null) {
+            $paymentStmt = $db->prepare("INSERT INTO tab_payments (tab_id, amount, payment_method, cashier_id, payment_date) VALUES (?, 0, 'cash', 'system', datetime('now'))");
+            $paymentStmt->execute([$tabId]);
+            $anchorPaymentId = (int) $db->lastInsertId();
+        }
+
+        $linkStmt->execute([(int) $item['id'], $anchorPaymentId, $applyAmount]);
+        $prepaidRemaining = round($prepaidRemaining - $applyAmount, 2);
+        $appliedTotal = round($appliedTotal + $applyAmount, 2);
+    }
+
+    if ($appliedTotal > 0.001) {
+        $newPrepaid = max(0.0, round($prepaidRemaining, 2));
+        $updPrepaid = $db->prepare('UPDATE tabs SET prepaid_balance = ? WHERE id = ?');
+        $updPrepaid->execute([$newPrepaid, $tabId]);
+        tab_remove_fully_paid_tab_items($db, $tabId);
+    }
+
+    return $appliedTotal;
+}
+
 function tab_log_payment_allocation(PDO $db, int $tabId, float $paymentAmount, array $itemsToPay, float $prepaidToAdd): void
 {
     ensureTabPrepaidBalanceColumn($db);
@@ -1269,6 +2351,7 @@ function recalculateTabBalance(PDO $db, $tabId) {
     ensureTabPrepaidBalanceColumn($db);
     ensureTabGratuityColumns($db);
     ensureTabItemVoidMarkColumns($db);
+    tab_apply_prepaid_balance_to_items($db, (int) $tabId);
     $balanceStmt = $db->prepare("
         SELECT 
             COALESCE(SUM(ti.quantity * ti.price), 0) as total_items,

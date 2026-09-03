@@ -21,25 +21,22 @@ if ($activationStatus == 0) {
 }
 
 // Get business closing time from business_info
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00';
-} catch (PDOException $e) {
-    $closingTime = '00:00';
-}
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
 
-// Database connection
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
+
 $db = new PDO('sqlite:../pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 
-// Calculate business day boundaries
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':date', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':date', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePayment = bdSingleDayWhereSql('p.payment_date', ':date', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereEPayment = bdSingleDayWhereSql('e.payment_date', ':date', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Handle week selection
 $selectedWeek = isset($_POST['week']) ? $_POST['week'] : date('Y-W');
@@ -104,10 +101,7 @@ for ($i = 0; $i < 7; $i++) {
             o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
         ), 0) 
         FROM orders o
-        WHERE (
-            (DATE(o.created_at) = :date AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWhereOCreated)
     ");
     $cashSalesQuery->bindParam(':date', $dateStr);
     $cashSalesQuery->bindParam(':nextDay', $nextDayStr);
@@ -119,10 +113,7 @@ for ($i = 0; $i < 7; $i++) {
         SELECT COALESCE(SUM(e.amount), 0) 
         FROM eft_payments e 
         JOIN orders o ON e.order_id = o.id 
-        WHERE NOT EXISTS (SELECT 1 FROM credit_sales cs WHERE cs.id = o.id) AND (
-            (DATE(o.created_at) = :date AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE NOT EXISTS (SELECT 1 FROM credit_sales cs WHERE cs.id = o.id) AND ($bdWhereOCreated)
     ");
     $eftSalesQuery->bindParam(':date', $dateStr);
     $eftSalesQuery->bindParam(':nextDay', $nextDayStr);
@@ -133,10 +124,7 @@ for ($i = 0; $i < 7; $i++) {
     $creditIssuedQuery = $db->prepare("
         SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount, 0)), 0) 
         FROM credit_sales 
-        WHERE (
-            (DATE(created_at) = :date AND strftime('%H:%M', created_at) >= '$closingTime') OR
-            (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        ) AND payment_status IN ('unpaid', 'partial')
+        WHERE ($bdWhereCreated) AND payment_status IN ('unpaid', 'partial')
     ");
     $creditIssuedQuery->bindParam(':date', $dateStr);
     $creditIssuedQuery->bindParam(':nextDay', $nextDayStr);
@@ -154,10 +142,7 @@ for ($i = 0; $i < 7; $i++) {
             AND ABS(CAST(ep.amount AS REAL) - CAST(p.amount AS REAL)) < 0.021
             AND date(ep.payment_date) = date(p.payment_date)
             AND strftime('%H:%M', ep.payment_date) = strftime('%H:%M', p.payment_date)
-        ) AND (
-            (DATE(p.payment_date) = :date AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-            (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        ) AND ($bdWherePayment)
     ");
     $creditPaymentsQuery->bindParam(':date', $dateStr);
     $creditPaymentsQuery->bindParam(':nextDay', $nextDayStr);
@@ -169,10 +154,7 @@ for ($i = 0; $i < 7; $i++) {
         SELECT COALESCE(SUM(e.amount), 0) 
         FROM eft_payments e
         JOIN credit_sales cs ON e.order_id = cs.id
-        WHERE (
-            (DATE(e.payment_date) = :date AND strftime('%H:%M', e.payment_date) >= '$closingTime') OR
-            (DATE(e.payment_date) = :nextDay AND strftime('%H:%M', e.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWhereEPayment)
     ");
     $eftCreditPaymentsQuery->bindParam(':date', $dateStr);
     $eftCreditPaymentsQuery->bindParam(':nextDay', $nextDayStr);
@@ -183,29 +165,32 @@ for ($i = 0; $i < 7; $i++) {
     $cashInQuery = $db->prepare("
         SELECT COALESCE(SUM(amount), 0) 
         FROM cash_transactions
-        WHERE type = 'cash-in' AND (
-            (DATE(created_at) = :date AND strftime('%H:%M', created_at) >= '$closingTime') OR
-            (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE type = 'cash-in' AND ($bdWhereCreated)
     ");
     $cashInQuery->bindParam(':date', $dateStr);
     $cashInQuery->bindParam(':nextDay', $nextDayStr);
     $cashInQuery->execute();
     $cashIn = $cashInQuery->fetchColumn() ?: 0;
 
-    // CASH OUT: Money taken out of the business
-    $cashOutQuery = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) 
-        FROM cash_transactions
-        WHERE type = 'cash-out' AND (
-            (DATE(created_at) = :date AND strftime('%H:%M', created_at) >= '$closingTime') OR
-            (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
-    ");
+    // CASH OUT: expenses and refunds taken out of the business
+    $cashOutQuery = prepareCashReportOutflowsSumStatement($db, $bdWhereCreated);
     $cashOutQuery->bindParam(':date', $dateStr);
     $cashOutQuery->bindParam(':nextDay', $nextDayStr);
     $cashOutQuery->execute();
     $cashOut = $cashOutQuery->fetchColumn() ?: 0;
+
+    $cashBackQuery = $db->prepare("
+        SELECT COALESCE(SUM(amount), 0)
+        FROM cash_transactions
+        WHERE type = 'cash-out'
+        AND " . cashBackDescriptionSql('description') . "
+        AND ($bdWhereCreated)
+    ");
+    $cashBackQuery->bindParam(':date', $dateStr);
+    $cashBackQuery->bindParam(':nextDay', $nextDayStr);
+    $cashBackQuery->execute();
+    $cashBack = $cashBackQuery->fetchColumn() ?: 0;
+    $cashOut = (float) $cashOut + (float) $cashBack;
 
     // CALCULATE TOTALS
     $cashReceived = $cashSales + $creditPayments; // cash orders + cash credit payments

@@ -10,44 +10,32 @@ if ($activationStatus == 0) {
 // Set the default timezone
 date_default_timezone_set('Africa/Harare');
 
-// Get business closing time from business_info
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '22:00';
-} catch (PDOException $e) {
-    $closingTime = '22:00';
-}
+require_once __DIR__ . '/business_day_helper.php';
+require_once __DIR__ . '/invoice_transactions_helper.php';
+require_once __DIR__ . '/cash_transactions_totals_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // New SQLite connection
 $db = new PDO('sqlite:pos.db');
-require_once __DIR__ . '/invoice_transactions_helper.php';
 
 // Get selected date from request
-$selectedDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
-
-// Calculate business day boundaries
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
-
-// Calculate next business day
+$selectedDate = isset($_GET['date']) ? $_GET['date'] : bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 $nextBusinessDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextBusinessDay', $closingTime, $isAfterMidnight);
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextBusinessDay', $closingTime, $isAfterMidnight);
+$bdWherePayment = bdSingleDayWhereSql('p.payment_date', ':selectedDate', ':nextBusinessDay', $closingTime, $isAfterMidnight);
 
 // 1. Selected date's cash in transactions
 $cashInQuery = $db->prepare("
     SELECT COALESCE(SUM(amount), 0) 
     FROM cash_transactions 
-    WHERE type='cash-in' AND (
-        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-    )
+    WHERE type='cash-in' AND ($bdWhereCreated)
 ");
-$cashInQuery->bindParam(':selectedDate', $selectedDate);
-$cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashInQuery->bindParam(':closingTime', $closingTime);
-$cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+bdBindSingleDayParams($cashInQuery, $selectedDate, $nextBusinessDay);
 $cashInQuery->execute();
 $totalCashIn = $cashInQuery->fetchColumn();
 
@@ -65,25 +53,16 @@ if ($eftTableExists) {
         SELECT COALESCE(SUM(o.total), 0)
         FROM orders o
         LEFT JOIN eft_payments e ON o.id = e.order_id
-        WHERE e.order_id IS NULL AND (
-            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-            (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-        )
+        WHERE e.order_id IS NULL AND ($bdWhereOCreated)
     ");
 } else {
     $cashSalesQuery = $db->prepare("
         SELECT COALESCE(SUM(total), 0) 
         FROM orders 
-        WHERE (
-            (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-        )
+        WHERE ($bdWhereCreated)
     ");
 }
-$cashSalesQuery->bindParam(':selectedDate', $selectedDate);
-$cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashSalesQuery->bindParam(':closingTime', $closingTime);
-$cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+bdBindSingleDayParams($cashSalesQuery, $selectedDate, $nextBusinessDay);
 $cashSalesQuery->execute();
 $totalCashSales = $cashSalesQuery->fetchColumn();
 
@@ -92,31 +71,19 @@ $creditPaymentsQuery = $db->prepare("
     SELECT COALESCE(SUM(p.amount), 0) 
     FROM payments p
     JOIN credit_sales cs ON p.sale_id = cs.id
-    WHERE cs.payment_status = 'paid' AND (
-        (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-    )
+    WHERE cs.payment_status = 'paid' AND ($bdWherePayment)
 ");
-$creditPaymentsQuery->bindParam(':selectedDate', $selectedDate);
-$creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-$creditPaymentsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+bdBindSingleDayParams($creditPaymentsQuery, $selectedDate, $nextBusinessDay);
 $creditPaymentsQuery->execute();
 $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
 
-// 4. Selected date's cash out (withdrawals)
-$cashOutQuery = $db->prepare("
-    SELECT COALESCE(SUM(amount), 0) 
+// 4. Selected date's cash out (manual withdrawals and refunds)
+$cashOutQuery = $db->prepare('
+    SELECT ' . cashWithdrawalsSumSql() . '
     FROM cash_transactions 
-    WHERE type='cash-out' AND (
-        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-    )
-");
-$cashOutQuery->bindParam(':selectedDate', $selectedDate);
-$cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashOutQuery->bindParam(':closingTime', $closingTime);
-$cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+    WHERE (' . $bdWhereCreated . ')
+');
+bdBindSingleDayParams($cashOutQuery, $selectedDate, $nextBusinessDay);
 $cashOutQuery->execute();
 $totalCashOut = $cashOutQuery->fetchColumn();
 
@@ -134,4 +101,3 @@ echo json_encode([
     'totalCashSales' => $totalCashSales,
     'totalCreditPayments' => $totalCreditPayments
 ]);
-?> 

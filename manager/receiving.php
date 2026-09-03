@@ -140,9 +140,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             foreach ($receivingData['items'] as $item) {
-                if (!empty($item['product_id']) && !empty($item['quantity']) && $item['quantity'] > 0) {
+                $quantity = floatval($item['quantity'] ?? 0);
+                // Positive qty = receive/restock; negative qty = stock transfer out
+                if (!empty($item['product_id']) && abs($quantity) > 0.00001) {
                     $productId = $item['product_id'];
-                    $quantity = floatval($item['quantity']);
                     
                     // Get current product info
                     $stmt = $db->prepare("SELECT name, quantity, price, buying_price FROM products WHERE id = ?");
@@ -193,16 +194,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'total_cost' => $itemCost
                             ];
                             
-                            // Update product quantity and cost price used for this receive
-                            $updateStmt = $db->prepare("UPDATE products SET quantity = ?, buying_price = ? WHERE id = ?");
-                            $updateStmt->execute([$newQuantity, $unitCost, $productId]);
+                            $stockAction = $quantity > 0 ? 'Restock' : 'Transfer';
+                            if ($quantity > 0) {
+                                $updateStmt = $db->prepare("UPDATE products SET quantity = ?, buying_price = ? WHERE id = ?");
+                                $updateStmt->execute([$newQuantity, $unitCost, $productId]);
+                            } else {
+                                $updateStmt = $db->prepare("UPDATE products SET quantity = ? WHERE id = ?");
+                                $updateStmt->execute([$newQuantity, $productId]);
+                            }
                             adjustRecipeStockByProductId($db, (int) $productId, (float) $quantity);
                             
                             // Log the stock change (use selected receiving date/time)
                             $logStmt = $db->prepare("INSERT INTO stock_changes (product_id, action, quantity_change, old_quantity, new_quantity, changed_at, username) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                            $logStmt->execute([$productId, 'Restock', $quantity, $oldQuantity, $newQuantity, $selectedDateTime, currentStockChangeUsername()]);
+                            $logStmt->execute([$productId, $stockAction, $quantity, $oldQuantity, $newQuantity, $selectedDateTime, currentStockChangeUsername()]);
                             
-                            // Update or insert daily stock summary - only update received quantity
+                            // Received qty only increases on inbound stock; transfers still update closing stock
+                            $receivedDelta = $quantity > 0 ? $quantity : 0;
                             $summaryStmt = $db->prepare("
                                 INSERT OR REPLACE INTO daily_stock_summary 
                                 (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
@@ -218,7 +225,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ");
                             $summaryStmt->execute([
                                 $today, $productId, $today, $productId, $today, $productId, $newQuantity,
-                                $today, $productId, $quantity,
+                                $today, $productId, $receivedDelta,
                                 $today, $productId,
                                 $today, $productId
                             ]);
@@ -320,34 +327,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch products from the database
-$stmt = $db->query('
-    SELECT p.*, COALESCE(SUM(oi.quantity), 0) as total_sold
-    FROM products p
-    LEFT JOIN order_items oi ON p.name = oi.product_name
-    GROUP BY p.id
-    ORDER BY p.name ASC
-');
-
-$products = [];
-$lowStock = [];
-$outOfStock = [];
-
-// Fetch unique categories
-$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
-$categories = [];
-while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
-    $categories[] = $cat['category'];
-}
-
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $products[] = $row;
-    if ($row['quantity'] <= 0) {
-        $outOfStock[] = $row;
-    } else if ($row['quantity'] < 5) {
-        $lowStock[] = $row;
-    }
-}
+require_once __DIR__ . '/../includes/receiving_list_lib.php';
+$categories = receivingListFetchCategories($db);
 
 $openPurchaseOrders = poListOpenForReceiving($db);
 $activeSuppliers = poListActiveSuppliers($db);
@@ -660,9 +641,55 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         .receiving-header-row {
             flex-wrap: nowrap;
             scrollbar-width: none;
+            max-width: 100%;
         }
         .receiving-header-row::-webkit-scrollbar {
             display: none;
+        }
+        .receiving-header-row select {
+            text-overflow: ellipsis;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        #supplierFilter {
+            width: 5rem;
+            max-width: 5rem;
+        }
+        #poFilter {
+            width: 6.5rem;
+            max-width: 6.5rem;
+        }
+        #categoryFilter {
+            width: 5.5rem;
+            max-width: 5.5rem;
+        }
+        @media (min-width: 640px) {
+            #supplierFilter {
+                width: 5.5rem;
+                max-width: 5.5rem;
+            }
+            #poFilter {
+                width: 7.5rem;
+                max-width: 7.5rem;
+            }
+            #categoryFilter {
+                width: 6rem;
+                max-width: 6rem;
+            }
+        }
+        @media (min-width: 1024px) {
+            #supplierFilter {
+                width: 6rem;
+                max-width: 6rem;
+            }
+            #poFilter {
+                width: 8.5rem;
+                max-width: 8.5rem;
+            }
+            #categoryFilter {
+                width: 6.5rem;
+                max-width: 6.5rem;
+            }
         }
         
         /* Ensure sidebar maintains proper z-index above overlay */
@@ -976,7 +1003,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         <div id="mobileOverlay" class="mobile-overlay lg:hidden" onclick="closeSidebar()"></div>
         
         <!-- Main Content -->
-        <div class="content flex-1 lg:ml-64">
+        <div class="content flex-1 lg:ml-64 min-w-0 max-w-full overflow-x-hidden">
             <!-- Sticky Header — single row, scrolls horizontally on narrow screens -->
             <div id="receivingFixedHeader" class="sticky top-0 z-50 bg-gray-100 py-2 sm:py-3 px-2 sm:px-4 lg:px-6 shadow-sm border-b border-gray-200">
                 <div class="w-full flex items-center gap-1.5 sm:gap-2 overflow-x-auto receiving-header-row" style="-webkit-overflow-scrolling: touch;">
@@ -989,7 +1016,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                         <span class="sm:hidden">Receiving</span>
                         <span class="hidden sm:inline">Stock Receiving</span>
                     </h1>
-                    <select id="poFilter" class="flex-shrink-0 w-[7.5rem] sm:w-auto sm:min-w-[9rem] lg:min-w-[11rem] px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                    <select id="poFilter" class="flex-shrink-0 px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
                         <option value="">No PO (ad-hoc)</option>
                         <?php foreach ($openPurchaseOrders as $opo): ?>
                             <option value="<?= (int) $opo['id'] ?>" data-supplier-id="<?= (int) $opo['supplier_id'] ?>" <?= $preselectedPoId === (int) $opo['id'] ? 'selected' : '' ?>>
@@ -997,13 +1024,13 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                             </option>
                         <?php endforeach; ?>
                     </select>
-                    <select id="supplierFilter" class="flex-shrink-0 w-[7rem] sm:w-auto sm:min-w-[8rem] lg:min-w-[9rem] px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                    <select id="supplierFilter" class="flex-shrink-0 px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white" title="Supplier">
                         <option value="">Supplier</option>
                         <?php foreach ($activeSuppliers as $sup): ?>
                             <option value="<?= (int) $sup['id'] ?>" <?= $preselectedSupplierId === (int) $sup['id'] && $preselectedPoId < 1 ? 'selected' : '' ?>><?= htmlspecialchars($sup['name']) ?></option>
                         <?php endforeach; ?>
                     </select>
-                    <select id="categoryFilter" class="flex-shrink-0 w-[7rem] sm:w-auto sm:min-w-[8rem] lg:min-w-[9rem] px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
+                    <select id="categoryFilter" class="flex-shrink-0 px-1.5 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
                         <option value="">Category</option>
                         <?php foreach ($categories as $category): ?>
                             <option value="<?= htmlspecialchars($category) ?>"><?= htmlspecialchars($category) ?></option>
@@ -1011,9 +1038,9 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                     </select>
                     <div class="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
                         <label for="receivingDate" class="hidden md:inline text-xs lg:text-sm text-gray-700 whitespace-nowrap">Date</label>
-                        <input type="datetime-local" id="receivingDate" title="Receiving date" class="w-[9.5rem] sm:w-[11rem] lg:w-auto min-w-0 px-1 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white"/>
+                        <input type="datetime-local" id="receivingDate" title="Receiving date" class="w-[8.5rem] sm:w-[9.5rem] lg:w-[10.5rem] min-w-0 px-1 sm:px-2 lg:px-3 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white"/>
                     </div>
-                    <div class="relative flex-shrink-0 w-[7rem] sm:w-[9rem] lg:w-[12rem]">
+                    <div class="relative flex-shrink-0 w-[6rem] sm:w-[7.5rem] lg:w-[9rem]">
                         <input type="text" id="searchInput" placeholder="Search..." class="w-full pl-7 sm:pl-8 lg:pl-9 pr-2 py-1.5 sm:py-2 text-[11px] sm:text-xs lg:text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm bg-white">
                         <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
@@ -1039,7 +1066,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                             <span id="selectedCount" class="text-sm font-medium text-gray-700">0 items selected</span>
                             <div class="flex items-center gap-2">
                                 <label class="text-sm font-medium text-gray-700">Bulk Quantity:</label>
-                                <input type="number" id="bulkQuantity" min="0" step="any" class="quantity-input px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Qty">
+                                <input type="number" id="bulkQuantity" step="any" class="quantity-input px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500" placeholder="Qty" title="Use a negative quantity to transfer stock out">
                             </div>
                         </div>
                         <button id="applyBulkBtn" class="inline-flex items-center px-2 sm:px-4 py-1.5 sm:py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs sm:text-sm font-medium rounded-md shadow-sm">
@@ -1053,7 +1080,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 </div>
 
                 <div class="bg-white rounded-lg shadow-sm overflow-hidden">
-                    <div class="mobile-table-container w-full">
+                    <div class="mobile-table-container w-full overflow-x-auto">
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-300">
                             <tr>
@@ -1090,7 +1117,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                                         </svg>
                                     </div>
                                 </th>
-                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
+                                <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider" title="Positive to receive stock. Negative to transfer stock out.">
                                     <span class="hidden sm:inline">Receiving Qty</span>
                                     <span class="sm:hidden">Qty</span>
                                 </th>
@@ -1101,47 +1128,9 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
-                            <?php foreach ($products as $product): ?>
-                                <tr class="receiving-row hover:bg-gray-50 transition-colors" data-category="<?= htmlspecialchars($product['category'] ?? '') ?>" data-product-id="<?= $product['id'] ?>">
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="checkbox" class="product-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" data-product-id="<?= $product['id'] ?>">
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <div class="flex items-center justify-center"><img src="../products/<?= htmlspecialchars($product['image_url']) ?>" alt="Product" class="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 rounded-lg object-cover" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-block';"><i class="fas fa-cube text-gray-400 text-xl sm:text-2xl lg:text-3xl" style="display:none;"></i></div>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs lg:text-sm font-medium text-black-900 truncate" title="<?= htmlspecialchars($product['name']) ?>">
-                                        <?= htmlspecialchars($product['name']) ?>
-                                        <?php if ($product['quantity'] <= 0): ?>
-                                            <span class="ml-1 sm:ml-2 inline-flex items-center px-1 sm:px-2.5 py-0.5 rounded-full text-[8px] sm:text-xs font-medium bg-red-100 text-red-800">Out</span>
-                                        <?php elseif ($product['quantity'] < 5): ?>
-                                            <span class="ml-1 sm:ml-2 inline-flex items-center px-1 sm:px-2.5 py-0.5 rounded-full text-[8px] sm:text-xs font-medium bg-yellow-100 text-yellow-800">Low</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500">
-                                        <span class="product-price font-medium text-teal-600">N$ <?= number_format($product['price'], 2) ?></span>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <div class="buying-price-wrap">
-                                            <input type="number" step="0.01" class="buying-price-input quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" 
-                                                   placeholder="<?= number_format($product['buying_price'] ?? $product['price'], 2) ?>" 
-                                                   value="<?= number_format($product['buying_price'] ?? $product['price'], 2) ?>"
-                                                   data-original-buying-price="<?= $product['buying_price'] ?? $product['price'] ?>">
-                                            <span class="receiving-cost-calculator-icon calculator-icon" title="Cost calculator">
-                                                <i class="fas fa-calculator text-gray-500 hover:text-teal-500 cursor-pointer text-[10px] sm:text-xs"></i>
-                                            </span>
-                                        </div>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500">
-                                        <span class="current-stock"><?= $product['quantity'] ?></span>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="number" min="0" step="any" class="receiving-quantity quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" placeholder="0">
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500">
-                                        <span class="new-total"><?= $product['quantity'] ?></span>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
+                            <tr>
+                                <td colspan="8" class="py-8 px-6 text-center text-gray-500">Loading products...</td>
+                            </tr>
                         </tbody>
                     </table>
                     </div>
@@ -1314,32 +1303,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         window.addEventListener('load', syncReceivingHeaderSpacer);
         window.addEventListener('resize', syncReceivingHeaderSpacer);
 
-        // Dynamic rows per page: 10 on mobile, 6 on desktop
-        function getRowsPerPage() {
-            return window.innerWidth < 640 ? 10 : 6;
-        }
-        
-        let rowsPerPage = getRowsPerPage();
         const tableBody = document.getElementById("tableBody");
-        let allRows = Array.from(tableBody.children);
-        let rows = [...allRows];
-        const pageNumber = document.getElementById("pageNumber");
-        let sortDirection = {};
-        let currentPage = 1;
-        
-        // Update rowsPerPage on window resize
-        let resizeTimeout;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => {
-                const newRowsPerPage = getRowsPerPage();
-                if (newRowsPerPage !== rowsPerPage) {
-                    rowsPerPage = newRowsPerPage;
-                    currentPage = 1;
-                    showPage(currentPage);
-                }
-            }, 100);
-        });
         const searchInput = document.getElementById('searchInput');
         const categoryFilter = document.getElementById('categoryFilter');
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
@@ -1370,6 +1334,10 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         async function loadPoLines(poId) {
             if (!poId) {
                 linkedPoMeta = { supplier_id: null, supplier_name: '', po_number: '' };
+                clearCurrentReceivingDraft();
+                if (typeof window.reloadReceivingTable === 'function') {
+                    window.reloadReceivingTable(1);
+                }
                 return;
             }
             const resp = await fetch('receiving.php?action=po_lines&po_id=' + encodeURIComponent(poId));
@@ -1383,28 +1351,20 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 supplier_name: json.data.supplier_name || '',
                 po_number: json.data.po_number || ''
             };
-            document.querySelectorAll('.receiving-row').forEach(row => {
-                row.querySelector('.receiving-quantity').value = '';
-                updateNewTotal(row);
-            });
+            const map = {};
             (json.data.lines || []).forEach(line => {
-                const row = document.querySelector('.receiving-row[data-product-id="' + line.product_id + '"]');
-                if (!row) return;
-                const qtyInput = row.querySelector('.receiving-quantity');
-                const priceInput = row.querySelector('.buying-price-input');
-                qtyInput.value = line.quantity_remaining;
-                if (priceInput && line.unit_cost) {
-                    priceInput.value = parseFloat(line.unit_cost).toFixed(2);
-                }
-                updateNewTotal(row);
+                map[line.product_id] = {
+                    q: String(line.quantity_remaining),
+                    bp: line.unit_cost ? parseFloat(line.unit_cost).toFixed(2) : ''
+                };
             });
-            scheduleUpdateItems();
-            const searchVal = searchInput ? searchInput.value.trim().toLowerCase() : '';
-            if (searchVal) {
-                filterRows();
-            } else {
-                showPage(currentPage);
+            try {
+                localStorage.setItem(getReceivingDraftKey(), JSON.stringify(map));
+            } catch (e) { /* ignore */ }
+            if (typeof window.reloadReceivingTable === 'function') {
+                window.reloadReceivingTable(1);
             }
+            scheduleUpdateItems();
         }
 
         function getReceivingMeta() {
@@ -1445,18 +1405,34 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             const poId = (poFilter && poFilter.value) ? String(poFilter.value) : 'adhoc';
             return RECEIVING_DRAFT_PREFIX + serverDate + '_po_' + poId;
         }
+        function readReceivingDraftMap() {
+            let map = {};
+            try {
+                const raw = localStorage.getItem(getReceivingDraftKey());
+                if (raw) map = JSON.parse(raw) || {};
+            } catch (e) { map = {}; }
+            return map;
+        }
         function collectReceivingDraftMap() {
-            const map = {};
+            const map = readReceivingDraftMap();
             document.querySelectorAll('.receiving-row').forEach(row => {
                 const id = row.dataset.productId;
                 const qtyInput = row.querySelector('.receiving-quantity');
                 const bpInput = row.querySelector('.buying-price-input');
                 if (!id || !qtyInput) return;
                 const q = qtyInput.value.trim();
-                if (q === '' || !(parseFloat(q) > 0)) return;
+                if (q === '' || parseFloat(q) === 0) {
+                    delete map[id];
+                    return;
+                }
+                const nameCell = row.children[2];
+                const priceEl = row.querySelector('.product-price');
                 map[id] = {
                     q: q,
-                    bp: bpInput ? bpInput.value.trim() : ''
+                    bp: bpInput ? bpInput.value.trim() : '',
+                    name: nameCell ? (nameCell.getAttribute('title') || nameCell.textContent.trim()) : (map[id]?.name || ''),
+                    cs: parseFloat(row.querySelector('.current-stock')?.textContent) || map[id]?.cs || 0,
+                    p: priceEl ? parseFloat(priceEl.textContent.replace('N$', '').replace(/,/g, '').trim()) : (map[id]?.p || 0)
                 };
             });
             return map;
@@ -1577,29 +1553,31 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 }
             });
 
-            document.querySelectorAll('.receiving-cost-calculator-icon').forEach((calculatorIcon) => {
-                calculatorIcon.addEventListener('mouseenter', (e) => {
-                    e.stopPropagation();
-                    clearTimeout(hideTimeout);
-                    currentIcon = calculatorIcon;
-                    targetBuyingInput = calculatorIcon.closest('.buying-price-wrap')?.querySelector('.buying-price-input');
-                    const row = calculatorIcon.closest('tr');
-                    const qtyInput = row?.querySelector('.receiving-quantity');
-                    const qty = qtyInput ? (parseInt(qtyInput.value, 10) || 0) : 0;
-                    itemCountInput.value = qty > 0 ? String(qty) : '';
-                    calculateCost();
-                    popup.classList.remove('hidden');
-                    updatePopupPosition(calculatorIcon);
-                });
+            document.addEventListener('mouseover', (e) => {
+                const calculatorIcon = e.target.closest && e.target.closest('.receiving-cost-calculator-icon');
+                if (!calculatorIcon || !tableBody.contains(calculatorIcon)) return;
+                e.stopPropagation();
+                clearTimeout(hideTimeout);
+                currentIcon = calculatorIcon;
+                targetBuyingInput = calculatorIcon.closest('.buying-price-wrap')?.querySelector('.buying-price-input');
+                const row = calculatorIcon.closest('tr');
+                const qtyInput = row?.querySelector('.receiving-quantity');
+                const qty = qtyInput ? (parseInt(qtyInput.value, 10) || 0) : 0;
+                itemCountInput.value = qty > 0 ? String(qty) : '';
+                calculateCost();
+                popup.classList.remove('hidden');
+                updatePopupPosition(calculatorIcon);
+            });
 
-                calculatorIcon.addEventListener('mouseleave', (e) => {
-                    const toElement = e.relatedTarget;
-                    if (!popup.contains(toElement)) {
-                        hideTimeout = setTimeout(() => {
-                            popup.classList.add('hidden');
-                        }, 500);
-                    }
-                });
+            document.addEventListener('mouseout', (e) => {
+                const calculatorIcon = e.target.closest && e.target.closest('.receiving-cost-calculator-icon');
+                if (!calculatorIcon || !tableBody.contains(calculatorIcon)) return;
+                const toElement = e.relatedTarget;
+                if (!popup.contains(toElement)) {
+                    hideTimeout = setTimeout(() => {
+                        popup.classList.add('hidden');
+                    }, 500);
+                }
             });
 
             popup.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
@@ -1613,191 +1591,23 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             });
         })();
 
-        // Initialize
-        showPage(currentPage);
-        updateBulkActionsVisibility();
-
-        (async function bootReceivingDraft() {
+        window.onReceivingTableBeforeLoad = function () {
+            saveReceivingDraftToStorage();
+        };
+        window.onReceivingTableAfterLoad = function () {
+            applyReceivingDraftFromStorage();
+            updateBulkActionsVisibility();
+            scheduleUpdateItems();
+        };
+        window.bootReceivingPage = async function () {
             if (poFilter && poFilter.value) {
                 await loadPoLines(poFilter.value);
+            } else if (typeof window.reloadReceivingTable === 'function') {
+                await window.reloadReceivingTable(1);
             }
-            applyReceivingDraftFromStorage();
-            updateItemsBeingAdded();
-        })();
+        };
 
-        // Search and filter functionality - INSTANT response
-        searchInput.addEventListener('input', (e) => {
-            filterRows(e.target.value);
-        });
-
-        categoryFilter.addEventListener('change', () => {
-            filterRows(searchInput.value);
-        });
-
-        // View All button functionality removed - button doesn't exist in HTML
-
-        function filterRows(searchTerm) {
-            const selectedCategory = categoryFilter.value;
-            const searchLower = searchTerm.toLowerCase();
-            
-            // Use faster filtering approach
-            if (!searchTerm && !selectedCategory) {
-                rows = [...allRows];
-                showAllRows();
-                return;
-            }
-            
-            rows = [];
-            for (let i = 0; i < allRows.length; i++) {
-                const row = allRows[i];
-                const productName = row.children[2].textContent.toLowerCase();
-                const productCategory = row.dataset.category || '';
-                
-                if ((searchLower === '' || productName.includes(searchLower)) &&
-                    (selectedCategory === '' || productCategory === selectedCategory)) {
-                    rows.push(row);
-                }
-            }
-            
-            currentPage = 1;
-            showPage(currentPage);
-        }
-
-        function showPage(page) {
-            const start = (page - 1) * rowsPerPage;
-            const end = start + rowsPerPage;
-            const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-            
-            allRows.forEach(row => row.style.display = 'none');
-            rows.slice(start, end).forEach(row => row.style.display = 'table-row');
-            
-            // Update both mobile and desktop page numbers
-            const pageNumberMobile = document.getElementById('pageNumber');
-            const pageNumberDesktop = document.getElementById('pageNumberDesktop');
-            if (pageNumberMobile) pageNumberMobile.textContent = `Page ${page} of ${maxPage}`;
-            if (pageNumberDesktop) pageNumberDesktop.textContent = `Page ${page} of ${maxPage}`;
-            
-            // Update both mobile and desktop page inputs
-            const pageInputMobile = document.getElementById('pageInput');
-            const pageInputDesktop = document.getElementById('pageInputDesktop');
-            if (pageInputMobile) {
-                pageInputMobile.value = page;
-                pageInputMobile.placeholder = `Pg (1-${maxPage})`;
-            }
-            if (pageInputDesktop) {
-                pageInputDesktop.value = page;
-                pageInputDesktop.placeholder = `Page (1-${maxPage})`;
-            }
-        }
-
-        function showAllRows() {
-            // Show all rows without pagination
-            allRows.forEach(row => row.style.display = 'table-row');
-            pageNumber.textContent = `Showing all ${rows.length} items`;
-            document.getElementById('pageInput').value = '';
-            currentPage = 1;
-        }
-
-        // Sorting functionality
-        function sortTable(columnIndex, isNumeric = false) {
-            if (!sortDirection[columnIndex]) {
-                sortDirection[columnIndex] = 'asc';
-            } else {
-                sortDirection[columnIndex] = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
-            }
-
-            rows.sort((a, b) => {
-                let aValue = a.children[columnIndex].textContent.trim();
-                let bValue = b.children[columnIndex].textContent.trim();
-
-                if (isNumeric) {
-                    aValue = parseFloat(aValue);
-                    bValue = parseFloat(bValue);
-                } else {
-                    aValue = aValue.toLowerCase();
-                    bValue = bValue.toLowerCase();
-                }
-
-                if (sortDirection[columnIndex] === 'asc') {
-                    return aValue > bValue ? 1 : -1;
-                } else {
-                    return aValue < bValue ? 1 : -1;
-                }
-            });
-
-            while (tableBody.firstChild) {
-                tableBody.removeChild(tableBody.firstChild);
-            }
-            rows.forEach(row => tableBody.appendChild(row));
-
-            showPage(currentPage);
-        }
-
-        // Helper function to handle prev page
-        function handlePrevPage() {
-            if (currentPage > 1) {
-                currentPage--;
-                showPage(currentPage);
-            }
-        }
-        
-        // Helper function to handle next page
-        function handleNextPage() {
-            if (currentPage * rowsPerPage < rows.length) {
-                currentPage++;
-                showPage(currentPage);
-            }
-        }
-        
-        // Helper function to handle first page
-        function handleFirstPage() {
-            currentPage = 1;
-            showPage(currentPage);
-        }
-        
-        // Helper function to handle last page
-        function handleLastPage() {
-            currentPage = Math.ceil(rows.length / rowsPerPage);
-            showPage(currentPage);
-        }
-        
-        // Helper function to handle page input
-        function handlePageInput(inputElement) {
-            const desiredPage = parseInt(inputElement.value);
-            if (!isNaN(desiredPage)) {
-                const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-                currentPage = Math.min(Math.max(1, desiredPage), maxPage);
-                showPage(currentPage);
-            }
-        }
-        
-        // Mobile pagination controls
-        const prevPageMobile = document.getElementById("prevPage");
-        const nextPageMobile = document.getElementById("nextPage");
-        const firstPageMobile = document.getElementById("firstPage");
-        const lastPageMobile = document.getElementById("lastPage");
-        const pageInputMobile = document.getElementById("pageInput");
-        
-        // Desktop pagination controls
-        const prevPageDesktop = document.getElementById("prevPageDesktop");
-        const nextPageDesktop = document.getElementById("nextPageDesktop");
-        const firstPageDesktop = document.getElementById("firstPageDesktop");
-        const lastPageDesktop = document.getElementById("lastPageDesktop");
-        const pageInputDesktop = document.getElementById("pageInputDesktop");
-        
-        // Add event listeners for mobile
-        if (prevPageMobile) prevPageMobile.addEventListener("click", handlePrevPage);
-        if (nextPageMobile) nextPageMobile.addEventListener("click", handleNextPage);
-        if (firstPageMobile) firstPageMobile.addEventListener("click", handleFirstPage);
-        if (lastPageMobile) lastPageMobile.addEventListener("click", handleLastPage);
-        if (pageInputMobile) pageInputMobile.addEventListener("change", () => handlePageInput(pageInputMobile));
-        
-        // Add event listeners for desktop
-        if (prevPageDesktop) prevPageDesktop.addEventListener("click", handlePrevPage);
-        if (nextPageDesktop) nextPageDesktop.addEventListener("click", handleNextPage);
-        if (firstPageDesktop) firstPageDesktop.addEventListener("click", handleFirstPage);
-        if (lastPageDesktop) lastPageDesktop.addEventListener("click", handleLastPage);
-        if (pageInputDesktop) pageInputDesktop.addEventListener("change", () => handlePageInput(pageInputDesktop));
+        updateBulkActionsVisibility();
 
         // Checkbox functionality
         selectAllCheckbox.addEventListener('change', (e) => {
@@ -1886,44 +1696,36 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             row.querySelector('.new-total').textContent = Number.isInteger(newTotal) ? String(newTotal) : String(Math.round(newTotal * 10000) / 10000);
         }
 
+        function buildReceivingItemsFromDraft() {
+            const map = collectReceivingDraftMap();
+            const items = [];
+            Object.keys(map).forEach(id => {
+                const entry = map[id];
+                const quantity = parseFloat(entry.q) || 0;
+                if (quantity === 0) return;
+                const currentStock = parseFloat(entry.cs) || 0;
+                const price = parseFloat(entry.p) || 0;
+                const buyingPrice = entry.bp !== undefined && String(entry.bp).trim() !== ''
+                    ? (parseFloat(entry.bp) || 0)
+                    : price;
+                items.push({
+                    product_id: id,
+                    product_name: entry.name || ('Product #' + id),
+                    current_stock: currentStock,
+                    quantity: quantity,
+                    new_total: currentStock + quantity,
+                    price: price,
+                    buying_price: buyingPrice,
+                    total_value: price * quantity,
+                    total_cost: buyingPrice * quantity
+                });
+            });
+            return items;
+        }
+
         // OPTIMIZED Real-time items being added functionality
         function updateItemsBeingAdded() {
-            const items = [];
-            const rows = allRows; // Use cached rows
-            
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                const quantityInput = row.querySelector('.receiving-quantity');
-                const quantity = parseFloat(quantityInput.value) || 0;
-                
-                if (quantity > 0) {
-                    const productId = row.dataset.productId;
-                    const productName = row.children[2].textContent.trim();
-                    const currentStock = parseFloat(row.querySelector('.current-stock').textContent) || 0;
-                    
-                    // Get the product price from the row data
-                    const priceElement = row.querySelector('.product-price');
-                    const price = priceElement ? parseFloat(priceElement.textContent.replace('N$', '').replace(/,/g, '').trim()) : 0;
-                    
-                    // Get the buying price
-                    const buyingPriceInput = row.querySelector('.buying-price-input');
-                    const buyingPrice = buyingPriceInput ? (parseFloat(buyingPriceInput.value) || parseFloat(buyingPriceInput.dataset.originalBuyingPrice)) : price;
-                    
-                    items.push({
-                        product_id: productId,
-                        product_name: productName,
-                        current_stock: currentStock,
-                        quantity: quantity,
-                        new_total: currentStock + quantity,
-                        price: price,
-                        buying_price: buyingPrice,
-                        total_value: price * quantity,
-                        total_cost: buyingPrice * quantity
-                    });
-                }
-            }
-            
-            // Cache the items to avoid unnecessary DOM updates
+            const items = buildReceivingItemsFromDraft();
             if (JSON.stringify(items) !== JSON.stringify(itemsBeingAddedCache)) {
                 itemsBeingAddedCache = items;
                 displayItemsBeingAdded(items);
@@ -1970,8 +1772,8 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                         <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-900 font-medium">
                             <span class="text-teal-600">N$ ${item.price.toFixed(2)}</span>
                         </td>
-                        <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-teal-600 font-semibold">
-                            +${item.quantity}
+                        <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm font-semibold ${item.quantity < 0 ? 'text-orange-600' : 'text-teal-600'}">
+                            ${item.quantity > 0 ? '+' : ''}${item.quantity}${item.quantity < 0 ? '<div class="text-[9px] sm:text-[10px] font-medium">Transfer</div>' : ''}
                         </td>
                         <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-gray-500">
                             <span class="inline-flex items-center px-1 sm:px-2 lg:px-2.5 py-0.5 rounded-full text-[9px] sm:text-[10px] lg:text-xs font-medium bg-gray-100 text-gray-800">
@@ -2031,29 +1833,35 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
         }
 
         function removeItem(productId) {
-            const row = document.querySelector(`[data-product-id="${productId}"]`);
+            const map = readReceivingDraftMap();
+            delete map[productId];
+            try {
+                const key = getReceivingDraftKey();
+                if (Object.keys(map).length === 0) {
+                    localStorage.removeItem(key);
+                } else {
+                    localStorage.setItem(key, JSON.stringify(map));
+                }
+            } catch (e) { /* ignore */ }
+            const row = document.querySelector(`.receiving-row[data-product-id="${productId}"]`);
             if (row) {
                 const quantityInput = row.querySelector('.receiving-quantity');
                 quantityInput.value = '';
                 updateNewTotal(row);
-                scheduleUpdateItems();
-                scheduleSaveReceivingDraft();
             }
+            scheduleUpdateItems();
         }
 
         // Clear all button functionality - OPTIMIZED
         document.getElementById('clearAllBtn').addEventListener('click', () => {
-            const rows = document.querySelectorAll('.receiving-row');
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
+            document.querySelectorAll('.receiving-row').forEach(row => {
                 const quantityInput = row.querySelector('.receiving-quantity');
                 const buyingPriceInput = row.querySelector('.buying-price-input');
                 const originalBuyingPrice = buyingPriceInput.dataset.originalBuyingPrice;
-                
                 quantityInput.value = '';
                 buyingPriceInput.value = originalBuyingPrice;
                 updateNewTotal(row);
-            }
+            });
             
             // Clear checkboxes
             const checkboxes = document.querySelectorAll('.product-checkbox');
@@ -2071,27 +1879,13 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
 
         // Submit receiving with premium loader
         submitReceivingBtn.addEventListener('click', async () => {
-            const items = [];
-            const rows = document.querySelectorAll('.receiving-row');
-            
-            rows.forEach(row => {
-                const quantityInput = row.querySelector('.receiving-quantity');
-                const productId = row.dataset.productId;
-                
-                const quantity = parseFloat(quantityInput.value) || 0;
-                
-                if (quantity > 0) {
-                    const buyingPriceInput = row.querySelector('.buying-price-input');
-                    const buyingPrice = buyingPriceInput
-                        ? (parseFloat(buyingPriceInput.value) || parseFloat(buyingPriceInput.dataset.originalBuyingPrice) || 0)
-                        : 0;
-                    items.push({
-                        product_id: productId,
-                        quantity: quantity,
-                        buying_price: buyingPrice
-                    });
-                }
-            });
+            saveReceivingDraftToStorage();
+            const draftItems = buildReceivingItemsFromDraft();
+            const items = draftItems.map(item => ({
+                product_id: item.product_id,
+                quantity: item.quantity,
+                buying_price: item.buying_price
+            }));
             
             if (items.length === 0) {
                 showToast('Please enter quantities for at least one product', 'error');
@@ -2164,7 +1958,7 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
                 // Reset form
                 suppressReceivingDraftSave = true;
                 clearCurrentReceivingDraft();
-                rows.forEach(row => {
+                document.querySelectorAll('.receiving-row').forEach(row => {
                     row.querySelector('.receiving-quantity').value = '';
                     updateNewTotal(row);
                 });
@@ -2330,5 +2124,6 @@ $preselectedSupplierId = isset($_GET['supplier_id']) ? (int) $_GET['supplier_id'
             hamburger.classList.remove('open');
         }
     </script>
+    <script src="../js/receiving-table.js"></script>
 </body>
 </html>

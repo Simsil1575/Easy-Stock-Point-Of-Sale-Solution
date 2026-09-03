@@ -198,10 +198,12 @@ function uiCanCustomizeScope(string $role, string $scope, PDO $infoDb, string $u
         return false;
     }
 
-    $privileged = in_array($role, ['admin', 'manager'], true);
+    if ($role === 'manager') {
+        return false;
+    }
+
     $roleScopes = [
-        'admin' => ['admin_menu', 'admin_reports', 'cashier_menu', 'cashier_reports'],
-        'manager' => ['manager_menu', 'manager_reports', 'cashier_menu', 'cashier_reports'],
+        'admin' => ['admin_menu', 'admin_reports', 'manager_menu', 'manager_reports', 'cashier_menu', 'cashier_reports'],
         'cashier' => ['cashier_menu', 'cashier_reports'],
         'waitress' => ['cashier_menu', 'cashier_reports'],
     ];
@@ -214,7 +216,7 @@ function uiCanCustomizeScope(string $role, string $scope, PDO $infoDb, string $u
         if ($scope !== uiPersonalScope($baseScope, $userId)) {
             return false;
         }
-        if ($privileged) {
+        if ($role === 'admin') {
             return true;
         }
         if (!in_array($role, ['cashier', 'waitress'], true)) {
@@ -238,20 +240,24 @@ function uiCanCustomizeScope(string $role, string $scope, PDO $infoDb, string $u
  *   hiddenUiCards: list<string>,
  *   orderedUiCards: list<string>,
  *   showHiddenUiCards: bool,
- *   uiCardsCustomizeMode: bool
+ *   uiCardsCustomizeMode: bool,
+ *   uiCardsCanCustomize: bool
  * }
  */
-function uiCardsInitPageState(PDO $infoDb, string $baseScope, string $userId, bool $personalScope = false): array
+function uiCardsInitPageState(PDO $infoDb, string $baseScope, string $userId, bool $personalScope = false, ?string $role = null): array
 {
     ensureUiCardsSchema($infoDb);
     $scope = $personalScope ? uiPersonalScope($baseScope, $userId) : $baseScope;
     $showHiddenUiCards = isset($_GET['show_hidden']);
+    $roleNorm = strtolower(trim((string) ($role ?? '')));
+    $canCustomize = $roleNorm !== '' && uiCanCustomizeScope($roleNorm, $scope, $infoDb, $userId);
 
     return [
         'uiCardScope' => $scope,
         'hiddenUiCards' => uiGetHiddenCards($infoDb, $scope),
         'orderedUiCards' => uiGetCardOrder($infoDb, $scope),
         'showHiddenUiCards' => $showHiddenUiCards,
-        'uiCardsCustomizeMode' => isset($_GET['customize']) || $showHiddenUiCards,
+        'uiCardsCanCustomize' => $canCustomize,
+        'uiCardsCustomizeMode' => $canCustomize && (isset($_GET['customize']) || $showHiddenUiCards),
     ];
 }

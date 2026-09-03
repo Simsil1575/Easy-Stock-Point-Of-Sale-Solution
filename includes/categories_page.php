@@ -49,6 +49,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: categories');
             exit();
         }
+        if ($action === 'delete_category') {
+            $toDelete = trim((string) ($_POST['category_name'] ?? $_POST['category'] ?? ''));
+            $uncategorized = catDelete($db, $toDelete);
+            $_SESSION['cat_flash'] = $uncategorized > 0
+                ? 'Category deleted. ' . $uncategorized . ' product(s) are now uncategorized.'
+                : 'Category deleted.';
+            header('Location: categories');
+            exit();
+        }
         if ($action === 'assign_products' && $redirectCategory !== '') {
             $productIds = $_POST['product_ids'] ?? [];
             if (!is_array($productIds)) {
@@ -180,6 +189,11 @@ $monthStart = date('Y-m-01');
                             </a>
                             <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2"><?= htmlspecialchars($viewCategoryRow['category']) ?></h1>
                             <p class="text-gray-600"><?= (int) $viewCategoryRow['product_count'] ?> products in this category</p>
+                            <button type="button"
+                                class="mt-3 inline-flex items-center gap-2 px-3 py-1.5 text-sm border border-red-200 text-red-700 rounded-lg hover:bg-red-50"
+                                onclick='deleteCategory(<?= json_encode($viewCategoryRow['category'], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, <?= (int) $viewCategoryRow['product_count'] ?>)'>
+                                <i class="fas fa-trash-alt"></i> Delete category
+                            </button>
                         <?php else: ?>
                             <h1 class="text-2xl lg:text-3xl font-bold text-gray-800 mb-2">Categories</h1>
                             <p class="text-gray-600">Quick access to product categories for inventory and reports</p>
@@ -410,6 +424,11 @@ $monthStart = date('Y-m-01');
                                                     title="Sales report">
                                                     <i class="fas fa-chart-pie"></i>
                                                 </a>
+                                                <button type="button"
+                                                    class="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-white border border-red-200 text-red-700 hover:bg-red-50"
+                                                    onclick='deleteCategory(<?= $jsName ?>, <?= (int) $row['product_count'] ?>)' title="Delete category">
+                                                    <i class="fas fa-trash-alt"></i><span class="hidden sm:inline">Delete</span>
+                                                </button>
                                             </div>
                                         </td>
                                     </tr>
@@ -480,6 +499,11 @@ $monthStart = date('Y-m-01');
             </form>
         </div>
     </div>
+
+    <form method="post" action="categories" id="deleteCategoryForm" class="hidden">
+        <input type="hidden" name="action" value="delete_category">
+        <input type="hidden" name="category_name" id="deleteCategoryName" value="">
+    </form>
 
     <div class="modal-overlay" id="addCategoryModal" onclick="if(event.target===this)closeAddCategoryModal()">
         <div class="modal-panel p-6 shadow-xl" role="dialog" aria-labelledby="addCategoryTitle">
@@ -621,6 +645,21 @@ $monthStart = date('Y-m-01');
         function closeAddCategoryModal() {
             var modal = document.getElementById('addCategoryModal');
             if (modal) modal.classList.remove('active');
+        }
+        function deleteCategory(name, productCount) {
+            name = String(name || '').trim();
+            if (!name) return;
+            productCount = Number(productCount) || 0;
+            var msg = 'Delete category "' + name + '"?';
+            if (productCount > 0) {
+                msg += '\n\n' + productCount + ' product(s) will become uncategorized.';
+            }
+            if (!confirm(msg)) return;
+            var input = document.getElementById('deleteCategoryName');
+            var form = document.getElementById('deleteCategoryForm');
+            if (!input || !form) return;
+            input.value = name;
+            form.submit();
         }
         function openAssignProductsModal(category) {
             var modal = document.getElementById('assignProductsModal');

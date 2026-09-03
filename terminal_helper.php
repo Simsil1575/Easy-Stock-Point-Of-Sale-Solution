@@ -32,6 +32,11 @@ function ensureTerminalSchema(PDO $db): void
         first_seen_at TEXT,
         last_seen_at TEXT
     )");
+    try {
+        $db->exec("ALTER TABLE terminals ADD COLUMN pole_display_port TEXT NOT NULL DEFAULT ''");
+    } catch (PDOException $e) {
+        // Column already exists
+    }
 
     $tables = [
         'orders',
@@ -59,7 +64,7 @@ function ensureTerminalSchema(PDO $db): void
 
 function getTerminalByMac(PDO $db, string $mac): ?array
 {
-    $stmt = $db->prepare('SELECT mac_address, terminal_name, first_seen_at, last_seen_at FROM terminals WHERE mac_address = ? LIMIT 1');
+    $stmt = $db->prepare('SELECT mac_address, terminal_name, first_seen_at, last_seen_at, pole_display_port FROM terminals WHERE mac_address = ? LIMIT 1');
     $stmt->execute([$mac]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;
@@ -108,8 +113,20 @@ function resolveTerminalFromRequest(array $data, PDO $db): array
 function getAllTerminals(PDO $db): array
 {
     ensureTerminalSchema($db);
-    $stmt = $db->query('SELECT mac_address, terminal_name, first_seen_at, last_seen_at FROM terminals ORDER BY terminal_name COLLATE NOCASE, mac_address');
+    $stmt = $db->query('SELECT mac_address, terminal_name, first_seen_at, last_seen_at, pole_display_port FROM terminals ORDER BY terminal_name COLLATE NOCASE, mac_address');
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+function setTerminalPoleDisplayPort(PDO $db, string $mac, string $port): void
+{
+    ensureTerminalSchema($db);
+    $port = strtoupper(trim($port));
+    if ($port !== 'AUTO' && !preg_match('/^COM\d+$/', $port) && $port !== '') {
+        $port = '';
+    }
+    upsertTerminal($db, $mac, null);
+    $stmt = $db->prepare('UPDATE terminals SET pole_display_port = ? WHERE mac_address = ?');
+    $stmt->execute([$port, $mac]);
 }
 
 function formatTerminalLabel(?string $name, ?string $mac): string
@@ -124,4 +141,33 @@ function formatTerminalLabel(?string $name, ?string $mac): string
         return $mac;
     }
     return 'Unknown terminal';
+}
+
+function reportTerminalFilterKey(?string $name, ?string $mac): string
+{
+    $mac = trim((string) $mac);
+    if ($mac !== '') {
+        return $mac;
+    }
+    $name = trim((string) $name);
+    if ($name !== '') {
+        return 'name:' . $name;
+    }
+    return '__unknown__';
+}
+
+/** @param array<int, array<string, mixed>> $rows @return array<string, string> */
+function buildReportTerminalsList(array $rows): array
+{
+    $terminals = [];
+    foreach ($rows as $row) {
+        $name = $row['terminal_name'] ?? null;
+        $mac = $row['terminal_mac'] ?? null;
+        $key = reportTerminalFilterKey($name, $mac);
+        if (!isset($terminals[$key])) {
+            $terminals[$key] = formatTerminalLabel($name, $mac);
+        }
+    }
+    asort($terminals, SORT_NATURAL | SORT_FLAG_CASE);
+    return $terminals;
 }

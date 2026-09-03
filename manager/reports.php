@@ -22,6 +22,9 @@ if ($activationStatus == 0) {
 
 require_once __DIR__ . '/../business_day_helper.php';
 require_once __DIR__ . '/../invoice_transactions_helper.php';
+require_once __DIR__ . '/../medical_aid_transactions_helper.php';
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
+require_once __DIR__ . '/../medical_aid_lib.php';
 require_once __DIR__ . '/../terminal_helper.php';
 
 $bdCtx = bdLoadClosingContext(__DIR__ . '/../info.db');
@@ -33,6 +36,7 @@ $db = new PDO('sqlite:../pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
+medicalAidBootstrap();
 
 require_once __DIR__ . '/../ensure_laybye_schema.php';
 ensureLaybyeSchema($db);
@@ -175,6 +179,8 @@ $eftCreditSalesTotal = $eftCreditSalesQuery->fetchColumn() ?: 0;
 
 $invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
 $invoiceEftPayments = sumInvoiceEftPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$medicalAidUnpaidTotal = sumMedicalAidUnpaid($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$medicalAidPaymentsTotal = sumMedicalAidPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
 
 // Total EFT payments including both regular EFT and credit sales with payment_status 'eft'
 $totalEftPayments = $eftSalesTotal + $eftCreditSalesTotal + $invoiceEftPayments;
@@ -236,11 +242,15 @@ $paidCreditData = $paidCreditQuery->fetch(PDO::FETCH_ASSOC);
 $paidCreditAmount = $paidCreditData['paid_credit'] ?: 0;
 $totalTransactions = $paidCreditData['total_transactions'] ?: 0;
 
-// Update cash sales display total to include partial payments
-$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount + $invoiceCashPayments - $eftCreditSalesTotal ;
+$expenseTotal = sumExpenseReportTotal($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$cashBackTotal = sumCashBackReportTotal($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$cashTillDeductions = sumCashTillDeductionsReportTotal($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+
+// Update cash sales display total to include partial payments, invoice cash, and subtract expenses/cash back
+$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount + $invoiceCashPayments - $eftCreditSalesTotal - $cashTillDeductions;
 
 // Total revenue includes all sales regardless of payment method (only for selected date)
-$totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments -$partialPaidTotal - $eftCreditSalesTotal;
+$totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments + $medicalAidUnpaidTotal + $medicalAidPaymentsTotal - $partialPaidTotal - $eftCreditSalesTotal - $cashTillDeductions;
 
 // Fetch top selling products with business day logic
 $topProductsQuery = $db->prepare("
@@ -321,7 +331,7 @@ $ordersQuery = $db->prepare("
         LEFT JOIN creditors cr ON cr.id = la.creditor_id
     ), order_splits AS (
         SELECT o.id, o.total, o.created_at, o.cashier_id, o.terminal_name, o.terminal_mac, op.products, os.eft_sum, os.provider_name,
-               MAX(o.total - COALESCE(os.eft_sum,0), 0) AS cash_amount,
+               (o.total - COALESCE(os.eft_sum, 0)) AS cash_amount,
                MAX(COALESCE(os.eft_sum,0), 0) AS eft_amount,
                oti.tab_name, oti.tab_cashier_id, COALESCE(oti.tips, 0) as tips,
                MAX(olb.laybye_id) AS laybye_id, MAX(olb.laybye_reference) AS laybye_reference,
@@ -338,6 +348,11 @@ $ordersQuery = $db->prepare("
            laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name, terminal_name, terminal_mac
     FROM order_splits
     WHERE cash_amount > 0
+    UNION ALL
+    SELECT id, cash_amount AS total, tips, created_at, products, 'cash_back' AS sale_type, 'paid' AS payment_status, NULL AS provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
+           laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name, terminal_name, terminal_mac
+    FROM order_splits
+    WHERE cash_amount < 0
     UNION ALL
     SELECT id, eft_amount AS total, tips, created_at, products, 'eft' AS sale_type, 'paid' AS payment_status, provider_name, NULL AS creditor_name, cashier_id, tab_name, tab_cashier_id,
            laybye_id, laybye_reference, laybye_payment_kind, laybye_creditor_name, terminal_name, terminal_mac
@@ -405,7 +420,11 @@ $creditResult = $creditQuery->fetchAll(PDO::FETCH_ASSOC);
 
 // Combine results
 $invoicePaymentRows = fetchInvoicePaymentReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
-$salesData = array_merge($ordersResult, $creditResult, $invoicePaymentRows);
+$medicalAidSaleRows = fetchMedicalAidSaleReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$medicalAidPaymentRows = fetchMedicalAidPaymentReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$expenseRows = fetchExpenseReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$cashBackRows = fetchCashBackReportRows($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$salesData = array_merge($ordersResult, $creditResult, $invoicePaymentRows, $medicalAidSaleRows, $medicalAidPaymentRows, $expenseRows, $cashBackRows);
 
 // Sort combined results by created_at in descending order (most recent first)
 usort($salesData, function($a, $b) {
@@ -413,6 +432,8 @@ usort($salesData, function($a, $b) {
     $bDate = isset($b['payment_date']) && $b['payment_date'] ? strtotime($b['payment_date']) : strtotime($b['created_at']);
     return $bDate - $aDate;
 });
+
+$reportTerminals = buildReportTerminalsList($salesData);
 
 // Fetch daily breakdown data for the date with business day logic
 $dailyBreakdownQuery = $db->prepare("
@@ -482,14 +503,14 @@ $dailyBreakdownQuery = $db->prepare("
         
         UNION ALL
         
-        -- Include cash-out transactions as expenses
+        -- Include cash-out and refund transactions as expenses
         SELECT 
             date(created_at) as business_date,
-            amount,
-            'cash-out' as source,
+            CASE WHEN type = 'refund' THEN ABS(amount) ELSE amount END as amount,
+            type as source,
             'expense' as transaction_type
         FROM cash_transactions
-        WHERE type = 'cash-out'
+        WHERE type IN ('cash-out', 'refund')
     ) t
     WHERE business_date = :selectedDate
     GROUP BY sale_date
@@ -705,10 +726,25 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             align-items: center !important;
             margin: 0 !important;
         }
-        .grid {
+        .stats-cards-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); /* Ensure grid items fit within the viewport */
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 1rem;
+        }
+        @media (max-width: 1280px) {
+            .stats-cards-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+        }
+        @media (max-width: 768px) {
+            .stats-cards-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        @media (max-width: 480px) {
+            .stats-cards-grid {
+                grid-template-columns: 1fr;
+            }
         }
         .bg-header {
             background-color: #f3f4f6;
@@ -1033,16 +1069,6 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                             <span></span>
                         </div>
                         <h1 class="text-lg sm:text-xl lg:text-2xl font-bold whitespace-nowrap flex-shrink-0">Daily Report</h1>
-                        <a href="weekly_sales.php" class="inline-flex items-center px-2 sm:px-3 lg:px-4 py-1.5 sm:py-2 text-xs sm:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap flex-shrink-0">
-                            <i class="fas fa-calendar-week mr-1 sm:mr-2"></i>
-                            <span class="hidden sm:inline">Weekly Sales</span>
-                            <span class="sm:hidden">Weekly</span>
-                        </a>
-                        <a href="monthly_sales.php" class="inline-flex items-center px-2 sm:px-3 lg:px-4 py-1.5 sm:py-2 text-xs sm:text-sm border border-gray-300 rounded-md shadow-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition duration-150 ease-in-out whitespace-nowrap flex-shrink-0">
-                            <i class="fas fa-calendar-alt mr-1 sm:mr-2"></i>
-                            <span class="hidden sm:inline">Monthly Sales</span>
-                            <span class="sm:hidden">Monthly</span>
-                        </a>
                     </div>
                     
                     <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0 min-w-0">
@@ -1078,14 +1104,14 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             <div class="w-full px-4 lg:px-6 py-6">
                 <!-- Stats Cards -->
                 <?php if (count($salesData) > 0): ?>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="stats-cards-grid mb-8">
 
 <!-- Cash Sales Card -->
 <div class="bg-card rounded-xl shadow-sm border border-border p-6 transform hover:scale-105 transition-transform duration-200 cursor-pointer" data-filter-type="cash" onclick="filterByCard('cash')">
     <div class="flex items-center justify-between mb-4">
         <div>
             <p class="text-sm font-medium text-muted-foreground">Cash Sales</p>
-            <h3 class="text-2xl font-bold text-teal-600">N$<?= number_format($cashSalesDisplayTotal, 2) ?></h3>
+            <h3 class="text-2xl font-bold <?= $cashSalesDisplayTotal < 0 ? 'text-red-600' : 'text-teal-600' ?>">N$<?= number_format($cashSalesDisplayTotal, 2) ?></h3>
         </div>
         <div class="p-3 bg-teal-100 rounded-full">
             <i class="fas fa-dollar-sign text-teal-600 text-lg"></i>
@@ -1127,7 +1153,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
     <div class="flex items-center justify-between mb-4">
         <div>
             <p class="text-sm font-medium text-muted-foreground">Total Revenue</p>
-            <h3 class="text-2xl font-bold text-gray-600">N$<?= number_format($totalCashOnHand, 2) ?></h3>
+            <h3 class="text-2xl font-bold <?= $totalCashOnHand < 0 ? 'text-red-600' : 'text-gray-600' ?>">N$<?= number_format($totalCashOnHand, 2) ?></h3>
         </div>
         <div class="p-3 bg-gray-100 rounded-full">
             <i class="fas fa-wallet text-gray-600 text-lg"></i>
@@ -1137,10 +1163,10 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
 </div>
 </div>
 
-<!-- Cash Transactions Table -->
+<!-- Sales Table (Transactions / Per Item) -->
 <div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
-    <div class="flex items-center justify-between p-2 bg-gray-300">
-        <h2 class="text-xl font-bold p-1 text-gray-500 pr-4">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-2 bg-gray-300">
+        <h2 id="reportTableTitle" class="text-xl font-bold p-1 text-gray-500 pr-4">
             <span class="inline-flex items-center">
                 <svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M7 20l5-5 5 5"></path>
@@ -1149,16 +1175,48 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                 Transactions
             </span>
         </h2>
-        <div class="relative max-w-xs">
-            <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                <svg class="w-3 h-3 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
-                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
-                </svg>
+        <div class="flex flex-wrap items-center gap-2 justify-end">
+            <select id="reportViewMode" onchange="setReportView(this.value)" class="bg-white border border-gray-400 text-gray-700 text-sm rounded-lg focus:ring-gray-500 focus:border-gray-500 block py-1.5 px-2.5 shadow-sm font-medium">
+                <option value="transactions">Transactions</option>
+                <option value="items">Per Item</option>
+            </select>
+            <div id="transactionViewFilters" class="flex flex-wrap items-center gap-2">
+                <select id="terminalFilter" onchange="filterByTerminal()" class="bg-white border border-gray-400 text-gray-700 text-sm rounded-lg focus:ring-gray-500 focus:border-gray-500 block py-1.5 px-2.5 shadow-sm">
+                    <option value="">All Terminals</option>
+                    <?php foreach ($reportTerminals as $terminalKey => $terminalLabel): ?>
+                        <option value="<?= htmlspecialchars($terminalKey) ?>"><?= htmlspecialchars($terminalLabel) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <div class="relative max-w-xs">
+                    <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                        <svg class="w-3 h-3 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
+                        </svg>
+                    </div>
+                    <input type="text" id="search" onkeyup="filterSales()" placeholder="Search by any field..."
+                           class="w-full pl-8 pr-3 py-1.5 border border-gray-400 rounded-lg focus:ring-2 focus:ring-gray-500 focus:outline-none focus:border-gray-500 shadow-sm transition duration-200 text-sm">
+                </div>
             </div>
-            <input type="text" id="search" onkeyup="filterSales()" placeholder="Search by any field..." 
-                   class="w-full pl-8 pr-3 py-1.5 border border-gray-400 rounded-lg focus:ring-2 focus:ring-gray-500 focus:outline-none focus:border-gray-500 shadow-sm transition duration-200 text-sm">
+            <div id="itemViewFilters" class="hidden flex flex-wrap items-center gap-2">
+                <select id="paymentMethodFilter" onchange="filterProducts()" class="bg-white border border-gray-400 text-gray-700 text-sm rounded-lg focus:ring-gray-500 focus:border-gray-500 block py-1.5 px-2.5 shadow-sm">
+                    <option value="all">All Methods</option>
+                    <option value="cash">Cash Only</option>
+                    <option value="eft">EFT Only</option>
+                    <option value="credit">Credit Only</option>
+                </select>
+                <div class="relative max-w-xs">
+                    <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                        <svg class="w-3 h-3 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
+                        </svg>
+                    </div>
+                    <input type="text" id="productSearch" onkeyup="filterProducts()" placeholder="Search products..."
+                           class="w-full pl-8 pr-3 py-1.5 border border-gray-400 rounded-lg focus:ring-2 focus:ring-gray-500 focus:outline-none focus:border-gray-500 shadow-sm transition duration-200 text-sm">
+                </div>
+            </div>
         </div>
     </div>
+    <div id="transactionsView">
     <div class="table-container">
         <table class="min-w-full table-auto">
                 <thead class="sticky top-0 select-none">
@@ -1229,11 +1287,26 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                     if (count($salesData) > 0) {
                         foreach($salesData as $row) {
                     ?>
-                        <tr class="hover:bg-gray-50 transition-colors expandable-row">
+                        <tr class="hover:bg-gray-50 transition-colors expandable-row"
+                            data-terminal="<?= htmlspecialchars(reportTerminalFilterKey($row['terminal_name'] ?? null, $row['terminal_mac'] ?? null), ENT_QUOTES) ?>">
                             <td class="py-1 px-2 text-sm font-medium text-gray-500 text-center" data-label="ID"><?= $row['id'] ?></td>
                             <td class="py-1 px-2 text-sm font-medium text-gray-500 text-center" data-label="Type">
                                 <div class="flex justify-center items-center">
-                                    <?php if ($row['sale_type'] === 'credit' && $row['payment_status'] === 'unpaid'): ?>
+                                    <?php if (reportsIsOutflowRow($row)): ?>
+                                    <?php if (($row['sale_type'] ?? '') === 'cash_back'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-rose-100 text-rose-800 border border-rose-200 shadow-sm">
+                                        <span>Cash Back</span>
+                                    </span>
+                                    <?php elseif (($row['sale_type'] ?? '') === 'refund' || stripos((string) ($row['products'] ?? ''), 'Refund for Order #') !== false): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-orange-100 text-orange-800 border border-orange-200 shadow-sm">
+                                        <span>Refund</span>
+                                    </span>
+                                    <?php else: ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800 border border-red-200 shadow-sm">
+                                        <span>Expense</span>
+                                    </span>
+                                    <?php endif; ?>
+                                    <?php elseif ($row['sale_type'] === 'credit' && $row['payment_status'] === 'unpaid'): ?>
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-amber-100 text-amber-800 border border-amber-200 shadow-sm">
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
                                         <span>Unpaid Credit</span>
@@ -1257,6 +1330,14 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200 shadow-sm">
                                         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"></path><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"></path></svg>
                                         <span>EFT</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'medical_aid_unpaid'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-sky-100 text-sky-800 border border-sky-200 shadow-sm">
+                                        <span>Medical Aid (Unpaid)</span>
+                                    </span>
+                                    <?php elseif ($row['sale_type'] === 'medical_aid_payment'): ?>
+                                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800 border border-green-200 shadow-sm">
+                                        <span>Medical Aid Payment</span>
                                     </span>
                                     <?php elseif ($row['sale_type'] === 'invoice_cash'): ?>
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-sm">
@@ -1288,7 +1369,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                     <?php endif; ?>
                                 </div>
                             </td>
-                            <td class="py-1 px-2 text-sm font-bold text-gray-900" data-label="Total">N$<?= number_format($row['total'], 2) ?></td>
+                            <td class="py-1 px-2 text-sm font-bold <?= reportsIsOutflowRow($row) ? 'text-red-600' : 'text-gray-900' ?>" data-label="Total">N$<?= number_format(reportsDisplayTotal($row), 2) ?></td>
                             <td class="products-cell text-sm text-gray-600" data-label="Products">
                                 <span class="font-medium <?= $row['sale_type'] === 'credit' ? 'text-gray-600' : 'text-gray-600' ?>"><?= htmlspecialchars($row['products']) ?></span>
                                 <?php if (isset($row['creditor_name']) && $row['creditor_name']): ?>
@@ -1353,6 +1434,24 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                 )) : ?>
                                     <button onclick="deleteRecord('credit', '<?= $row['id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Reset Paid/EFT Credit Sale">
                                         <i class="fas fa-trash"></i>
+                                    </button>
+                                <?php elseif ($row['sale_type'] === 'cash_back') : ?>
+                                    <?php if (!empty($row['cash_transaction_id'])): ?>
+                                    <button onclick="deleteRecord('cash', '<?= (int) $row['cash_transaction_id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Cash Back">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                    <?php else: ?>
+                                    <button onclick="deleteRecord('sales', '<?= $row['id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Cash Back">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                    <?php endif; ?>
+                                <?php elseif ($row['sale_type'] === 'expense') : ?>
+                                    <button onclick="deleteRecord('cash', '<?= (int) ($row['cash_transaction_id'] ?? $row['id']) ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Expense">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                <?php elseif ($row['sale_type'] === 'refund') : ?>
+                                    <button onclick="deleteRecord('cash', '<?= (int) ($row['cash_transaction_id'] ?? $row['id']) ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Refund">
+                                        <i class="fas fa-trash-alt"></i>
                                     </button>
                                 <?php elseif ($row['sale_type'] === 'cash') : ?>
                                     <button onclick="deleteRecord('sales', '<?= $row['id'] ?>')" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Cash Sale">
@@ -1434,33 +1533,9 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
-</div>
-
-
-<div class="bg-white shadow-lg rounded-xl overflow-hidden my-8">
-    <div class="flex items-center justify-between p-3 bg-gray-300">
-        <h2 class="text-xl font-bold text-gray-600"><i class="fas fa-box-open mr-2"></i>Products</h2>
-        <div class="flex items-center gap-4">
-            <div class="flex items-center gap-2">
-                <label class="text-sm font-medium text-gray-700">Payment Method:</label>
-                <select id="paymentMethodFilter" onchange="filterProducts()" class="bg-white border border-gray-300 text-gray-700 text-sm rounded-lg focus:ring-gray-500 focus:border-gray-500 block p-2.5">
-                    <option value="all">All Methods</option>
-                    <option value="cash">Cash Only</option>
-                    <option value="eft">EFT Only</option>
-                    <option value="credit">Credit Only</option>
-                </select>
-            </div>
-            <div class="relative">
-                <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                    <svg class="w-3 h-3 text-gray-500" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
-                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"/>
-                    </svg>
-                </div>
-                <input type="text" id="productSearch" onkeyup="filterProducts()" placeholder="Search products..." 
-                       class="w-full pl-8 pr-3 py-1.5 border border-gray-400 rounded-lg focus:ring-2 focus:ring-gray-500 focus:outline-none focus:border-gray-500 shadow-sm transition duration-200 text-sm">
-            </div>
-        </div>
     </div>
+
+    <div id="itemsView" class="hidden">
     <div class="table-container">
         <table class="min-w-full table-auto">
             <thead>
@@ -1611,9 +1686,34 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
+    </div>
 </div>
 
 <script>
+function setReportView(mode) {
+    const transactionsView = document.getElementById('transactionsView');
+    const itemsView = document.getElementById('itemsView');
+    const transactionFilters = document.getElementById('transactionViewFilters');
+    const itemFilters = document.getElementById('itemViewFilters');
+    const titleEl = document.getElementById('reportTableTitle');
+    const isItems = mode === 'items';
+
+    if (transactionsView) transactionsView.classList.toggle('hidden', isItems);
+    if (itemsView) itemsView.classList.toggle('hidden', !isItems);
+    if (transactionFilters) transactionFilters.classList.toggle('hidden', isItems);
+    if (itemFilters) itemFilters.classList.toggle('hidden', !isItems);
+    if (titleEl) {
+        titleEl.innerHTML = isItems
+            ? '<span class="inline-flex items-center"><i class="fas fa-box-open mr-2"></i>Products (Per Item)</span>'
+            : '<span class="inline-flex items-center"><svg class="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20l5-5 5 5"></path><path d="M7 4l5 5 5-5"></path></svg>Transactions</span>';
+    }
+    if (isItems) {
+        filterProducts();
+    } else if (typeof filterByCard === 'function') {
+        filterByCard(window.activeCardFilter || 'all');
+    }
+}
+
 function filterProducts() {
     const searchText = document.getElementById('productSearch').value.toLowerCase();
     const paymentMethod = document.getElementById('paymentMethodFilter').value;
@@ -1739,37 +1839,73 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-function filterByCard(type) {
-    // Filter Sales Table using pagination manager
+function rowMatchesCardFilter(row, type) {
+    const typeCell = row.querySelector('td:nth-child(2) span');
+    if (!typeCell) {
+        return true;
+    }
+    const typeText = typeCell.textContent.toLowerCase();
+    if (type === 'cash') {
+        return typeText.includes('cash sales') ||
+            typeText.includes('cash back') ||
+            typeText.includes('expense') ||
+            typeText.includes('refund') ||
+            ((typeText.includes('credit (cash)') || typeText.includes('credit payment')) && !typeText.includes('eft'));
+    }
+    if (type === 'eft') {
+        return typeText.includes('eft');
+    }
+    if (type === 'unpaid') {
+        return typeText.includes('unpaid credit') || typeText.includes('partial payment');
+    }
+    return true;
+}
+
+function rowMatchesTerminalFilter(row) {
+    const terminalFilter = document.getElementById('terminalFilter');
+    const selectedTerminal = terminalFilter ? terminalFilter.value : '';
+    if (!selectedTerminal) {
+        return true;
+    }
+    return (row.getAttribute('data-terminal') || '') === selectedTerminal;
+}
+
+function rowMatchesSearchFilter(row) {
+    const searchInput = document.getElementById('search');
+    const filter = (searchInput ? searchInput.value : '').toLowerCase().trim();
+    if (!filter) {
+        return true;
+    }
+    const cells = row.getElementsByTagName('td');
+    for (let i = 0; i < cells.length; i++) {
+        if (cells[i].textContent.toLowerCase().includes(filter)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function applySalesFilters() {
+    const type = window.activeCardFilter || 'all';
     if (salesPaginationManager) {
         const allSalesRows = salesPaginationManager.getAllRows();
         const filteredSalesRows = allSalesRows.filter(row => {
-            const typeCell = row.querySelector('td:nth-child(2) span');
-            if (!typeCell) {
-                return true; // Show rows without type cell
-            }
-            const typeText = typeCell.textContent.toLowerCase();
-            let show = false;
-            if (type === 'cash') {
-                // Include Cash Sales and Credit (Cash) payments, but exclude EFT credit payments
-                show = typeText.includes('cash sales') || 
-                       ((typeText.includes('credit (cash)') || typeText.includes('credit payment')) && 
-                        !typeText.includes('eft'));
-            } else if (type === 'eft') {
-                // Include EFT and EFT Credit Payment
-                show = typeText.includes('eft');
-            } else if (type === 'unpaid') {
-                show = typeText.includes('unpaid credit') || typeText.includes('partial payment');
-            } else if (type === 'all') {
-                show = true;
-            }
-            return show;
+            return rowMatchesCardFilter(row, type) &&
+                rowMatchesTerminalFilter(row) &&
+                rowMatchesSearchFilter(row);
         });
-        
-        // Update the pagination manager with filtered rows
         salesPaginationManager.updateCurrentRows(filteredSalesRows);
-        salesPaginationManager.showPage(1); // Reset to first page after filtering
+        salesPaginationManager.showPage(1);
     }
+}
+
+function filterByTerminal() {
+    applySalesFilters();
+}
+
+function filterByCard(type) {
+    window.activeCardFilter = type;
+    applySalesFilters();
     
     // Update Top Products Table Filter
     const paymentMethodFilter = document.getElementById('paymentMethodFilter');
@@ -2014,9 +2150,7 @@ window.addEventListener('DOMContentLoaded', function() {
 
     // Simplified filter function call for the main search bar
     function filterSales() {
-        // Assuming the search bar filters multiple tables or just the main 'All Transactions' table
-        filterTable('search', 'salesTableBody');
-        filterTable('search', 'topProductsTableBody'); // If search should also filter products
+        applySalesFilters();
         if (document.getElementById('dailyBreakdownTableBody')) {
             filterTable('search', 'dailyBreakdownTableBody');
         }
@@ -2303,8 +2437,19 @@ window.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showNotification('Success', 'Record deleted successfully.', 'success');
-                    location.reload();
+                    const afterVoidPrint = () => {
+                        showNotification('Success', 'Record deleted successfully.', 'success');
+                        location.reload();
+                    };
+                    if (data.void_receipt && typeof printVoidReceiptIfPresent === 'function') {
+                        printVoidReceiptIfPresent(data.void_receipt).finally(afterVoidPrint);
+                    } else if (data.void_receipt && typeof sendToPrinter === 'function') {
+                        sendToPrinter(data.void_receipt).catch(function(err) {
+                            console.error('Void receipt printing error:', err);
+                        }).finally(afterVoidPrint);
+                    } else {
+                        afterVoidPrint();
+                    }
                 } else {
                     showNotification('Error', 'Error deleting record: ' + (data.message || 'Unknown error'), 'error');
                 }

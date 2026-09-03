@@ -8,6 +8,27 @@
 
         let cart = [];
 
+        function getAvailableQuantityForProductName(productName) {
+            const productElement = document.querySelector(`.product-item[data-name="${productName}"]`);
+            if (!productElement) {
+                return null;
+            }
+            if (productElement.dataset.availableQuantity !== undefined && productElement.dataset.availableQuantity !== '') {
+                const fromData = parseInt(productElement.dataset.availableQuantity, 10);
+                if (!Number.isNaN(fromData)) {
+                    return fromData;
+                }
+            }
+            const quantityElement = productElement.querySelector('p:last-child');
+            if (quantityElement && quantityElement.textContent.includes('Available:')) {
+                const parsed = parseInt(quantityElement.textContent.split(': ')[1], 10);
+                if (!Number.isNaN(parsed)) {
+                    return parsed;
+                }
+            }
+            return null;
+        }
+
         function addToCart(element) {
             const price = parseFloat(element.getAttribute('data-price'));
             const name = element.getAttribute('data-name');
@@ -64,13 +85,11 @@
 
             // Check if any item in the cart has zero inventory
             const outOfStockItems = cart.filter(item => {
-                const productElement = document.querySelector(`.product-item[data-name="${item.name}"]`);
-                if (productElement) {
-                    const quantityElement = productElement.querySelector('p:last-child');
-                    const availableQuantity = parseInt(quantityElement.textContent.split(': ')[1]);
-                    return availableQuantity < item.quantity;
+                const availableQuantity = getAvailableQuantityForProductName(item.name);
+                if (availableQuantity === null) {
+                    return true;
                 }
-                return false;
+                return availableQuantity < item.quantity;
             });
 
             if (outOfStockItems.length > 0) {
@@ -146,6 +165,7 @@
                 data.forEach(product => {
                     const productElement = document.querySelector(`.product-item[data-name="${product.name}"]`);
                     if (productElement) {
+                        productElement.dataset.availableQuantity = product.quantity;
                         const quantityElement = productElement.querySelector('p:last-child');
                         quantityElement.textContent = `Available: ${product.quantity}`;
                         quantityElement.className = `text-sm ${

@@ -21,7 +21,7 @@ if (!isset($kbEnabled)) {
 }
 
 $kbEnabledJs = $kbEnabled ? 'true' : 'false';
-$kbScriptSrc = htmlspecialchars($kbAssetPrefix, ENT_QUOTES, 'UTF-8') . 'js/kioskboard-payment-init.js?v=pos-kb-16';
+$kbScriptSrc = htmlspecialchars($kbAssetPrefix, ENT_QUOTES, 'UTF-8') . 'js/kioskboard-payment-init.js?v=pos-kb-17';
 ?>
 <?php if ($kbPart === 'both' || $kbPart === 'script'): ?>
 <script>window.POS_TOUCH_KEYBOARD_ENABLED = <?= $kbEnabledJs ?>;</script>

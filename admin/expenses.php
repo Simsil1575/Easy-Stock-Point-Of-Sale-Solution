@@ -22,6 +22,17 @@ if ($activationStatus == 0) {
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
+$userDb = new PDO('sqlite:../user.db');
+$userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/../cashier_helper.php';
+
+$expenseChargeUsers = [];
+try {
+    $expenseChargeUsers = $userDb->query("SELECT id, username, role FROM users ORDER BY username")->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $expenseChargeUsers = [];
+}
+
 // Create cash_transactions table if it doesn't exist
 $db->exec("CREATE TABLE IF NOT EXISTS cash_transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,14 +53,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $amount = floatval($_POST['amount']);
         $description = trim($_POST['description']);
         $category = trim($_POST['category'] ?? '');
+        $chargedCashier = trim((string) ($_POST['cashier_id'] ?? ''));
         
-        if ($amount > 0 && !empty($description)) {
+        if ($amount > 0 && !empty($description) && $chargedCashier !== '') {
             $fullDescription = !empty($category) ? "[$category] $description" : $description;
+            $resolvedCashier = resolveToUsername($chargedCashier, $userDb);
             $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at) VALUES ('cash-out', ?, ?, ?, datetime('now', 'localtime'))");
-            $stmt->execute([$amount, $fullDescription, $_SESSION['username'] ?? 'Unknown']);
+            $stmt->execute([$amount, $fullDescription, $resolvedCashier !== 'Unknown' ? $resolvedCashier : $chargedCashier]);
             $_SESSION['success'] = 'Expense added successfully';
         } else {
-            $_SESSION['error'] = 'Please enter a valid amount and description';
+            $_SESSION['error'] = 'Please enter a valid amount, description, and user to charge';
         }
         header('Location: expenses');
         exit();
@@ -487,6 +500,9 @@ $expenseCategories = [
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">
                                                     Category
                                                 </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">
+                                                    Charged To
+                                                </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(3)">
                                                     Amount <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
@@ -496,7 +512,7 @@ $expenseCategories = [
                                         <tbody id="expensesBody" class="divide-y divide-gray-200 dark:divide-gray-700">
                                             <?php if (empty($expenses)): ?>
                                                 <tr>
-                                                    <td colspan="7" class="px-6 py-12 text-center">
+                                                    <td colspan="8" class="px-6 py-12 text-center">
                                                         <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                                         <p class="text-gray-500 text-lg">No expenses found. Add your first expense.</p>
                                                     </td>
@@ -538,6 +554,9 @@ $expenseCategories = [
                                                             <span class="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">
                                                                 <?= htmlspecialchars($category) ?>
                                                             </span>
+                                                        </td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200">
+                                                            <?= htmlspecialchars(resolveToUsername($expense['cashier_id'] ?? '', $userDb)) ?>
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-red-600">
                                                             -N$<?= number_format($expense['amount'], 2) ?>
@@ -619,6 +638,19 @@ $expenseCategories = [
                 <form method="POST" class="p-6 space-y-4">
                     <input type="hidden" name="add_expense" value="1">
                     
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Charge expense to</label>
+                        <select name="cashier_id" required
+                                class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">
+                            <option value="">Select user...</option>
+                            <?php foreach ($expenseChargeUsers as $user): ?>
+                            <option value="<?= htmlspecialchars($user['username']) ?>"<?= ($user['username'] === ($_SESSION['username'] ?? '')) ? ' selected' : '' ?>>
+                                <?= htmlspecialchars($user['username']) ?> (<?= ucfirst($user['role']) ?>)
+                            </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Category</label>
                         <select name="category" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500">

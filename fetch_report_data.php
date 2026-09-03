@@ -19,6 +19,9 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $selectedDate)) {
 }
 
 require_once __DIR__ . '/business_day_helper.php';
+require_once __DIR__ . '/medical_aid_transactions_helper.php';
+require_once __DIR__ . '/medical_aid_lib.php';
+require_once __DIR__ . '/cash_transactions_totals_helper.php';
 
 $bdCtx = bdLoadClosingContext(__DIR__ . '/info.db');
 $closingTime = $bdCtx['closing_time'];
@@ -28,6 +31,7 @@ $isAfterMidnight = $bdCtx['is_after_midnight'];
 try {
     $db = new PDO('sqlite:pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    medicalAidBootstrap();
 } catch (PDOException $e) {
     echo json_encode(['error' => 'Database connection failed: ' . $e->getMessage()]);
     exit;
@@ -190,8 +194,9 @@ if (isset($_POST['actual_cash_in_till'])) {
     }
 }
 
-// Use the already calculated cash sales total with business day logic
-$cashSalesTotal = $totalCashSales;
+// Net cash sales for display (gross cash + credit payments minus till deductions)
+$cashTillDeductions = sumCashTillDeductionsReportTotal($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$cashSalesTotal = (float) $totalCashSales + (float) $totalCreditPayments - $cashTillDeductions;
 
 // Get EFT sales for the selected date
 try {
@@ -222,9 +227,13 @@ try {
     $unpaidCreditQuery->execute();
     $unpaidCredit = $unpaidCreditQuery->fetchColumn();
     $unpaidCredit = ($unpaidCredit !== false && $unpaidCredit !== null) ? (float)$unpaidCredit : 0;
+    $medicalAidUnpaid = sumMedicalAidUnpaid($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+    $medicalAidPayments = sumMedicalAidPayments($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
 } catch (PDOException $e) {
     error_log('Error fetching unpaid credit: ' . $e->getMessage());
     $unpaidCredit = 0;
+    $medicalAidUnpaid = 0;
+    $medicalAidPayments = 0;
 }
 
 // Add income/expense breakdown for cash-up receipt (same as in cash-pdf.php)
@@ -274,6 +283,8 @@ $response = [
     'credit_eft' => $credit_eft,
     'eft_sales' => $eft_sales,
     'credit_unpaid' => $credit_unpaid,
+    'medical_aid_unpaid' => $medicalAidUnpaid ?? 0,
+    'medical_aid_payments' => $medicalAidPayments ?? 0,
     'total_income' => $total_income,
     'total_expense' => $total_expense,
     'net_amount' => $net_amount

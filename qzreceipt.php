@@ -15,6 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['business_info'])) {
         header('Content-Type: application/json');
         echo json_encode(['success' => true, 'businessInfo' => [
             'business_name' => $businessInfo['name'] ?? 'POS SOLUTION',
+            'business_name_secondary' => trim((string)($businessInfo['name_secondary'] ?? '')),
             'business_location' => $businessInfo['location'] ?? 'Your Business Address',
             'business_phone' => $businessInfo['phone'] ?? 'Your Phone Number',
             'footer_text' => $businessInfo['footer_text'] ?? 'Thank you for your purchase!'
@@ -59,6 +60,7 @@ if (!$orderData) {
         // Merge business info with order data
         $orderData = array_merge($orderData, [
             'business_name' => $businessInfo['name'],
+            'business_name_secondary' => trim((string)($businessInfo['name_secondary'] ?? '')),
             'business_location' => $businessInfo['location'],
             'business_phone' => $businessInfo['phone'],
             'footer_text' => $businessInfo['footer_text']
@@ -172,6 +174,65 @@ if (!$orderData) {
         
         const spaces = CHAR_WIDTH - left.length - right.length;
         return left + ' '.repeat(Math.max(1, spaces)) + right + '\n';
+    }
+
+    function wrapHeaderText(text, width) {
+        text = String(text ?? '').trim();
+        if (!text) return [];
+        width = Math.max(1, width);
+        const words = text.split(/\s+/).filter(Boolean);
+        const lines = [];
+        let current = '';
+        words.forEach(function (word) {
+            if (!current) {
+                if (word.length <= width) {
+                    current = word;
+                } else {
+                    for (let i = 0; i < word.length; i += width) {
+                        lines.push(word.substring(i, i + width));
+                    }
+                }
+                return;
+            }
+            const candidate = current + ' ' + word;
+            if (candidate.length <= width) {
+                current = candidate;
+            } else {
+                lines.push(current);
+                if (word.length <= width) {
+                    current = word;
+                } else {
+                    current = '';
+                    for (let i = 0; i < word.length; i += width) {
+                        lines.push(word.substring(i, i + width));
+                    }
+                }
+            }
+        });
+        if (current) lines.push(current);
+        return lines;
+    }
+
+    function appendBusinessNameHeader(receipt, data) {
+        const primary = String(data.business_name || 'POS SOLUTION').trim();
+        const secondary = String(data.business_name_secondary || '').trim();
+        const doubleWidth = Math.max(1, Math.floor(CHAR_WIDTH / 2));
+
+        wrapHeaderText(primary, doubleWidth).forEach(function (line) {
+            receipt += '\x1B\x21\x30';
+            receipt += line + '\n';
+            receipt += '\x1B\x21\x00';
+        });
+
+        if (secondary) {
+            receipt += '\x1B\x45\x01';
+            wrapHeaderText(secondary, CHAR_WIDTH).forEach(function (line) {
+                receipt += line + '\n';
+            });
+            receipt += '\x1B\x45\x00';
+        }
+
+        return receipt;
     }
 
     // Function to format long item names with proper line breaks
@@ -826,6 +887,52 @@ qz.security.setSignaturePromise(function(toSign) {
         receipt += '\x1D\x56\x00'; // Cut paper
         return receipt;
     }
+
+    function qzReceiptPaymentChange(data) {
+        const cashBack = Number(data.cash_back || data.cash_back_amount || 0);
+        if (cashBack > 0.001) {
+            return cashBack;
+        }
+        const method = String(data.payment_method || '').toLowerCase();
+        const total = Number(data.total || 0);
+        if (method === 'e-wallet' || method === 'eft') {
+            const eft = Number(data.eft_amount || 0);
+            return Math.max(0, Math.round((eft - total) * 100) / 100);
+        }
+        if (method === 'mixed') {
+            const cash = Number(data.cash_amount || data.cash_received || 0);
+            const eft = Number(data.eft_amount || 0);
+            return Math.max(0, Math.round((cash + eft - total) * 100) / 100);
+        }
+        return 0;
+    }
+
+    function qzReceiptShouldOpenDrawer(data) {
+        if (data.open_drawer_only) {
+            return true;
+        }
+        if (data.is_cash_back_receipt && !data.is_cash_back_copy) {
+            return true;
+        }
+        if (data.creditor_id || data.is_medical_aid_sale) {
+            return false;
+        }
+        if (qzReceiptPaymentChange(data) > 0.001) {
+            return true;
+        }
+        const method = String(data.payment_method || '').toLowerCase();
+        if (method === 'cash') {
+            return true;
+        }
+        if (method === 'mixed') {
+            const cash = Number(data.cash_amount || data.cash_received || 0);
+            return cash > 0.001;
+        }
+        if (method === 'medical_aid' || method === 'credit') {
+            return false;
+        }
+        return false;
+    }
     
     // Generate regular receipt
     function generateRegularReceipt(data) {
@@ -833,14 +940,7 @@ qz.security.setSignaturePromise(function(toSign) {
         receipt += '\x1B\x40'; // Initialize printer
         receipt += '\x1B\x4D\x00'; // Font A (32 cols)
         receipt += '\x1B\x61\x01'; // Center align
-        const businessName = (data.business_name || 'POS SOLUTION');
-        if (businessName.length <= 16) {
-            receipt += '\x1B\x21\x30'; // Double height, double width
-            receipt += businessName + '\n';
-            receipt += '\x1B\x21\x00'; // Normal size
-        } else {
-            receipt += truncate(businessName) + '\n';
-        }
+        receipt = appendBusinessNameHeader(receipt, data);
         // Center the location
         receipt += truncate((data.business_location || 'Your Business Address')) + '\n';
         receipt += '\x1B\x61\x00'; // Left align
@@ -904,7 +1004,14 @@ qz.security.setSignaturePromise(function(toSign) {
         receipt += '\x1B\x45\x00'; // Normal
         receipt += line();
 
-        if (data.creditor_id) {
+        if (data.is_medical_aid_sale || data.payment_method === 'medical_aid') {
+            receipt += 'Method: Medical Aid\n';
+            receipt += 'Status: Claim pending\n';
+            if (data.patient_name) receipt += 'Patient: ' + String(data.patient_name) + '\n';
+            if (data.scheme_name) receipt += 'Scheme: ' + String(data.scheme_name) + '\n';
+            if (data.member_number) receipt += 'Member: ' + String(data.member_number) + '\n';
+            if (data.auth_reference) receipt += 'Auth: ' + String(data.auth_reference) + '\n';
+        } else if (data.creditor_id) {
             // Credit payment
             receipt += 'Method: Credit\n';
             receipt += 'ID: ' + String(data.creditor_id) + '\n';
@@ -933,7 +1040,12 @@ qz.security.setSignaturePromise(function(toSign) {
             receipt += 'Provider: ' + (data.wallet_provider || 'Unknown') + '\n';
             const ref = data.transaction_ref || '';
             receipt += 'Ref: ' + ref + '\n';
-            receipt += 'Paid: N$' + subtotal.toFixed(2) + '\n';
+            const eftPaid = Number(data.eft_amount || subtotal);
+            receipt += 'Paid: N$' + eftPaid.toFixed(2) + '\n';
+            const eftChange = qzReceiptPaymentChange(data);
+            if (eftChange > 0.001) {
+                receipt += 'Change: N$' + eftChange.toFixed(2) + '\n';
+            }
         } else {
             // Cash payment
             receipt += 'Method: Cash\n';
@@ -951,8 +1063,8 @@ qz.security.setSignaturePromise(function(toSign) {
         receipt += '\x1B\x61\x00'; // Left align
         receipt += '\n\n\n\n'; // Feed
 
-        // Open cash drawer only for cash payments
-        if (!data.creditor_id && data.payment_method !== 'e-wallet') {
+        // Open cash drawer for cash, mixed cash, or EFT change
+        if (qzReceiptShouldOpenDrawer(data)) {
             receipt += '\x1B\x70\x00\x32\x32'; // Pulse (open cash drawer)
         }
 
@@ -966,14 +1078,7 @@ qz.security.setSignaturePromise(function(toSign) {
         receipt += '\x1B\x40'; // Initialize printer
         receipt += '\x1B\x4D\x00'; // Font A (32 cols)
         receipt += '\x1B\x61\x01'; // Center align
-        const businessName = (data.business_name || 'POS SOLUTION');
-        if (businessName.length <= 16) {
-            receipt += '\x1B\x21\x30'; // Double height, double width
-            receipt += businessName + '\n';
-            receipt += '\x1B\x21\x00'; // Normal size
-        } else {
-            receipt += truncate(businessName) + '\n';
-        }
+        receipt = appendBusinessNameHeader(receipt, data);
         // Center the location
         receipt += truncate((data.business_location || 'Your Business Address')) + '\n';
         receipt += '\x1B\x61\x00'; // Left align
@@ -1053,14 +1158,7 @@ qz.security.setSignaturePromise(function(toSign) {
         receipt += '\x1B\x40'; // Initialize printer
         receipt += '\x1B\x4D\x00'; // Font A (32 cols)
         receipt += '\x1B\x61\x01'; // Center align
-        const businessName = (data.business_name || 'POS SOLUTION');
-        if (businessName.length <= 16) {
-            receipt += '\x1B\x21\x30'; // Double height, double width
-            receipt += businessName + '\n';
-            receipt += '\x1B\x21\x00'; // Normal size
-        } else {
-            receipt += truncate(businessName) + '\n';
-        }
+        receipt = appendBusinessNameHeader(receipt, data);
         // Center the location
         receipt += truncate((data.business_location || 'Your Business Address')) + '\n';
         receipt += '\x1B\x61\x00'; // Left align

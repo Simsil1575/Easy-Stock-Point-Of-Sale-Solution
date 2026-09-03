@@ -111,6 +111,47 @@ function catCreate(PDO $db, string $name): void
     $db->prepare('INSERT INTO product_categories (name) VALUES (?)')->execute([$name]);
 }
 
+/**
+ * Remove a category from the registry and unassign it from products.
+ *
+ * @throws RuntimeException
+ */
+function catDelete(PDO $db, string $name): int
+{
+    $name = trim($name);
+    if ($name === '') {
+        throw new RuntimeException('Category is required.');
+    }
+
+    $existing = catFindByName($db, $name);
+    if (!$existing) {
+        throw new RuntimeException('Category not found.');
+    }
+    $canonical = (string) $existing['category'];
+
+    catEnsureTable($db);
+
+    $updated = 0;
+    $db->beginTransaction();
+    try {
+        $del = $db->prepare('DELETE FROM product_categories WHERE name = ? COLLATE NOCASE');
+        $del->execute([$canonical]);
+
+        $upd = $db->prepare("UPDATE products SET category = NULL WHERE TRIM(category) = ? COLLATE NOCASE");
+        $upd->execute([$canonical]);
+        $updated = (int) $upd->rowCount();
+
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+
+    return $updated;
+}
+
 /** Ensure category exists in registry without error if already present. */
 function catEnsureRegistered(PDO $db, string $name): void
 {

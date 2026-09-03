@@ -3,11 +3,12 @@
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
 ini_set('display_errors', 0);
 if (ob_get_level()) ob_clean();
-/* Call this file 'hello-world.php' */
+
 require __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/receipt_printer_helper.php';
+require_once __DIR__ . '/receipt_header_helper.php';
+
 use Mike42\Escpos\Printer;
-use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
-use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
 
 function getUseQzTrayFlag(): int {
     try {
@@ -46,49 +47,27 @@ if ($openDrawerOnly) {
                 'open_drawer_only' => true,
                 'cashier_username' => ($orderData['cashier_username'] ?? null)
             ];
-            $encoded = urlencode(json_encode($payload));
-
-            // GET calls can be redirected to qzreceipt.php to trigger drawer pulse.
-            if ($isGet) {
-                header('Location: qzreceipt.php?data=' . $encoded);
-                exit;
-            }
 
             header('Content-Type: application/json');
             echo json_encode([
                 'success' => true,
                 'message' => 'Drawer open requested via QZ Tray',
                 'receipt_data' => $payload,
-                'order_data' => $payload
+                'order_data' => $payload,
+                'requires_client_print' => true
             ]);
             exit;
         }
 
-        // Determine printer to use based on client IP (same logic as below)
-        $clientIP = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? '127.0.0.1';
-        $printerName = '';
-        $isNetworkPrinter = false;
-        if ($clientIP === '127.0.0.1' || $clientIP === '::1' || $clientIP === 'localhost' || $clientIP === $_SERVER['SERVER_ADDR']) {
-            $printerName = "XP-58SERIES";
-            $isNetworkPrinter = false;
-        } else if ($clientIP === '192.168.178.87') {
-            $printerName = "POSPrinter POS-80C";
-            $isNetworkPrinter = true;
-        } else {
-            $printerName = "XP-58SERIES";
-            $isNetworkPrinter = false;
-        }
+        $businessInfo = receipt_load_business_info();
+        $printerTarget = receipt_create_printer_connector($businessInfo);
+        $printerName = $printerTarget['label'];
+        $isNetworkPrinter = $printerTarget['is_network'];
 
-        error_log("Opening cash drawer - Client IP: $clientIP, Printer: $printerName, Network: " . ($isNetworkPrinter ? 'Yes' : 'No'));
+        error_log('Opening cash drawer - Printer: ' . $printerName . ', Network: ' . ($isNetworkPrinter ? 'Yes' : 'No'));
 
-        if ($isNetworkPrinter) {
-            $connector = new NetworkPrintConnector("192.168.1.7", 9100);
-        } else {
-            $connector = new WindowsPrintConnector($printerName);
-        }
-
-        $printer = new Printer($connector);
-        $printer->pulse();
+        $printer = new Printer($printerTarget['connector']);
+        receipt_pulse_cash_drawer($printer);
         $printer->close();
 
         error_log("Cash drawer opened successfully");
@@ -98,7 +77,6 @@ if ($openDrawerOnly) {
             'success' => true,
             'message' => 'Drawer opened',
             'printer_used' => $printerName,
-            'client_ip' => $clientIP,
             'connection_type' => $isNetworkPrinter ? 'network' : 'local'
         ]);
         exit;

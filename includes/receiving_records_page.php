@@ -231,7 +231,7 @@ $listHref = 'receiving_records.php' . ($rrListQuery() !== '' ? '?' . $rrListQuer
                                         <input type="hidden" name="line_id[]" value="<?= (int) $li['id'] ?>">
                                     </td>
                                     <td class="px-4 py-3 text-right">
-                                        <input type="number" name="line_qty[]" value="<?= (int) $li['quantity_added'] ?>" min="0" step="1" class="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-right text-sm">
+                                        <input type="number" name="line_qty[]" value="<?= (int) $li['quantity_added'] ?>" step="1" class="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-right text-sm" title="Negative quantity indicates a stock transfer">
                                     </td>
                                     <td class="px-4 py-3 text-right">
                                         <input type="number" name="line_cost[]" value="<?= htmlspecialchars((string) $li['buying_price']) ?>" min="0" step="0.01" class="w-28 border border-gray-300 rounded-lg px-2 py-1.5 text-right text-sm">
@@ -328,7 +328,7 @@ $listHref = 'receiving_records.php' . ($rrListQuery() !== '' ? '?' . $rrListQuer
                         <?php foreach ($detailBundle['items'] as $li): ?>
                             <tr class="hover:bg-gray-50">
                                 <td class="px-4 py-3 font-medium text-gray-900"><?= htmlspecialchars($li['product_name']) ?></td>
-                                <td class="px-4 py-3 text-right text-teal-700 font-medium">+<?= (int) $li['quantity_added'] ?></td>
+                                <td class="px-4 py-3 text-right font-medium <?= ((int) $li['quantity_added'] < 0) ? 'text-orange-700' : 'text-teal-700' ?>"><?= ((int) $li['quantity_added'] > 0 ? '+' : '') . (int) $li['quantity_added'] ?><?= ((int) $li['quantity_added'] < 0) ? ' <span class="text-[10px] font-medium uppercase">Transfer</span>' : '' ?></td>
                                 <td class="px-4 py-3 text-right text-gray-600"><?= (int) $li['old_quantity'] ?> → <?= (int) $li['new_quantity'] ?></td>
                                 <td class="px-4 py-3 text-right text-gray-700">N$<?= number_format((float) $li['unit_price'], 2) ?></td>
                                 <td class="px-4 py-3 text-right text-gray-700">N$<?= number_format((float) $li['buying_price'], 2) ?></td>

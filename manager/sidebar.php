@@ -430,6 +430,36 @@
             <a><img src="../logo.png" style="width: 50px;" alt="POS System Icon"></a>
         </div>
     </div>
+    <?php
+    $userRole = isset($_SESSION['role']) ? strtolower((string)$_SESSION['role']) : '';
+    $isAdmin = ($userRole === 'admin');
+    $permissions = [
+        'allow_menu' => true,
+        'allow_sales' => true,
+        'allow_reports' => true,
+        'allow_inventory' => true,
+        'allow_transactions' => true,
+        'allow_settings' => true,
+    ];
+    if (!$isAdmin) {
+        try {
+            $infoDb = new PDO('sqlite:' . __DIR__ . '/../info.db');
+            $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $permResult = $infoDb->query("SELECT * FROM manager_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            if ($permResult) {
+                $permissions = [
+                    'allow_menu' => (bool)($permResult['allow_menu'] ?? 1),
+                    'allow_sales' => (bool)($permResult['allow_sales'] ?? 1),
+                    'allow_reports' => (bool)($permResult['allow_reports'] ?? 1),
+                    'allow_inventory' => (bool)($permResult['allow_inventory'] ?? 1),
+                    'allow_transactions' => (bool)($permResult['allow_transactions'] ?? 1),
+                    'allow_settings' => (bool)($permResult['allow_settings'] ?? 1),
+                ];
+            }
+        } catch (PDOException $e) {
+        }
+    }
+    ?>
     <nav>
         <ul class="space-y-1.5" id="sidebarNavList">
         <li>
@@ -440,6 +470,7 @@
                     <span class="text-lg text-gray-700">Home</span>
                 </a>
             </li>
+            <?php if ($isAdmin || $permissions['allow_menu']): ?>
      <li>
                 <a href="manager-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="manager-center">
                     <svg class="w-7 h-7 mr-4" fill="none" stroke="currentColor" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
@@ -451,8 +482,9 @@
                     <span class="text-lg text-gray-700">Menu</span>
                 </a>
             </li>
+            <?php endif; ?>
 
-       
+            <?php if ($isAdmin || $permissions['allow_sales']): ?>
             <li>
                 <a href="sales" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="sales">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -461,7 +493,9 @@
                     <span class="text-lg text-gray-700">Sales</span>
                 </a>
             </li>
+            <?php endif; ?>
 
+            <?php if ($isAdmin || $permissions['allow_reports']): ?>
             <li>
                 <a href="reports-center" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports-center">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -473,8 +507,9 @@
                     <span class="text-lg text-gray-700">Reports</span>
                 </a>
             </li>
-        
+            <?php endif; ?>
 
+            <?php if ($isAdmin || $permissions['allow_inventory']): ?>
             <li>
                 <a href="inventory" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="inventory">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -483,7 +518,9 @@
                     <span class="text-lg text-gray-700">Inventory</span>
                 </a>
             </li>
+            <?php endif; ?>
 
+            <?php if ($isAdmin || $permissions['allow_transactions']): ?>
             <li>
                 <a href="reports" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="reports">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -492,14 +529,9 @@
                     <span class="text-lg text-gray-700">Transactions</span>
                 </a>
             </li>
+            <?php endif; ?>
 
-       
-      
-            <li>
- 
-</li>
-
-
+            <?php if ($isAdmin || $permissions['allow_settings']): ?>
             <li>
                 <a href="settings" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="settings">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -509,6 +541,7 @@
                     <span class="text-lg text-gray-700">Settings</span>
                 </a>
             </li>
+            <?php endif; ?>
             <li>
                 <a href="logout" class="nav-link flex items-center py-3 px-5 rounded hover:bg-gray-200 transition-colors duration-200 cursor-pointer text-gray-700" data-href="logout">
                     <svg class="w-6 h-6 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -559,9 +592,11 @@
             currentPage.startsWith('create_creditor') ||
             currentPage.startsWith('quotation') || currentPage.startsWith('quotations') ||
             currentPage.startsWith('invoice') || currentPage.startsWith('invoices') ||
+            currentPage.startsWith('medical_aid') ||
             currentPage === 'categories' || currentPage.startsWith('categories') ||
             currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders') ||
-            currentPage === 'receiving_records.php' || currentPage.startsWith('receiving_records')
+            currentPage === 'receiving_records.php' || currentPage.startsWith('receiving_records') ||
+            currentPage === 'stock_take_records.php' || currentPage.startsWith('stock_take_records')
         );
         
         // Remove active class from all links
@@ -583,6 +618,9 @@
                 (href === 'inventory' && 
                     (currentPage === 'inventory' || 
                      currentPage === 'add_product' || 
+                     currentPage === 'barcode_labels' ||
+                     currentPage === 'barcode_labels.php' ||
+                     currentPage.startsWith('barcode_labels') ||
                      currentPage === 'receiving' ||
                      currentPage === 'receiving.php' ||
                      currentPage === 'receiving_records' ||

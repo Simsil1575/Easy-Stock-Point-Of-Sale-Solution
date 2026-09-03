@@ -71,6 +71,11 @@ function bdBindSingleDayParams(PDOStatement $stmt, string $selectedDate, string 
     $stmt->bindValue(':nextDay', $nextDay);
 }
 
+function bdBindSelectedDate(PDOStatement $stmt, string $selectedDate): void
+{
+    $stmt->bindValue(':selectedDate', $selectedDate);
+}
+
 function bdDateRangeWhereSql(
     string $dateField,
     string $startDate,

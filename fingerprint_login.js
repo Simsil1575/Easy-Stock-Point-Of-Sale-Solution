@@ -201,6 +201,9 @@
 
         if (res.ok && res.redirect) {
             logFpDetail('info', 'login_success', { context: context, redirect: res.redirect });
+            try {
+                sessionStorage.setItem('pos_browser_session', '1');
+            } catch (_) {}
             window.location.href = res.redirect;
             return;
         }

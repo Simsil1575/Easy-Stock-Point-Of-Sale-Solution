@@ -89,97 +89,11 @@ function getUsernamesByIds($userIds) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     handle_tab_void_mark_post_request($db);
     handle_tab_item_void_mark_post_request($db);
+    handle_tab_edit_item_post_request($db);
+    handle_tab_delete_item_post_request($db);
+    tab_enforce_session_access_on_post($db);
 
-    if (isset($_POST['delete_item_id'])) {
-        // Delete tab item
-        $itemId = intval($_POST['delete_item_id']);
-        $itemStmt = $db->prepare("SELECT tab_id FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $tabId = $item['tab_id'];
-            $db->beginTransaction();
-            try {
-                // Delete related tab_item_payments first (cascade should handle this, but being explicit)
-                $deletePaymentsStmt = $db->prepare("DELETE FROM tab_item_payments WHERE tab_item_id = ?");
-                $deletePaymentsStmt->execute([$itemId]);
-                
-                // Delete the item
-                $deleteStmt = $db->prepare("DELETE FROM tab_items WHERE id = ?");
-                $deleteStmt->execute([$itemId]);
-                
-                // Recalculate tab balance from scratch
-                recalculateTabBalance($db, $tabId);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product removed from tab successfully';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to delete item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['edit_item_id'])) {
-        // Edit tab item
-        $itemId = intval($_POST['edit_item_id']);
-        $newQuantity = intval($_POST['edit_item_quantity']);
-        $newPrice = floatval($_POST['edit_item_price']);
-        
-        if ($newQuantity <= 0) {
-            $_SESSION['error'] = 'Quantity must be greater than zero';
-            header('Location: view-tab.php?id=' . $_POST['tab_id']);
-            exit();
-        }
-        
-        $itemStmt = $db->prepare("SELECT tab_id FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $tabId = $item['tab_id'];
-            $db->beginTransaction();
-            try {
-                // Check if there are payments on this item - if so, we can't edit price
-                $paymentCheckStmt = $db->prepare("SELECT COUNT(*) FROM tab_item_payments WHERE tab_item_id = ?");
-                $paymentCheckStmt->execute([$itemId]);
-                $hasPayments = $paymentCheckStmt->fetchColumn() > 0;
-                
-                if ($hasPayments) {
-                    // If item has payments, only allow quantity changes, not price changes
-                    // Get current price to preserve it
-                    $currentItemStmt = $db->prepare("SELECT price FROM tab_items WHERE id = ?");
-                    $currentItemStmt->execute([$itemId]);
-                    $currentItem = $currentItemStmt->fetch(PDO::FETCH_ASSOC);
-                    $newPrice = floatval($currentItem['price']); // Keep original price
-                }
-                
-                // Update the item
-                $updateStmt = $db->prepare("UPDATE tab_items SET quantity = ?, price = ? WHERE id = ?");
-                $updateStmt->execute([$newQuantity, $newPrice, $itemId]);
-                
-                // Recalculate tab balance from scratch
-                recalculateTabBalance($db, $tabId);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product updated successfully';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to update item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['payment_amount'])) {
+    if (isset($_POST['payment_amount'])) {
         // Make payment on tab - redirect to view-tab.php for proper item-based payment processing
         $tabId = intval($_POST['tab_id']);
         $_SESSION['error'] = 'Please use the payment feature from the tab details page for accurate payment processing.';

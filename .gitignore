@@ -1,6 +1,11 @@
-# Keep the products folder in the repo but do not upload its contents
-products/*
-!products/.gitkeep
+# Local SQLite databases — do not commit
+info.db
+pos.db
+active.db
+user.db
+
+# Local product data
+products/
 
 # Client / site-specific folders — keep local only
 sunremo/

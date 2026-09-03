@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/userdb_fingerprint_helpers.php';
 
 // If user is already logged in, redirect to appropriate home page
 if ($_SERVER["REQUEST_METHOD"] == "GET" && isset($_SESSION['user_id']) && isset($_SESSION['role'])) {
@@ -64,15 +65,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 
                 // Redirect based on role with absolute paths
                 if ($user['role'] === 'admin') {
-                    header("Location: admin/home");
+                    header("Location: admin/home?logged_in=1");
                 } elseif ($user['role'] === 'manager') {
-                    header("Location: manager/home");
+                    header("Location: manager/home?logged_in=1");
                 } elseif ($user['role'] === 'waitress') {
-                    header("Location: waitress/home");
+                    header("Location: waitress/home?logged_in=1");
                 } elseif ($user['role'] === 'hubbly') {
-                    header("Location: hubbly/home");
+                    header("Location: hubbly/home?logged_in=1");
                 } else {
-                    header("Location: home");
+                    header("Location: home?logged_in=1");
                 }
                 exit();
             } else {
@@ -95,6 +96,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 // Check if there are any waitress / hubbly accounts in the database
 $has_waitress_accounts = false;
 $has_hubbly_accounts = false;
+$has_fingerprint_enrolled = false;
 try {
     $db_file = realpath(dirname(__FILE__) . '/user.db');
     $userDb = new PDO("sqlite:$db_file");
@@ -109,9 +111,13 @@ try {
     $hubblyCheckStmt->execute();
     $hubblyResult = $hubblyCheckStmt->fetch(PDO::FETCH_ASSOC);
     $has_hubbly_accounts = ((int) ($hubblyResult['count'] ?? 0) > 0);
+
+    userdb_ensure_fingerprint_columns($userDb);
+    $has_fingerprint_enrolled = true;
 } catch (PDOException $e) {
     $has_waitress_accounts = false;
     $has_hubbly_accounts = false;
+    $has_fingerprint_enrolled = true;
 }
 ?>
 <!DOCTYPE html>
@@ -128,7 +134,8 @@ try {
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <meta charset="UTF-8">
     <title>POS Solution</title>
-    <script src="navigation.js" async></script>
+    <script src="session_guard.js"></script>
+    <script src="navigation.js"></script>
     <script src="src/howler.min.js"></script>
     <script src="src/chart.js"></script>
     <script src="admin/inbox.js" defer></script>
@@ -643,6 +650,7 @@ try {
                                     
                                 </form>
 
+                                    <?php if ($has_fingerprint_enrolled): ?>
                                     <div class="relative my-6">
                                         <div class="absolute inset-0 flex items-center" aria-hidden="true">
                                             <div class="w-full border-t border-gray-300"></div>
@@ -656,8 +664,9 @@ try {
                                             class="flex w-full items-center justify-center rounded-lg border-2 border-teal-600 bg-teal-50 px-4 py-2.5 text-sm/6 font-semibold text-teal-800 hover:bg-teal-100 hover:border-teal-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500 transition duration-200">
                                         <i class="fas fa-fingerprint mr-2"></i>Sign in with fingerprint
                                     </button>
+                                    <?php endif; ?>
 
-
+                                <?php if ($has_fingerprint_enrolled): ?>
                                 <div id="fpLoginModal" class="fixed inset-0 z-[200] hidden flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="fpLoginModalTitle">
                                     <div id="fpLoginModalBackdrop" class="absolute inset-0 bg-black/50"></div>
                                     <div class="relative z-10 w-full max-w-md rounded-xl bg-white p-6 shadow-xl ring-1 ring-gray-200">
@@ -687,6 +696,7 @@ try {
                                        
                                     </div>
                                 </div>
+                                <?php endif; ?>
                     
                             <div class="mt-8 text-center text-sm text-gray-500">
                                 <p>&copy; <?php echo date('Y'); ?> Easy Stock POS Solutions. All rights reserved.</p>
@@ -807,6 +817,7 @@ try {
 
     </script>
 
+    <?php if ($has_fingerprint_enrolled): ?>
     <script src="finger/scripts/es6-shim.js"></script>
     <script src="finger/scripts/websdk.client.bundle.min.js"></script>
     <script src="finger/scripts/fingerprint.sdk.min.js"></script>
@@ -815,6 +826,7 @@ try {
         window.FP_AUTH_ENDPOINT = 'fingerprint_auth.php';
     </script>
     <script src="fingerprint_login.js?v=20260703c"></script>
+    <?php endif; ?>
     <?php $kbAssetPrefix = ''; $kbPart = 'script'; include __DIR__ . '/includes/kioskboard_payment.php'; ?>
     <script>
         (function () {

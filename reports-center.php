@@ -72,7 +72,7 @@ require_once __DIR__ . '/business_day_helper.php';
 $reportBusinessHours = bdLoadBusinessHoursContext();
 $reportOpeningTime = htmlspecialchars($reportBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
 $reportClosingTime = htmlspecialchars($reportBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
-$uiCardsState = uiCardsInitPageState($infoDb, 'cashier_reports', (string) $_SESSION['user_id'], true);
+$uiCardsState = uiCardsInitPageState($infoDb, 'cashier_reports', (string) $_SESSION['user_id'], true, (string) $_SESSION['role']);
 extract($uiCardsState);
 $uiCardsApiUrl = 'ui_cards_api.php';
 $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
@@ -90,6 +90,7 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="sweetalert2@11.js"></script>
     <script src="lucide.js"></script>
+    <script src="receipt.php?js=true"></script>
     
     <style>
         .fade-in {
@@ -516,7 +517,8 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
                             <h3 class="font-semibold text-gray-800 mb-1">Tabs Report</h3>
                             <p class="text-sm text-gray-500">Open and closed tabs summary</p>
                         </div>
-                        
+
+
                         <!-- Expenses Reports -->
                         <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="expenses" onclick="openReportModal('expenses', 'Expenses Report', 'All business expenses')">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
@@ -577,7 +579,7 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
                             <button type="button" class="period-btn" onclick="setQuickPeriod('year')">This Year</button>
                         </div>
                     </div>
-                    
+
                     <!-- Date & Time Range (24h) -->
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                         <div>
@@ -642,7 +644,16 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
     
     <?php include __DIR__ . '/includes/date_range_time_script.php'; ?>
     <script>
-        // Update current time
+        var businessInfo = {
+            business_name: <?php echo json_encode($businessInfo['name'] ?? 'POS SOLUTION'); ?>,
+            location: <?php echo json_encode($businessInfo['location'] ?? ''); ?>,
+            phone: <?php echo json_encode($businessInfo['phone'] ?? ''); ?>,
+            footer_text: <?php echo json_encode($businessInfo['footer_text'] ?? 'Thank you for your purchase!'); ?>,
+            vat_inclusive: <?php echo json_encode($businessInfo['vat_inclusive'] ?? 'exclusive'); ?>,
+            vat_rate: <?php echo json_encode($businessInfo['vat_rate'] ?? 15); ?>
+        };
+        window.businessInfo = businessInfo;
+
         setInterval(() => {
             const now = new Date();
             document.getElementById('currentTime').textContent = 
@@ -650,28 +661,52 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
                 now.getMinutes().toString().padStart(2, '0');
         }, 60000);
         
-        // Initialize Lucide icons
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
         
-        // Modal functions
         function openReportModal(type, title, description) {
             document.getElementById('reportType').value = type;
             document.getElementById('modalTitle').textContent = title;
             document.getElementById('modalDescription').textContent = description;
-            
-            // Set default dates to today
+
+            const isCashierReport = ['sales', 'cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type);
             const today = drFormatDate(new Date());
             drSetDateRangeDefaults('startDate', 'endDate', 'startTime', 'endTime', today, today);
-            
-            // Show/hide filters based on report type
+
             document.getElementById('cashierFilter').classList.add('hidden');
             document.getElementById('creditorFilter').classList.add('hidden');
             document.getElementById('categoryFilter').classList.add('hidden');
-            
-            if (['cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type)) {
+
+            if (isCashierReport) {
                 document.getElementById('cashierFilter').classList.remove('hidden');
+                
+                const cashierSelect = document.getElementById('cashierId');
+                if (cashierSelect) {
+                    const newCashierSelect = cashierSelect.cloneNode(true);
+                    cashierSelect.parentNode.replaceChild(newCashierSelect, cashierSelect);
+                    
+                    const applyReportShiftTimes = function () {
+                        const sel = document.getElementById('cashierId');
+                        return drApplyCashierShiftTimes(
+                            sel ? sel.value : '',
+                            'startDate',
+                            'endDate',
+                            'startTime',
+                            'endTime',
+                            'get_cashier_shift_times.php'
+                        );
+                    };
+                    newCashierSelect.addEventListener('change', applyReportShiftTimes);
+                    ['startDate', 'endDate'].forEach(function (dateId) {
+                        const el = document.getElementById(dateId);
+                        if (el && el.dataset.drShiftWired !== '1') {
+                            el.dataset.drShiftWired = '1';
+                            el.addEventListener('change', applyReportShiftTimes);
+                        }
+                    });
+                    applyReportShiftTimes();
+                }
             }
             
             if (['credit_sales', 'outstanding_credit', 'tabs'].includes(type)) {
@@ -827,14 +862,18 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
                 })
                 .then(response => {
                     if (response.success) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Cash Back Processed',
-                            text: 'Cash back and EFT recorded successfully',
-                            timer: 1500,
-                            showConfirmButton: false
+                        handleCashBackCompleted(response, {
+                            onDone: function() {
+                                Swal.fire({
+                                    icon: 'success',
+                                    title: 'Cash Back Processed',
+                                    text: 'Cash back completed. Drawer opened and receipts printed.',
+                                    timer: 1500,
+                                    showConfirmButton: false
+                                });
+                                setTimeout(() => location.reload(), 1200);
+                            }
                         });
-                        setTimeout(() => location.reload(), 1200);
                     } else {
                         Swal.fire({
                             icon: 'error',

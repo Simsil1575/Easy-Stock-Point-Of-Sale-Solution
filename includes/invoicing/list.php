@@ -143,6 +143,16 @@ $e = fn($v) => htmlspecialchars((string) $v);
                             <a href="<?= $viewPage ?>?id=<?= $id ?>" title="View" class="inline-flex w-8 h-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"><i class="fas fa-eye"></i></a>
                             <a href="<?= $editPage ?>?id=<?= $id ?>" title="Edit" class="inline-flex w-8 h-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"><i class="fas fa-pen"></i></a>
                             <a href="<?= $invBase ?? '../' ?>invoicing_pdf.php?type=<?= $type ?>&id=<?= $id ?>" target="_blank" title="PDF" class="inline-flex w-8 h-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"><i class="fas fa-file-pdf"></i></a>
+                            <button type="button"
+                                data-id="<?= $id ?>"
+                                data-type="<?= $e($type) ?>"
+                                data-email="<?= $e($r['customer_email'] ?? '') ?>"
+                                data-name="<?= $e($r['customer_name'] ?? '') ?>"
+                                data-number="<?= $e($num) ?>"
+                                data-reload="1"
+                                onclick="invEmailFromButton(this)"
+                                title="Email to client"
+                                class="inline-flex w-8 h-8 items-center justify-center rounded-lg text-teal-600 hover:bg-teal-50"><i class="fas fa-envelope"></i></button>
                             <button type="button" onclick="invRowAction(<?= $id ?>, 'duplicate')" title="Duplicate" class="inline-flex w-8 h-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"><i class="fas fa-copy"></i></button>
                             <?php if ($isQuote): ?>
                                 <?php if ($status !== 'Converted'): ?>
@@ -173,7 +183,8 @@ $e = fn($v) => htmlspecialchars((string) $v);
 
 <script>
     window.INV_CURRENCY = <?= json_encode($currency) ?>;
-    const INV_TYPE = <?= json_encode($type) ?>;
+    window.INV_TYPE = <?= json_encode($type) ?>;
+    const INV_TYPE = window.INV_TYPE;
 
     async function invRowAction(id, action) {
         try {

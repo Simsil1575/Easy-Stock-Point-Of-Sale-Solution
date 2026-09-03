@@ -2,6 +2,7 @@
 session_start();
 require_once 'cashier_helper.php';
 require_once __DIR__ . '/cashback_accounting_helper.php';
+require_once __DIR__ . '/cashback_receipt_helper.php';
 
 // Set timezone
 date_default_timezone_set('Africa/Harare');
@@ -57,7 +58,7 @@ try {
 
     $db->beginTransaction();
 
-    recordCashBackAccounting(
+    $accounting = recordCashBackAccounting(
         $db,
         $amount,
         $cashierId,
@@ -70,10 +71,22 @@ try {
 
     $db->commit();
 
+    $cashBackReceipt = buildCashBackReceiptData([
+        'order_id' => $accounting['order_id'] ?? null,
+        'cash_transaction_id' => $accounting['cash_transaction_id'] ?? null,
+        'amount' => $amount,
+        'wallet_provider' => $walletProvider,
+        'transaction_ref' => $transactionRef,
+        'transaction_date' => $isHomeFormat ? $transactionDate : date('Y-m-d'),
+        'cashier_username' => $cashierId,
+        'description' => $description,
+    ]);
+
     echo json_encode([
         'success' => true,
         'message' => 'Cash back processed successfully',
         'amount' => $amount,
+        'cash_back_receipt' => $cashBackReceipt,
     ]);
 } catch (PDOException $e) {
     if (isset($db) && $db->inTransaction()) {

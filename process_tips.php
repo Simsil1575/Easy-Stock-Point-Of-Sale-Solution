@@ -74,6 +74,7 @@ try {
             $stmt->execute([$amount, $paymentMethod, $cashier['username'], $notes, $timestamp]);
 
             $oldQty = (int)$product['quantity'];
+            deductRecipeStockByProductName($db, (string) $product['name'], (float) $quantity, $allowNegative);
             deductProductStockById($db, $productId, (float) $quantity, $allowNegative);
             $newQtyRow = $db->prepare('SELECT quantity FROM products WHERE id = ?');
             $newQtyRow->execute([$productId]);

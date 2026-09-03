@@ -1,5 +1,8 @@
 <?php
 
+require_once __DIR__ . '/includes/sales_report_cashier_filter.php';
+require_once __DIR__ . '/cash_transactions_totals_helper.php';
+
 /**
  * Supplemental totals for sales reports: product sales, gratuity, manual tips, cash back.
  */
@@ -105,11 +108,20 @@ function buildSalesReportBreakdown(PDO $db, string $ordersWhereClause, string $s
 /**
  * Daily sales breakdown with cash in/out affecting each day's and period grand total.
  */
-function buildSalesReportDailyBreakdown(PDO $db, string $startDateTime, string $endDateTime): array
-{
+function buildSalesReportDailyBreakdown(
+    PDO $db,
+    string $startDateTime,
+    string $endDateTime,
+    string $cashierUsername = '',
+    string $cashierUserId = ''
+): array {
     $cashWhere = "created_at >= " . $db->quote($startDateTime) . " AND created_at <= " . $db->quote($endDateTime);
     $ordersWhere = "o.created_at >= " . $db->quote($startDateTime) . " AND o.created_at <= " . $db->quote($endDateTime);
     $creditWhere = "created_at >= " . $db->quote($startDateTime) . " AND created_at <= " . $db->quote($endDateTime);
+
+    $cashWhere = salesReportAppendCashierSql($db, $cashWhere, 'cashier_id', $cashierUsername, $cashierUserId);
+    $ordersWhere = salesReportAppendCashierSql($db, $ordersWhere, 'o.cashier_id', $cashierUsername, $cashierUserId);
+    $creditWhere = salesReportAppendCashierSql($db, $creditWhere, 'cashier_id', $cashierUsername, $cashierUserId);
 
     $days = [];
     $startDay = substr($startDateTime, 0, 10);
@@ -247,6 +259,178 @@ function buildSalesReportDailyBreakdown(PDO $db, string $startDateTime, string $
             'cash_in_total' => round($totalCashIn, 2),
             'cash_out_total' => round($totalCashOut, 2),
             'adjusted_grand_total' => round($salesSubtotal + $totalCashIn - $totalCashOut, 2),
+        ],
+    ];
+}
+
+/**
+ * Cashier sales with cash vs EFT split (order remainder is cash after eft_payments).
+ */
+function buildCashierSalesReportData(
+    PDO $db,
+    PDO $userDb,
+    string $ordersWhereClause,
+    string $creditWhereClause,
+    string $creditDetailWhere,
+    string $cashierId = '',
+    string $cashTransactionsWhereClause = '1=1'
+): array {
+    $outflowWhere = cashReportOutflowWhereSql('description');
+    $cashBackWhere = cashBackDescriptionSql('description');
+    $expenseSumSql = "
+        SELECT COALESCE(SUM(" . cashWithdrawalsSumExpr() . "), 0)
+        FROM cash_transactions
+        WHERE {$outflowWhere}
+        AND (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?)
+        AND ($cashTransactionsWhereClause)
+    ";
+    $cashBackSumSql = "
+        SELECT COALESCE(SUM(amount), 0)
+        FROM cash_transactions
+        WHERE type = 'cash-out'
+        AND {$cashBackWhere}
+        AND (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?)
+        AND ($cashTransactionsWhereClause)
+    ";
+    $expenseListSql = "
+        SELECT id, type, amount, description, created_at
+        FROM cash_transactions
+        WHERE {$outflowWhere}
+        AND (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?)
+        AND ($cashTransactionsWhereClause)
+        ORDER BY created_at ASC
+    ";
+    $cashBackListSql = "
+        SELECT id, type, amount, description, created_at
+        FROM cash_transactions
+        WHERE type = 'cash-out'
+        AND {$cashBackWhere}
+        AND (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?)
+        AND ($cashTransactionsWhereClause)
+        ORDER BY created_at ASC
+    ";
+
+    $cashiersQuery = $userDb->query("SELECT id, username, role FROM users");
+    $allCashiers = $cashiersQuery->fetchAll(PDO::FETCH_ASSOC);
+
+    $eftTableExists = false;
+    try {
+        $eftTableExists = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'")->fetchColumn() !== false;
+    } catch (PDOException $e) {
+    }
+
+    if ($eftTableExists) {
+        $salesSql = "
+            SELECT COUNT(*) as order_count,
+                   COALESCE(SUM(o.total), 0) as total_sales,
+                   COALESCE(SUM(o.total - COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)), 0) as cash_sales,
+                   COALESCE(SUM(COALESCE((SELECT SUM(amount) FROM eft_payments WHERE order_id = o.id), 0)), 0) as eft_sales
+            FROM orders o
+            WHERE (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?) AND ($ordersWhereClause)
+        ";
+    } else {
+        $salesSql = "
+            SELECT COUNT(*) as order_count,
+                   COALESCE(SUM(o.total), 0) as total_sales,
+                   COALESCE(SUM(o.total), 0) as cash_sales,
+                   0 as eft_sales
+            FROM orders o
+            WHERE (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?) AND ($ordersWhereClause)
+        ";
+    }
+
+    $cashierSales = [];
+    foreach ($allCashiers as $cashier) {
+        if ($cashierId && $cashier['username'] != $cashierId) {
+            continue;
+        }
+
+        $salesQuery = $db->prepare($salesSql);
+        $salesQuery->execute([$cashier['username'], $cashier['id']]);
+        $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $creditQuery = $db->prepare("
+            SELECT COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
+            FROM credit_sales
+            WHERE (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?) AND ($creditWhereClause)
+        ");
+        $creditQuery->execute([$cashier['username'], $cashier['id']]);
+        $creditData = $creditQuery->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $totalSales = round((float) ($salesData['total_sales'] ?? 0), 2);
+        $cashSales = round((float) ($salesData['cash_sales'] ?? 0), 2);
+        $eftSales = round((float) ($salesData['eft_sales'] ?? 0), 2);
+        $creditTotal = round((float) ($creditData['credit_total'] ?? 0), 2);
+
+        $expenseQuery = $db->prepare($expenseSumSql);
+        $expenseQuery->execute([$cashier['username'], $cashier['id']]);
+        $expenseTotal = round((float) ($expenseQuery->fetchColumn() ?: 0), 2);
+
+        $cashBackQuery = $db->prepare($cashBackSumSql);
+        $cashBackQuery->execute([$cashier['username'], $cashier['id']]);
+        $cashBackTotal = round((float) ($cashBackQuery->fetchColumn() ?: 0), 2);
+        $tillDeductions = round($expenseTotal + $cashBackTotal, 2);
+
+        $expenseListQuery = $db->prepare($expenseListSql);
+        $expenseListQuery->execute([$cashier['username'], $cashier['id']]);
+        $expenseItems = $expenseListQuery->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $cashBackListQuery = $db->prepare($cashBackListSql);
+        $cashBackListQuery->execute([$cashier['username'], $cashier['id']]);
+        $cashBackItems = $cashBackListQuery->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $expenseItems = array_merge($expenseItems, $cashBackItems);
+
+        $cashierSales[] = [
+            'cashier_id' => $cashier['username'],
+            'cashier_name' => $cashier['username'],
+            'role' => $cashier['role'],
+            'order_count' => (int) ($salesData['order_count'] ?? 0),
+            'total_sales' => $totalSales,
+            'cash_sales' => $cashSales,
+            'eft_sales' => $eftSales,
+            'credit_count' => (int) ($creditData['credit_count'] ?? 0),
+            'credit_total' => $creditTotal,
+            'expense_total' => $tillDeductions,
+            'cash_back_total' => $cashBackTotal,
+            'expenses' => $expenseItems,
+            'net_cash' => round($cashSales - $tillDeductions, 2),
+            'grand_total' => round($totalSales + $creditTotal, 2),
+        ];
+    }
+
+    usort($cashierSales, static fn($a, $b) => $b['grand_total'] <=> $a['grand_total']);
+
+    $allExpenses = [];
+    foreach ($cashierSales as $cashierRow) {
+        foreach ($cashierRow['expenses'] as $expense) {
+            $allExpenses[] = [
+                'id' => $expense['id'],
+                'cashier_name' => $cashierRow['cashier_name'],
+                'amount' => round(abs((float) ($expense['amount'] ?? 0)), 2),
+                'description' => $expense['description'] !== '' ? $expense['description'] : ((($expense['type'] ?? '') === 'refund') ? 'Refund' : 'Expense'),
+                'created_at' => $expense['created_at'],
+            ];
+        }
+    }
+    usort($allExpenses, static fn($a, $b) => strcmp((string) ($a['created_at'] ?? ''), (string) ($b['created_at'] ?? '')));
+
+    $totalCash = round(array_sum(array_column($cashierSales, 'cash_sales')), 2);
+    $totalExpenses = round(array_sum(array_column($cashierSales, 'expense_total')), 2);
+
+    return [
+        'cashiers' => $cashierSales,
+        'expenses' => $allExpenses,
+        'order_transactions' => [],
+        'credit_transactions' => [],
+        'summary' => [
+            'total_cashiers' => count($cashierSales),
+            'total_cash' => $totalCash,
+            'total_eft' => round(array_sum(array_column($cashierSales, 'eft_sales')), 2),
+            'total_credit' => round(array_sum(array_column($cashierSales, 'credit_total')), 2),
+            'total_expenses' => $totalExpenses,
+            'net_cash_expected' => round($totalCash - $totalExpenses, 2),
+            'total_sales' => round(array_sum(array_column($cashierSales, 'grand_total')), 2),
+            'cashier_label' => $cashierId !== '' ? $cashierId : 'All cashiers',
         ],
     ];
 }

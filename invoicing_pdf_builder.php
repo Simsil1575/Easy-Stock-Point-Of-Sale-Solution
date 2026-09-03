@@ -1,0 +1,493 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Shared A4 PDF builder for quotations and invoices.
+ * Used by invoicing_pdf.php (browser download) and invoicing_email.php (attachment).
+ */
+
+require_once __DIR__ . '/invoicing_lib.php';
+require_once __DIR__ . '/fpdf/fpdf.php';
+
+if (!function_exists('pdfText')) {
+    /** Convert to a latin-1 safe string for FPDF core fonts. */
+    function pdfText(string $s): string
+    {
+        return iconv('UTF-8', 'windows-1252//TRANSLIT', $s) ?: $s;
+    }
+}
+
+if (!function_exists('pdfMoney')) {
+    function pdfMoney(string $currency, $amount): string
+    {
+        return pdfText($currency . ' ' . number_format((float) $amount, 2));
+    }
+}
+
+if (!class_exists('InvoicingPDF')) {
+    class InvoicingPDF extends FPDF
+    {
+        public array $s = [];
+        public string $docTitle = '';
+        public string $number = '';
+
+        function Header(): void
+        {
+            $s = $this->s;
+            $startY = 12;
+
+            $logo = (string) ($s['company_logo'] ?? '');
+            $logoPath = '';
+            if ($logo !== '') {
+                $candidates = [
+                    $logo,
+                    __DIR__ . '/' . ltrim(str_replace('\\', '/', $logo), '/'),
+                    __DIR__ . '/uploads/business/' . basename($logo),
+                ];
+                foreach ($candidates as $c) {
+                    if (is_readable($c) && preg_match('/\.(png|jpe?g|gif)$/i', $c)) {
+                        $logoPath = $c;
+                        break;
+                    }
+                }
+            }
+            $textX = 12;
+            if ($logoPath !== '') {
+                $ext = strtolower(pathinfo($logoPath, PATHINFO_EXTENSION));
+                $ext = $ext === 'jpg' ? 'JPG' : strtoupper($ext);
+                try {
+                    $this->Image($logoPath, 12, $startY, 28, 0, $ext);
+                    $textX = 44;
+                } catch (Throwable $e) {
+                    $textX = 12;
+                }
+            }
+
+            $this->SetXY($textX, $startY);
+            $this->SetFont('Arial', 'B', 16);
+            $this->SetTextColor(31, 41, 55);
+            $this->Cell(110, 7, pdfText((string) ($s['company_name'] ?? '')), 0, 2, 'L');
+            $this->SetFont('Arial', '', 9);
+            $this->SetTextColor(90, 90, 90);
+            foreach (array_filter([
+                (string) ($s['company_address'] ?? ''),
+                trim(((string) ($s['telephone'] ?? '')) . (($s['email'] ?? '') ? '  |  ' . $s['email'] : '')),
+                (string) ($s['website'] ?? ''),
+                $this->taxLine($s),
+            ]) as $line) {
+                $this->SetX($textX);
+                $this->Cell(110, 5, pdfText($line), 0, 2, 'L');
+            }
+
+            $this->SetXY(140, $startY);
+            $this->SetFont('Arial', 'B', 22);
+            $this->SetTextColor(13, 148, 136);
+            $this->Cell(58, 10, $this->docTitle, 0, 2, 'R');
+            $this->SetFont('Arial', 'B', 10);
+            $this->SetTextColor(31, 41, 55);
+            $this->SetX(140);
+            $this->Cell(58, 6, pdfText($this->number), 0, 2, 'R');
+
+            $this->SetY(max($this->GetY(), 42));
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.3);
+            $this->Line(12, 46, 198, 46);
+            $this->SetY(50);
+            $this->SetTextColor(0, 0, 0);
+        }
+
+        function NbLines($w, $txt): int
+        {
+            $cw = $this->CurrentFont['cw'] ?? null;
+            if ($cw === null) {
+                return 1;
+            }
+            if ($w == 0) {
+                $w = $this->w - $this->rMargin - $this->x;
+            }
+            $wmax = ($w - 2 * $this->cMargin) * 1000 / $this->FontSize;
+            $s = str_replace("\r", '', (string) $txt);
+            $nb = strlen($s);
+            if ($nb > 0 && $s[$nb - 1] === "\n") {
+                $nb--;
+            }
+            $sep = -1;
+            $i = 0;
+            $j = 0;
+            $l = 0;
+            $nl = 1;
+            while ($i < $nb) {
+                $c = $s[$i];
+                if ($c === "\n") {
+                    $i++;
+                    $sep = -1;
+                    $j = $i;
+                    $l = 0;
+                    $nl++;
+                    continue;
+                }
+                if ($c === ' ') {
+                    $sep = $i;
+                }
+                $l += $cw[$c] ?? 0;
+                if ($l > $wmax) {
+                    if ($sep == -1) {
+                        if ($i == $j) {
+                            $i++;
+                        }
+                    } else {
+                        $i = $sep + 1;
+                    }
+                    $sep = -1;
+                    $j = $i;
+                    $l = 0;
+                    $nl++;
+                } else {
+                    $i++;
+                }
+            }
+            return $nl;
+        }
+
+        function taxLine(array $s): string
+        {
+            $parts = [];
+            if (!empty($s['tax_number'])) {
+                $parts[] = 'Tax No: ' . $s['tax_number'];
+            }
+            if (!empty($s['vat_number'])) {
+                $parts[] = 'VAT No: ' . $s['vat_number'];
+            }
+            return implode('   ', $parts);
+        }
+
+        function Footer(): void
+        {
+            $this->SetY(-12);
+            $this->SetFont('Arial', 'I', 8);
+            $this->SetTextColor(120, 120, 120);
+            $this->Cell(0, 5, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
+            $this->SetTextColor(0, 0, 0);
+        }
+
+        function drawDocumentBottomBlock(array $footerLines): void
+        {
+            if ($footerLines === []) {
+                return;
+            }
+
+            $lineH = 5.5;
+            $pad = 4.0;
+            $headingH = 7.0;
+            $boxW = 118.0;
+            $textX = 17.0;
+            $textW = $boxW - 10.0;
+            $contentH = $headingH + ($pad * 2) + (count($footerLines) * $lineH);
+            $blockBottom = 278.0;
+            $blockTop = $blockBottom - $contentH;
+
+            if ($this->GetY() > $blockTop - 10) {
+                $this->AddPage();
+                $blockTop = $blockBottom - $contentH;
+            }
+
+            $this->SetFillColor(240, 253, 250);
+            $this->SetDrawColor(153, 246, 228);
+            $this->SetLineWidth(0.5);
+            $this->Rect(12, $blockTop, $boxW, $contentH, 'DF');
+
+            $this->SetFillColor(13, 148, 136);
+            $this->Rect(12, $blockTop, 3, $contentH, 'F');
+
+            $this->SetXY($textX, $blockTop + $pad);
+            $this->SetFont('Arial', 'B', 10);
+            $this->SetTextColor(15, 118, 110);
+            $this->Cell($textW, $headingH, pdfText('Payment & Business Details'), 0, 2, 'L');
+
+            $this->SetFont('Arial', '', 9);
+            $this->SetTextColor(31, 41, 55);
+            foreach ($footerLines as $line) {
+                $this->SetX($textX);
+                $this->Cell($textW, $lineH, pdfText($line), 0, 2, 'L');
+            }
+
+            $this->SetTextColor(0, 0, 0);
+        }
+    }
+}
+
+/**
+ * Build a completed invoice/quotation PDF object.
+ *
+ * @return array{
+ *   pdf: InvoicingPDF,
+ *   filename: string,
+ *   type: string,
+ *   number: string,
+ *   doc: array,
+ *   customer: ?array,
+ *   items: array,
+ *   grand_total: float,
+ *   currency: string,
+ *   settings: array,
+ *   primary_date: string,
+ *   secondary_date: string,
+ *   secondary_date_label: string
+ * }
+ */
+function invBuildDocumentPdf(PDO $db, string $type, int $id, ?array $settings = null): array
+{
+    $type = $type === 'quotation' ? 'quotation' : 'invoice';
+    $settings = $settings ?? invGetDocumentSettings();
+
+    if ($type === 'quotation') {
+        $bundle = invLoadQuotation($db, $id);
+        if (!$bundle) {
+            throw new RuntimeException('Quotation not found.');
+        }
+        $doc = $bundle['quotation'];
+        $docTitle = 'QUOTATION';
+        $number = (string) $doc['quotation_number'];
+        $primaryDateLabel = 'Quotation Date';
+        $secondaryDateLabel = 'Valid Until';
+        $secondaryDate = (string) ($doc['expiry_date'] ?? '');
+        $grandTotal = (float) $doc['total'];
+        $primaryDate = (string) ($doc['quotation_date'] ?? '');
+    } else {
+        $bundle = invLoadInvoice($db, $id);
+        if (!$bundle) {
+            throw new RuntimeException('Invoice not found.');
+        }
+        $doc = $bundle['invoice'];
+        $docTitle = 'INVOICE';
+        $number = (string) $doc['invoice_number'];
+        $primaryDateLabel = 'Invoice Date';
+        $secondaryDateLabel = 'Due Date';
+        $secondaryDate = (string) ($doc['due_date'] ?? '');
+        $grandTotal = (float) $doc['grand_total'];
+        $primaryDate = (string) ($doc['invoice_date'] ?? '');
+    }
+
+    $customer = $bundle['customer'] ?? null;
+    $items = $bundle['items'] ?? [];
+    $currency = (string) ($settings['currency'] ?? 'N$');
+
+    $pdf = new InvoicingPDF();
+    $pdf->s = $settings;
+    $pdf->docTitle = $docTitle;
+    $pdf->number = $number;
+    $pdf->AliasNbPages();
+    $pdf->SetAutoPageBreak(true, 22);
+    $pdf->AddPage();
+
+    $topY = $pdf->GetY();
+    $pdf->SetFont('Arial', 'B', 9);
+    $pdf->SetTextColor(13, 148, 136);
+    $pdf->Cell(110, 6, 'BILL TO', 0, 2, 'L');
+    $pdf->SetTextColor(0, 0, 0);
+    $pdf->SetFont('Arial', 'B', 11);
+    $pdf->Cell(110, 6, pdfText((string) ($customer['name'] ?? 'N/A')), 0, 2, 'L');
+    $pdf->SetFont('Arial', '', 9);
+    $pdf->SetTextColor(90, 90, 90);
+    foreach (array_filter([
+        (string) ($customer['address'] ?? ''),
+        (string) ($customer['phone'] ?? ''),
+        (string) ($customer['email'] ?? ''),
+        ($customer['tax_number'] ?? '') ? 'Tax No: ' . $customer['tax_number'] : '',
+    ]) as $line) {
+        $pdf->MultiCell(110, 5, pdfText($line), 0, 'L');
+    }
+
+    $metaX = 130;
+    $pdf->SetXY($metaX, $topY);
+    $pdf->SetFont('Arial', '', 9);
+    $rows = [
+        [$primaryDateLabel, $primaryDate],
+        [$secondaryDateLabel, $secondaryDate !== '' ? $secondaryDate : '-'],
+        ['Status', (string) ($doc['status'] ?? '')],
+    ];
+    if ($type === 'invoice' && !empty($doc['payment_terms'])) {
+        $rows[] = ['Payment Terms', (string) $doc['payment_terms']];
+    }
+    foreach ($rows as $r) {
+        $pdf->SetX($metaX);
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->SetTextColor(90, 90, 90);
+        $pdf->Cell(30, 6, pdfText($r[0]), 0, 0, 'L');
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->SetTextColor(0, 0, 0);
+        $pdf->Cell(38, 6, pdfText($r[1]), 0, 2, 'R');
+    }
+
+    $pdf->SetY(max($pdf->GetY(), $topY + 34));
+    $pdf->Ln(4);
+
+    $wDesc = 86;
+    $wQty = 18;
+    $wPrice = 28;
+    $wDisc = 24;
+    $wTotal = 30;
+
+    $pdf->SetFont('Arial', 'B', 9);
+    $pdf->SetFillColor(13, 148, 136);
+    $pdf->SetTextColor(255, 255, 255);
+    $pdf->Cell($wDesc, 8, 'Description', 0, 0, 'L', true);
+    $pdf->Cell($wQty, 8, 'Qty', 0, 0, 'C', true);
+    $pdf->Cell($wPrice, 8, 'Unit Price', 0, 0, 'R', true);
+    $pdf->Cell($wDisc, 8, 'Discount', 0, 0, 'R', true);
+    $pdf->Cell($wTotal, 8, 'Amount', 0, 1, 'R', true);
+    $pdf->SetTextColor(0, 0, 0);
+
+    $pdf->SetFont('Arial', '', 9);
+    $fill = false;
+    foreach ($items as $it) {
+        $desc = trim((string) ($it['product_name'] ?? ''));
+        $extra = trim((string) ($it['description'] ?? ''));
+        if ($desc === '') {
+            $desc = $extra;
+            $extra = '';
+        }
+        $label = $desc . ($extra !== '' ? ' - ' . $extra : '');
+
+        $pdf->SetFillColor(247, 249, 252);
+        $x = $pdf->GetX();
+        $y = $pdf->GetY();
+        $lines = max(1, $pdf->NbLines($wDesc, pdfText($label)));
+        $rowH = max(7, $lines * 5);
+
+        $pdf->Cell($wDesc, $rowH, '', 0, 0, 'L', $fill);
+        $pdf->SetXY($x, $y + ($rowH - $lines * 5) / 2);
+        $pdf->MultiCell($wDesc, 5, pdfText($label), 0, 'L', false);
+        $pdf->SetXY($x + $wDesc, $y);
+
+        $pdf->Cell($wQty, $rowH, rtrim(rtrim(number_format((float) $it['quantity'], 2), '0'), '.'), 0, 0, 'C', $fill);
+        $pdf->Cell($wPrice, $rowH, pdfMoney($currency, $it['unit_price']), 0, 0, 'R', $fill);
+        $pdf->Cell($wDisc, $rowH, pdfMoney($currency, $it['discount']), 0, 0, 'R', $fill);
+        $pdf->Cell($wTotal, $rowH, pdfMoney($currency, $it['line_total']), 0, 1, 'R', $fill);
+        $fill = !$fill;
+    }
+
+    $pdf->Ln(3);
+
+    $totalsX = 120;
+    $labelW = 48;
+    $valW = 30;
+    $addTotal = function (string $label, $value, bool $bold = false, ?array $bg = null) use ($pdf, $totalsX, $labelW, $valW, $currency): void {
+        $pdf->SetX($totalsX);
+        if ($bg !== null) {
+            $pdf->SetFillColor($bg[0], $bg[1], $bg[2]);
+        }
+        $pdf->SetFont('Arial', $bold ? 'B' : '', $bold ? 11 : 9);
+        if ($bold) {
+            $pdf->SetTextColor(255, 255, 255);
+        } else {
+            $pdf->SetTextColor(60, 60, 60);
+        }
+        $pdf->Cell($labelW, $bold ? 9 : 6, pdfText($label), 0, 0, 'L', $bg !== null);
+        $pdf->Cell($valW, $bold ? 9 : 6, pdfMoney($currency, $value), 0, 1, 'R', $bg !== null);
+        $pdf->SetTextColor(0, 0, 0);
+    };
+
+    $addTotal('Subtotal', $doc['subtotal']);
+    if ((float) $doc['discount_amount'] > 0) {
+        $addTotal('Discount', -1 * (float) $doc['discount_amount']);
+    }
+    if ((float) $doc['vat_amount'] > 0) {
+        $addTotal('VAT (' . rtrim(rtrim(number_format((float) $doc['vat_percentage'], 2), '0'), '.') . '%)', $doc['vat_amount']);
+    }
+    if ((float) $doc['shipping_amount'] > 0) {
+        $addTotal('Shipping', $doc['shipping_amount']);
+    }
+    $addTotal($type === 'quotation' ? 'Total' : 'Grand Total', $grandTotal, true, [13, 148, 136]);
+
+    if ($type === 'invoice') {
+        $addTotal('Paid', $doc['paid_amount']);
+        $addTotal('Balance Due', $doc['balance_due'], true, [220, 38, 38]);
+    }
+
+    $pdf->Ln(6);
+
+    $notes = trim((string) ($doc['notes'] ?? ''));
+    $terms = trim((string) ($doc['terms_conditions'] ?? ''));
+    if ($notes === '' && !empty($settings['default_notes'])) {
+        $notes = (string) $settings['default_notes'];
+    }
+    if ($terms === '' && !empty($settings['default_terms_conditions'])) {
+        $terms = (string) $settings['default_terms_conditions'];
+    }
+    if ($notes !== '') {
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->SetTextColor(13, 148, 136);
+        $pdf->Cell(0, 6, 'Notes', 0, 1, 'L');
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->SetTextColor(60, 60, 60);
+        $pdf->MultiCell(0, 5, pdfText($notes), 0, 'L');
+        $pdf->Ln(2);
+    }
+    if ($terms !== '') {
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->SetTextColor(13, 148, 136);
+        $pdf->Cell(0, 6, 'Terms & Conditions', 0, 1, 'L');
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->SetTextColor(60, 60, 60);
+        $pdf->MultiCell(0, 5, pdfText($terms), 0, 'L');
+    }
+
+    $pdf->SetTextColor(0, 0, 0);
+    $pdf->Ln(10);
+
+    $sigY = $pdf->GetY();
+    if ($sigY > 245) {
+        $pdf->AddPage();
+        $sigY = $pdf->GetY() + 10;
+    }
+    $pdf->SetY($sigY);
+    $pdf->SetDrawColor(150, 150, 150);
+    $pdf->Line(20, $sigY + 12, 80, $sigY + 12);
+    $pdf->Line(120, $sigY + 12, 180, $sigY + 12);
+    $pdf->SetXY(20, $sigY + 13);
+    $pdf->SetFont('Arial', '', 8);
+    $pdf->Cell(60, 5, pdfText('Prepared / Authorized By'), 0, 0, 'C');
+    $pdf->SetX(120);
+    $pdf->Cell(60, 5, pdfText('Customer Signature'), 0, 0, 'C');
+    $pdf->SetXY(20, $sigY + 6);
+    $pdf->SetFont('Arial', 'B', 9);
+    $pdf->Cell(60, 5, pdfText((string) ($doc['approved_by'] ?? $doc['created_by'] ?? '')), 0, 0, 'C');
+
+    $footerLines = invBuildDocumentFooterLines($settings);
+    $pdf->drawDocumentBottomBlock($footerLines);
+
+    $filename = ($type === 'quotation' ? 'Quotation_' : 'Invoice_') . preg_replace('/[^A-Za-z0-9_-]/', '', $number) . '.pdf';
+
+    return [
+        'pdf' => $pdf,
+        'filename' => $filename,
+        'type' => $type,
+        'number' => $number,
+        'doc' => $doc,
+        'customer' => $customer,
+        'items' => $items,
+        'grand_total' => $grandTotal,
+        'currency' => $currency,
+        'settings' => $settings,
+        'primary_date' => $primaryDate,
+        'secondary_date' => $secondaryDate,
+        'secondary_date_label' => $secondaryDateLabel,
+    ];
+}
+
+/**
+ * Render the document PDF as a binary string for email attachment.
+ *
+ * @return array{content:string,filename:string,meta:array}
+ */
+function invDocumentPdfContent(PDO $db, string $type, int $id, ?array $settings = null): array
+{
+    $built = invBuildDocumentPdf($db, $type, $id, $settings);
+    return [
+        'content' => $built['pdf']->Output('S'),
+        'filename' => $built['filename'],
+        'meta' => $built,
+    ];
+}

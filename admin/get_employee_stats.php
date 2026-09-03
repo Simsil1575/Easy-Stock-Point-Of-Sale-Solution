@@ -65,35 +65,11 @@ function getDateRange($period, $date = null) {
     }
 }
 
+require_once __DIR__ . '/../business_day_helper.php';
+
 // Function to get business day WHERE clause
 function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime = '00:00', $isAfterMidnight = false) {
-    if ($startDate === $endDate) {
-        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-        return "
-            (DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-            (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-        ";
-    } else {
-        $whereClauses = [];
-        $currentDate = new DateTime($startDate);
-        $endDateTime = new DateTime($endDate);
-        
-        while ($currentDate <= $endDateTime) {
-            $dateStr = $currentDate->format('Y-m-d');
-            $nextDay = clone $currentDate;
-            $nextDay->modify('+1 day');
-            $nextDayStr = $nextDay->format('Y-m-d');
-            
-            $whereClauses[] = "
-                (DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-            ";
-            
-            $currentDate->modify('+1 day');
-        }
-        
-        return "(" . implode(") OR (", $whereClauses) . ")";
-    }
+    return bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, (bool) $isAfterMidnight);
 }
 
 try {
@@ -102,20 +78,10 @@ try {
     $endDate = $dateRange['end'];
     $noFilter = isset($dateRange['no_filter']) && $dateRange['no_filter'] === true;
     
-    // Get business closing time
-    $closingTime = '00:00';
-    $isAfterMidnight = false;
-    try {
-        $infoDb = new PDO("sqlite:../info.db");
-        $businessInfo = $infoDb->query("SELECT closing_time FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        if ($businessInfo) {
-            $closingTime = $businessInfo['closing_time'] ?? '00:00';
-            $closingHour = (int)substr($closingTime, 0, 2);
-            $isAfterMidnight = $closingHour < 12;
-        }
-    } catch (PDOException $e) {
-        // Use default values if info.db is not available
-    }
+    // Match admin/cash.php business-day boundaries
+    $bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+    $closingTime = $bdCtx['closing_time'];
+    $isAfterMidnight = $bdCtx['is_after_midnight'];
     
     // Get all employees (cashiers)
     try {

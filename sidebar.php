@@ -359,7 +359,8 @@
             currentPage.startsWith('damaged_goods') ||
             currentPage.startsWith('create_creditor') ||
             currentPage.startsWith('quotation') || currentPage.startsWith('quotations') ||
-            currentPage.startsWith('invoice') || currentPage.startsWith('invoices')
+            currentPage.startsWith('invoice') || currentPage.startsWith('invoices') ||
+            currentPage.startsWith('medical_aid')
         );
         
         // Remove active class from all links

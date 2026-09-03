@@ -13,6 +13,7 @@ date_default_timezone_set('Africa/Harare');
 
 // Include the receipt printing libraries
 require __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/receipt_header_helper.php';
 use Mike42\Escpos\Printer;
 use Mike42\Escpos\PrintConnectors\WindowsPrintConnector;
 use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
@@ -69,6 +70,10 @@ try {
         // Ensure print_only flag is set for Android printing
         $input['print_only'] = true;
         $input['business_name'] = $businessInfo['name'];
+        $secondaryName = trim((string)($businessInfo['name_secondary'] ?? ''));
+        if ($secondaryName !== '') {
+            $input['business_name_secondary'] = $secondaryName;
+        }
         $input['location'] = $businessInfo['location'] ?? '';
         $input['phone'] = $businessInfo['phone'] ?? '';
         
@@ -148,9 +153,7 @@ try {
 function printZReport($printer, $data, $businessInfo, $width = 42) {
     // Header
     $printer->setJustification(Printer::JUSTIFY_CENTER);
-    $printer->selectPrintMode(Printer::MODE_DOUBLE_WIDTH | Printer::MODE_DOUBLE_HEIGHT | Printer::MODE_EMPHASIZED);
-    $printer->text($businessInfo['name'] . "\n");
-    $printer->selectPrintMode();
+    printBusinessNameHeader($printer, $businessInfo, $width);
     $printer->setEmphasis(true);
     $printer->text($businessInfo['location'] . "\n");
     $printer->setEmphasis(false);

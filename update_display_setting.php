@@ -1,5 +1,8 @@
 <?php
-header('Content-Type: application/json');
+declare(strict_types=1);
+
+ob_start();
+header('Content-Type: application/json; charset=utf-8');
 
 try {
     // Connect to the SQLite database
@@ -7,7 +10,10 @@ try {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     // Get the JSON data from the request body
-    $data = json_decode(file_get_contents('php://input'), true);
+    $data = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($data)) {
+        $data = [];
+    }
     $hide_available_quantity = $data['hide_available_quantity'] ?? null;
     $skip_stock_checks = $data['skip_stock_checks'] ?? null;
     $use_qz_tray = $data['use_qz_tray'] ?? null;
@@ -16,6 +22,13 @@ try {
     $cashier_idle_timeout_seconds = $data['cashier_idle_timeout_seconds'] ?? null;
     $cashier_inactivity_enabled = $data['cashier_inactivity_enabled'] ?? null;
     $receipt_paper_width_mm = $data['receipt_paper_width_mm'] ?? null;
+    $pole_display_enabled = array_key_exists('pole_display_enabled', $data) ? $data['pole_display_enabled'] : null;
+    $pole_display_port = array_key_exists('pole_display_port', $data) ? $data['pole_display_port'] : null;
+    $pole_display_baud = array_key_exists('pole_display_baud', $data) ? $data['pole_display_baud'] : null;
+    $pole_display_mode = array_key_exists('pole_display_mode', $data) ? $data['pole_display_mode'] : null;
+
+    require_once __DIR__ . '/pole_display_settings_helper.php';
+    ensurePoleDisplaySettingsColumns($pdo);
 
     // Add columns if they don't exist
     try {
@@ -159,16 +172,43 @@ try {
         $stmt = $pdo->prepare('UPDATE product_settings SET credit_interest_rate = ? WHERE id = 1');
         $stmt->execute([$rate]);
     }
-    // Return a success response
+    if ($pole_display_enabled !== null) {
+        $stmt = $pdo->prepare('UPDATE product_settings SET pole_display_enabled = ? WHERE id = 1');
+        $stmt->execute([(int) ((bool) $pole_display_enabled)]);
+    }
+    if ($pole_display_port !== null) {
+        $port = strtoupper(trim((string) $pole_display_port));
+        if ($port !== 'AUTO' && !preg_match('/^COM\d+$/', $port) && $port !== '') {
+            $port = '';
+        }
+        $stmt = $pdo->prepare('UPDATE product_settings SET pole_display_port = ? WHERE id = 1');
+        $stmt->execute([$port]);
+    }
+    if ($pole_display_baud !== null) {
+        $baud = (int) $pole_display_baud;
+        if (!in_array($baud, [2400, 4800, 9600, 19200], true)) {
+            $baud = 9600;
+        }
+        $stmt = $pdo->prepare('UPDATE product_settings SET pole_display_baud = ? WHERE id = 1');
+        $stmt->execute([$baud]);
+    }
+    if ($pole_display_mode !== null) {
+        $mode = strtolower(trim((string) $pole_display_mode)) === 'pst' ? 'pst' : 'epson';
+        $stmt = $pdo->prepare('UPDATE product_settings SET pole_display_mode = ? WHERE id = 1');
+        $stmt->execute([$mode]);
+    }
+    if (ob_get_length()) {
+        ob_clean();
+    }
     echo json_encode(['success' => true, 'message' => 'Setting updated successfully']);
-} catch (PDOException $e) {
-    // Return an error response
+} catch (Throwable $e) {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    http_response_code(500);
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }
-?>
-
-
-
+exit;
 
 
 

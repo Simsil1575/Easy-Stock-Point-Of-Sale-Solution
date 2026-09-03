@@ -18,9 +18,10 @@ try {
             // Search by order ID
             $stmt = $db->prepare("
                 SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
-                       COUNT(oi.id) as item_count
+                       COUNT(oi.id) as item_count,
+                       GROUP_CONCAT(oi.product_name || ' x' || oi.quantity, ', ') as items_summary
                 FROM orders o
-                LEFT JOIN order_items oi ON o.id = oi.order_id
+                LEFT JOIN order_items oi ON o.id = oi.order_id AND oi.quantity > 0
                 WHERE o.id = :search
                 GROUP BY o.id
                 ORDER BY o.created_at DESC
@@ -31,9 +32,10 @@ try {
             // Search by date
             $stmt = $db->prepare("
                 SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
-                       COUNT(oi.id) as item_count
+                       COUNT(oi.id) as item_count,
+                       GROUP_CONCAT(oi.product_name || ' x' || oi.quantity, ', ') as items_summary
                 FROM orders o
-                LEFT JOIN order_items oi ON o.id = oi.order_id
+                LEFT JOIN order_items oi ON o.id = oi.order_id AND oi.quantity > 0
                 WHERE DATE(o.created_at) LIKE :search
                 GROUP BY o.id
                 ORDER BY o.created_at DESC
@@ -46,9 +48,10 @@ try {
         // Get recent transactions
         $stmt = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
-                   COUNT(oi.id) as item_count
+                   COUNT(oi.id) as item_count,
+                   GROUP_CONCAT(oi.product_name || ' x' || oi.quantity, ', ') as items_summary
             FROM orders o
-            LEFT JOIN order_items oi ON o.id = oi.order_id
+            LEFT JOIN order_items oi ON o.id = oi.order_id AND oi.quantity > 0
             GROUP BY o.id
             ORDER BY o.created_at DESC
             LIMIT :limit

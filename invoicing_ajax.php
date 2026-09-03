@@ -238,6 +238,22 @@ try {
             break;
         }
 
+        case 'send_document': {
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(120);
+            }
+            require_once __DIR__ . '/invoicing_email.php';
+            $docType = (string) ($input['type'] ?? 'invoice');
+            $docType = $docType === 'quotation' ? 'quotation' : 'invoice';
+            $result = invSendDocumentEmail($db, $docType, (int) ($input['id'] ?? 0), [
+                'to' => (string) ($input['to'] ?? ''),
+                'cc' => (string) ($input['cc'] ?? ''),
+                'message' => (string) ($input['message'] ?? ''),
+            ]);
+            invRespond(true, 'Email sent successfully.', $result);
+            break;
+        }
+
         default:
             http_response_code(400);
             invRespond(false, 'Unknown action.');

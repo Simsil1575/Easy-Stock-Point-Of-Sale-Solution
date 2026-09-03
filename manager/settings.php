@@ -763,9 +763,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                 </div>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
+                        function parseDisplaySettingResponse(response) {
+                            return response.text().then(function(text) {
+                                var body = (text || '').trim();
+                                if (!body) {
+                                    throw new Error('Empty response from server');
+                                }
+                                try {
+                                    return JSON.parse(body);
+                                } catch (err) {
+                                    console.error('Display setting API returned non-JSON:', body);
+                                    throw err;
+                                }
+                            });
+                        }
+
                         const checkbox = document.getElementById('hide_available_quantity');
                         if (!checkbox) return;
-                        checkbox.checked = <?php echo (int)$hide_available_quantity; ?>;
+                        checkbox.checked = <?php echo (int)$hide_available_quantity; ?> === 1;
                         checkbox.addEventListener('change', function() {
                             const hideQuantity = this.checked ? 1 : 0;
                             fetch('../update_display_setting.php', {
@@ -773,7 +788,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_manager_void_pin
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ hide_available_quantity: hideQuantity })
                             })
-                            .then(response => response.json())
+                            .then(parseDisplaySettingResponse)
                             .then(data => {
                                 if (data.success) {
                                     showAlert('success', 'Success', 'Setting updated successfully');

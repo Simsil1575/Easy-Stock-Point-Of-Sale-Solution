@@ -36,6 +36,11 @@
         };
     }
 
+    /** Map SweetAlert preConfirm value to restore_stock POST field ('0' or '1'). */
+    function restoreStockPostValue(value) {
+        return value === '0' || value === 0 || value === false ? '0' : '1';
+    }
+
     function posConfirm(options) {
         var opts = options || {};
         var variant = opts.variant || 'danger';
@@ -62,6 +67,46 @@
             config.html = opts.html;
         } else if (opts.text) {
             config.text = opts.text;
+        }
+
+        if (opts.checkbox) {
+            var cb = opts.checkbox;
+            var cbName = cb.name || 'restore_stock';
+            var cbLabel = cb.label || 'Restore items to stock';
+            var cbHint = cb.hint || '';
+            var checkedAttr = cb.checked === false ? '' : ' checked';
+            var hintHtml = cbHint
+                ? '<span class="block text-xs text-gray-500 font-normal mt-0.5"></span>'
+                : '';
+            var checkboxHtml = '<label class="mt-3 flex items-start gap-2 cursor-pointer select-none text-left">'
+                + '<input type="checkbox" id="posConfirmCheckbox" data-name="' + cbName.replace(/"/g, '&quot;') + '" class="mt-1 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"' + checkedAttr + '>'
+                + '<span class="text-sm text-gray-800"><span class="pos-confirm-checkbox-label"></span>' + hintHtml + '</span>'
+                + '</label>';
+            if (config.html) {
+                config.html += checkboxHtml;
+            } else if (config.text) {
+                config.html = '<p class="text-sm text-gray-700">' + String(config.text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</p>' + checkboxHtml;
+                delete config.text;
+            } else {
+                config.html = checkboxHtml;
+            }
+            config.didOpen = function () {
+                var labelEl = document.querySelector('.pos-confirm-checkbox-label');
+                if (labelEl) {
+                    labelEl.textContent = cbLabel;
+                }
+                if (cbHint) {
+                    var hintEl = document.querySelector('#posConfirmCheckbox') && document.querySelector('#posConfirmCheckbox').parentElement.querySelector('.text-xs');
+                    if (hintEl) {
+                        hintEl.textContent = cbHint;
+                    }
+                }
+            };
+            config.preConfirm = function () {
+                var el = document.getElementById('posConfirmCheckbox');
+                // SweetAlert treats boolean false from preConfirm as validation failure — use '0'/'1'.
+                return el ? (el.checked ? '1' : '0') : '1';
+            };
         }
 
         return global.Swal.fire(config);
@@ -111,6 +156,18 @@
         }
         posConfirm(options).then(function (result) {
             if (result.isConfirmed) {
+                if (options && options.checkbox) {
+                    var fieldName = options.checkbox.name || 'restore_stock';
+                    var existing = form.querySelector('input[name="' + fieldName + '"]');
+                    if (existing) {
+                        existing.parentNode.removeChild(existing);
+                    }
+                    var hidden = document.createElement('input');
+                    hidden.type = 'hidden';
+                    hidden.name = fieldName;
+                    hidden.value = restoreStockPostValue(result.value);
+                    form.appendChild(hidden);
+                }
                 form.submit();
             }
         });

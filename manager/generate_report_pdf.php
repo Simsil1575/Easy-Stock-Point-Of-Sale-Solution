@@ -56,9 +56,24 @@ try {
     
     $infoDb = new PDO('sqlite:../info.db');
     $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    require_once __DIR__ . '/../medical_aid_lib.php';
+    medicalAidBootstrap();
 } catch (PDOException $e) {
     die("Database connection failed: " . $e->getMessage());
 }
+
+require_once __DIR__ . '/../report_amount_override_helper.php';
+$reportScope = raoBuildReportScope(
+    $reportType,
+    $startDateTime,
+    $endDateTime,
+    $cashierId,
+    $terminalMac,
+    $creditorId,
+    $category,
+    $supplierId
+);
+$reportAmountOverrides = raoLoadActiveOverrides($db, $reportScope);
 
 // Get business info
 $businessInfo = [];
@@ -73,6 +88,8 @@ $businessAddress = $businessInfo['address'] ?? '';
 $businessPhone = $businessInfo['phone'] ?? '';
 
 require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../includes/sales_report_cashier_filter.php';
+require_once __DIR__ . '/../sales_report_helper.php';
 
 // Get closing time for business day calculations
 $closingTime = $businessInfo['closing_time'] ?? '00:00';
@@ -200,21 +217,21 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
         $eftTableExists = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='eft_payments'")->fetchColumn() !== false;
     } catch (PDOException $e) {
     }
-    $bdWhere = "(
-        (DATE(:dateField) = :d AND strftime('%H:%M', :dateField) >= :ct) OR
-        (DATE(:dateField) = :nbd AND strftime('%H:%M', :dateField) < :ct2 AND :iam = 1)
-    )";
-    $params = [':d' => $selectedDate, ':nbd' => $nextBusinessDay, ':ct' => $closingTime, ':ct2' => $closingTime, ':iam' => (int)$isAfterMidnight];
+    $isOvernight = (bool) $isAfterMidnight;
+    $bdWhereCreated = bdSingleDayWhereSql('created_at', ':d', ':nbd', $closingTime, $isOvernight);
+    $bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':d', ':nbd', $closingTime, $isOvernight);
+    $bdWherePayment = bdSingleDayWhereSql('p.payment_date', ':d', ':nbd', $closingTime, $isOvernight);
+    $bdWhereEPayment = bdSingleDayWhereSql('ep.payment_date', ':d', ':nbd', $closingTime, $isOvernight);
+    $bdWhereOpened = bdSingleDayWhereSql('opened_at', ':d', ':nbd', $closingTime, $isOvernight);
+    $bdWhereVoided = bdSingleDayWhereSql('voided_at', ':d', ':nbd', $closingTime, $isOvernight);
+    $dayParams = [':d' => $selectedDate, ':nbd' => $nextBusinessDay];
     
     // 1. Cash in (deposits)
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(amount), 0) FROM cash_transactions
-        WHERE type='cash-in' AND (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        WHERE type='cash-in' AND ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $totalCashIn = (float)$stmt->fetchColumn();
     
     // 2. Cash sales (orders with no EFT, or sum(total - eft) if mixed)
@@ -223,44 +240,32 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
             SELECT COALESCE(SUM(
                 o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
             ), 0) FROM orders o
-            WHERE (
-                (DATE(o.created_at) = :d AND strftime('%H:%M', o.created_at) >= :ct) OR
-                (DATE(o.created_at) = :nbd AND strftime('%H:%M', o.created_at) < :ct2 AND :iam = 1)
-            )
+            WHERE ($bdWhereOCreated)
         ");
     } else {
         $stmt = $db->prepare("
             SELECT COALESCE(SUM(total), 0) FROM orders
-            WHERE (
-                (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-                (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-            )
+            WHERE ($bdWhereCreated)
         ");
     }
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $totalCashSales = (float)$stmt->fetchColumn();
     
     // 3. Credit payments (cash received against credit sales)
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(p.amount), 0) FROM payments p
         JOIN credit_sales cs ON p.sale_id = cs.id
-        WHERE cs.payment_status = 'paid' AND (
-            (DATE(p.payment_date) = :d AND strftime('%H:%M', p.payment_date) >= :ct) OR
-            (DATE(p.payment_date) = :nbd AND strftime('%H:%M', p.payment_date) < :ct2 AND :iam = 1)
-        )
+        WHERE cs.payment_status = 'paid' AND ($bdWherePayment)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $totalCreditPayments = (float)$stmt->fetchColumn();
     
     // 4. Cash out (withdrawals)
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(amount), 0) FROM cash_transactions
-        WHERE type='cash-out' AND (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        WHERE type='cash-out' AND ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $totalCashOut = (float)$stmt->fetchColumn();
     
     // 5. Card Sales Expected (EFT payments)
@@ -269,47 +274,35 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
         $stmt = $db->prepare("
             SELECT COALESCE(SUM(ep.amount), 0) FROM eft_payments ep
             JOIN orders o ON ep.order_id = o.id
-            WHERE (
-                (DATE(ep.payment_date) = :d AND strftime('%H:%M', ep.payment_date) >= :ct) OR
-                (DATE(ep.payment_date) = :nbd AND strftime('%H:%M', ep.payment_date) < :ct2 AND :iam = 1)
-            )
+            WHERE ($bdWhereEPayment)
         ");
-        $stmt->execute($params);
+        $stmt->execute($dayParams);
         $cardSalesExpected = (float)$stmt->fetchColumn();
     }
     
     // 6. Unpaid Credit Sales
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM credit_sales
-        WHERE payment_status = 'unpaid' AND (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        WHERE payment_status = 'unpaid' AND ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $unpaidCreditSales = (float)$stmt->fetchColumn();
     
     // 7. Open Tabs Balance
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(current_balance), 0) FROM tabs
-        WHERE status = 'open' AND (
-            (DATE(opened_at) = :d AND strftime('%H:%M', opened_at) >= :ct) OR
-            (DATE(opened_at) = :nbd AND strftime('%H:%M', opened_at) < :ct2 AND :iam = 1)
-        )
+        WHERE status = 'open' AND ($bdWhereOpened)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $openTabsBalance = (float)$stmt->fetchColumn();
     $unpaidTabs = $unpaidCreditSales + $openTabsBalance;
     
     // 8. Credit Returns
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(return_amount), 0) FROM credit_returns
-        WHERE (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        WHERE ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $creditReturnsAmount = (float)$stmt->fetchColumn();
     $creditReturns = $creditReturnsAmount + $totalCreditPayments;
     
@@ -318,12 +311,9 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
         SELECT COALESCE(SUM(amount), 0) FROM cash_transactions
         WHERE type = 'cash-out' 
         AND (description NOT LIKE '%Tips%' AND description NOT LIKE '%Cash Back%' AND description NOT LIKE '%tip%' AND description NOT LIKE '%cash back%')
-        AND (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        AND ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $expenses = (float)$stmt->fetchColumn();
     
     // 10. Cash Back (system value)
@@ -331,12 +321,9 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
         SELECT COALESCE(SUM(amount), 0) FROM cash_transactions
         WHERE type = 'cash-out' 
         AND (description LIKE '%Cash Back%' OR description LIKE '%cash back%')
-        AND (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        AND ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $cashBackSystem = (float)$stmt->fetchColumn();
     
     // 11. Tips (system value) — from tips table only (never cash-out)
@@ -345,12 +332,9 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
         if ($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='tips'")->fetchColumn()) {
             $stmt = $db->prepare("
                 SELECT COALESCE(SUM(amount), 0) FROM tips
-                WHERE (
-                    (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-                    (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-                )
+                WHERE ($bdWhereCreated)
             ");
-            $stmt->execute($params);
+            $stmt->execute($dayParams);
             $tipsSystem = (float) $stmt->fetchColumn();
         }
     } catch (PDOException $e) {
@@ -362,12 +346,9 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
     try {
         $stmt = $db->prepare("
             SELECT COALESCE(SUM(total), 0) FROM void_transactions
-            WHERE (
-                (DATE(voided_at) = :d AND strftime('%H:%M', voided_at) >= :ct) OR
-                (DATE(voided_at) = :nbd AND strftime('%H:%M', voided_at) < :ct2 AND :iam = 1)
-            )
+            WHERE ($bdWhereVoided)
         ");
-        $stmt->execute($params);
+        $stmt->execute($dayParams);
         $voids = (float)$stmt->fetchColumn();
     } catch (PDOException $e) {
         // Table might not exist
@@ -378,12 +359,9 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
     try {
         $stmt = $db->prepare("
             SELECT COALESCE(SUM(total_amount), 0) FROM refunds
-            WHERE (
-                (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-                (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-            )
+            WHERE ($bdWhereCreated)
         ");
-        $stmt->execute($params);
+        $stmt->execute($dayParams);
         $refunds = (float)$stmt->fetchColumn();
     } catch (PDOException $e) {
         // Table might not exist
@@ -392,12 +370,9 @@ function getCashDataForDate($db, $selectedDate, $closingTime, $isAfterMidnight) 
     // 14. Total Items Sold
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(total), 0) FROM orders
-        WHERE (
-            (DATE(created_at) = :d AND strftime('%H:%M', created_at) >= :ct) OR
-            (DATE(created_at) = :nbd AND strftime('%H:%M', created_at) < :ct2 AND :iam = 1)
-        )
+        WHERE ($bdWhereCreated)
     ");
-    $stmt->execute($params);
+    $stmt->execute($dayParams);
     $totalItemsSold = (float)$stmt->fetchColumn();
     
     $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
@@ -438,6 +413,9 @@ function getReportTitle($type) {
         'credit_sales' => 'Credit Sales Report',
         'outstanding_credit' => 'Outstanding Credit Report',
         'tabs' => 'Tabs Report',
+        'medical_aid' => 'Medical Aid Report',
+        'medical_aid_sales' => 'Medical Aid Sales Report',
+        'medical_aid_payments' => 'Medical Aid Payments Report',
         'expenses' => 'Expenses Report',
         'current_stock' => 'Current Stock Report',
         'stock_movement' => 'Stock Movement Report',
@@ -484,9 +462,24 @@ switch ($reportType) {
     case 'sales':
     case 'daily_sales':
     case 'monthly_sales':
-        require_once __DIR__ . '/../sales_report_helper.php';
+        $salesCashierContext = salesReportResolveCashierContext($userDb, $cashierId);
         // Get orders
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $ordersWhereClause = salesReportAppendCashierSql(
+            $db,
+            $ordersWhereClause,
+            'o.cashier_id',
+            $salesCashierContext['username'],
+            $salesCashierContext['user_id']
+        );
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = salesReportAppendCashierSql(
+            $db,
+            $creditWhereClause,
+            'cs.cashier_id',
+            $salesCashierContext['username'],
+            $salesCashierContext['user_id']
+        );
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE(o.gratuity_amount, 0) AS gratuity_amount,
@@ -576,10 +569,15 @@ switch ($reportType) {
         }
 
         $salesBreakdown = buildSalesReportBreakdown($db, $ordersWhereClause, $startDateTime, $endDateTime);
-        $dailyBreakdown = buildSalesReportDailyBreakdown($db, $startDateTime, $endDateTime);
+        $dailyBreakdown = buildSalesReportDailyBreakdown(
+            $db,
+            $startDateTime,
+            $endDateTime,
+            $salesCashierContext['username'],
+            $salesCashierContext['user_id']
+        );
 
         // Get credit sales
-        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT cs.*, c.name as creditor_name
             FROM credit_sales cs
@@ -854,6 +852,15 @@ switch ($reportType) {
         ");
         $tabEftQuery->execute();
         $tabEft = $tabEftQuery->fetchColumn();
+
+        $maSalesWhere = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
+        $maPayWhere = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
+        $maUnpaidQuery = $db->prepare("SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM medical_aid_sales WHERE payment_status IN ('unpaid','partial') AND ($maSalesWhere)");
+        $maUnpaidQuery->execute();
+        $maUnpaid = (float) $maUnpaidQuery->fetchColumn();
+        $maPayQuery = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM medical_aid_payments WHERE ($maPayWhere)");
+        $maPayQuery->execute();
+        $maPayments = (float) $maPayQuery->fetchColumn();
         
         $reportData = [
             'summary' => [
@@ -864,7 +871,9 @@ switch ($reportType) {
                 'credit_outstanding' => $creditRow['total'] - $creditRow['paid'],
                 'tab_cash_payments' => $tabCash,
                 'tab_eft_payments' => $tabEft,
-                'grand_total' => $cashTotal + $eftTotal + $creditRow['total']
+                'medical_aid_unpaid' => $maUnpaid,
+                'medical_aid_payments' => $maPayments,
+                'grand_total' => $cashTotal + $eftTotal + $creditRow['total'] + $maUnpaid + $maPayments
             ]
         ];
         break;
@@ -1042,6 +1051,51 @@ switch ($reportType) {
                 'closed_tabs' => count($closedTabs),
                 'total_balance' => $totalBalance
             ]
+        ];
+        break;
+
+    case 'medical_aid':
+    case 'medical_aid_sales':
+    case 'medical_aid_payments':
+        $maWhere = getDateTimeWhereClause('s.created_at', $startDateTime, $endDateTime);
+        $salesQuery = $db->prepare("
+            SELECT s.*, p.patient_name, p.scheme_name, p.member_number
+            FROM medical_aid_sales s
+            JOIN medical_aid_patients p ON p.id = s.patient_id
+            WHERE ($maWhere)
+            ORDER BY s.created_at DESC
+        ");
+        $salesQuery->execute();
+        $maSales = $salesQuery->fetchAll(PDO::FETCH_ASSOC);
+
+        $mpWhere = getDateTimeWhereClause('mp.created_at', $startDateTime, $endDateTime);
+        $payQuery = $db->prepare("
+            SELECT mp.*, p.patient_name, p.scheme_name
+            FROM medical_aid_payments mp
+            JOIN medical_aid_patients p ON p.id = mp.patient_id
+            WHERE ($mpWhere)
+            ORDER BY mp.created_at DESC
+        ");
+        $payQuery->execute();
+        $maPaymentsList = $payQuery->fetchAll(PDO::FETCH_ASSOC);
+
+        $outstanding = 0.0;
+        foreach ($maSales as $s) {
+            if (in_array($s['payment_status'], ['unpaid', 'partial'], true)) {
+                $outstanding += (float) $s['total_amount'] - (float) $s['paid_amount'];
+            }
+        }
+        $paymentsSum = array_sum(array_map(fn($p) => (float) $p['amount'], $maPaymentsList));
+
+        $reportData = [
+            'sales' => $maSales,
+            'payments' => $maPaymentsList,
+            'summary' => [
+                'total_sales' => count($maSales),
+                'outstanding' => $outstanding,
+                'payments_received' => $paymentsSum,
+            ],
+            'report_subtype' => $reportType,
         ];
         break;
         
@@ -1229,126 +1283,19 @@ switch ($reportType) {
         break;
         
     case 'cashier_sales':
-        // Get cashier sales - cashier_id now stores username directly
-        $cashierCondition = $cashierId ? " AND o.cashier_id = " . $db->quote($cashierId) : "";
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
-        
-        // Get all cashiers from user.db
-        $cashiersQuery = $userDb->query("SELECT id, username, role FROM users");
-        $allCashiers = $cashiersQuery->fetchAll(PDO::FETCH_ASSOC);
-        
-        $cashierSales = [];
-        foreach ($allCashiers as $cashier) {
-            // Filter by username if cashierId is provided (now contains username)
-            if ($cashierId && $cashier['username'] != $cashierId) continue;
-            
-            // Get order count and total - match by username
-            $salesQuery = $db->prepare("
-                SELECT COUNT(*) as order_count, COALESCE(SUM(total), 0) as total_sales
-                FROM orders o
-                WHERE (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?) AND ($ordersWhereClause)
-            ");
-            $salesQuery->execute([$cashier['username'], $cashier['id']]);
-            $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC);
-            
-            // Get credit sales - match by username
-            $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
-            $creditQuery = $db->prepare("
-                SELECT COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
-                FROM credit_sales
-                WHERE (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?) AND ($creditWhereClause)
-            ");
-            $creditQuery->execute([$cashier['username'], $cashier['id']]);
-            $creditData = $creditQuery->fetch(PDO::FETCH_ASSOC);
-            
-            $cashierSales[] = [
-                'cashier_id' => $cashier['username'],
-                'cashier_name' => $cashier['username'],
-                'role' => $cashier['role'],
-                'order_count' => $salesData['order_count'],
-                'total_sales' => $salesData['total_sales'],
-                'credit_count' => $creditData['credit_count'],
-                'credit_total' => $creditData['credit_total'],
-                'grand_total' => $salesData['total_sales'] + $creditData['credit_total']
-            ];
-        }
-        
-        // Sort by total sales
-        usort($cashierSales, fn($a, $b) => $b['grand_total'] <=> $a['grand_total']);
-        
-        $totalSales = array_sum(array_column($cashierSales, 'grand_total'));
-
-        $selectedCashierUserId = '';
-        if ($cashierId) {
-            foreach ($allCashiers as $u) {
-                if ($u['username'] === $cashierId) {
-                    $selectedCashierUserId = (string) $u['id'];
-                    break;
-                }
-            }
-        }
-        if ($cashierId) {
-            $orderDetailQuery = $db->prepare("
-                SELECT o.id, o.total, o.created_at, COALESCE(o.cashier_id, 'Unknown') as cashier_name
-                FROM orders o
-                WHERE ($ordersWhereClause) AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
-                ORDER BY o.created_at DESC
-            ");
-            $orderDetailQuery->execute([$cashierId, $selectedCashierUserId]);
-        } else {
-            $orderDetailQuery = $db->prepare("
-                SELECT o.id, o.total, o.created_at, COALESCE(o.cashier_id, 'Unknown') as cashier_name
-                FROM orders o
-                WHERE ($ordersWhereClause)
-                ORDER BY o.created_at DESC
-            ");
-            $orderDetailQuery->execute();
-        }
-        $orderTransactions = $orderDetailQuery->fetchAll(PDO::FETCH_ASSOC);
-        $oiDetailStmt = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ?");
-        foreach ($orderTransactions as &$ot) {
-            $oiDetailStmt->execute([$ot['id']]);
-            $ot['items'] = $oiDetailStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-        unset($ot);
-
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditDetailWhere = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
-        if ($cashierId) {
-            $creditDetailQuery = $db->prepare("
-                SELECT cs.*, c.name as creditor_name
-                FROM credit_sales cs
-                LEFT JOIN creditors c ON cs.creditor_id = c.id
-                WHERE ($creditDetailWhere) AND (cs.cashier_id = ? OR CAST(cs.cashier_id AS TEXT) = ?)
-                ORDER BY cs.created_at DESC
-            ");
-            $creditDetailQuery->execute([$cashierId, $selectedCashierUserId]);
-        } else {
-            $creditDetailQuery = $db->prepare("
-                SELECT cs.*, c.name as creditor_name
-                FROM credit_sales cs
-                LEFT JOIN creditors c ON cs.creditor_id = c.id
-                WHERE ($creditDetailWhere)
-                ORDER BY cs.created_at DESC
-            ");
-            $creditDetailQuery->execute();
-        }
-        $creditTransactions = $creditDetailQuery->fetchAll(PDO::FETCH_ASSOC);
-        $csiDetailStmt = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
-        foreach ($creditTransactions as &$ct) {
-            $csiDetailStmt->execute([$ct['id']]);
-            $ct['items'] = $csiDetailStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-        unset($ct);
-        
-        $reportData = [
-            'cashiers' => $cashierSales,
-            'order_transactions' => $orderTransactions,
-            'credit_transactions' => $creditTransactions,
-            'summary' => [
-                'total_cashiers' => count($cashierSales),
-                'total_sales' => $totalSales
-            ]
-        ];
+        $expensesWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
+        $reportData = buildCashierSalesReportData(
+            $db,
+            $userDb,
+            $ordersWhereClause,
+            $creditWhereClause,
+            $creditDetailWhere,
+            $cashierId,
+            $expensesWhereClause
+        );
         break;
 
     case 'terminal_sales':
@@ -1961,9 +1908,218 @@ header('Content-Type: text/html; charset=utf-8');
             color: #9ca3af;
             font-size: 14px;
         }
+
+        .editable-amount {
+            cursor: pointer;
+            outline: none;
+        }
+        .editable-amount:hover {
+            background: #ecfdf5 !important;
+            box-shadow: inset 0 0 0 1px #99f6e4;
+        }
+        .editable-amount.editing {
+            padding: 4px 6px !important;
+            background: #fff !important;
+            box-shadow: inset 0 0 0 2px #14b8a6;
+        }
+        .editable-amount input.amount-edit-input {
+            width: 100%;
+            min-width: 90px;
+            max-width: 160px;
+            border: none;
+            outline: none;
+            background: transparent;
+            font: inherit;
+            font-weight: inherit;
+            color: inherit;
+            text-align: right;
+            padding: 0;
+        }
+        @media print {
+            .editable-amount:hover,
+            .editable-amount.editing,
+            .editable-amount.has-override {
+                background: transparent !important;
+                box-shadow: none !important;
+            }
+            .override-revert-btn {
+                display: none !important;
+            }
+        }
+        .editable-amount.has-override {
+            background: #fffbeb !important;
+            box-shadow: inset 0 0 0 1px #fcd34d;
+        }
+        .override-revert-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 6px;
+            padding: 0 6px;
+            min-width: 18px;
+            height: 18px;
+            border: 1px solid #d97706;
+            border-radius: 9999px;
+            background: #fff;
+            color: #b45309;
+            font-size: 11px;
+            line-height: 1;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+        .override-revert-btn:hover {
+            background: #fef3c7;
+        }
+
+        /* Cashier sales report — physical count & A4 print layout */
+        body.report-cashier-sales .cash-recon-section {
+            margin-top: 18px;
+            page-break-inside: avoid;
+        }
+        body.report-cashier-sales .cash-recon-title {
+            margin-top: 16px;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+        body.report-cashier-sales .cash-verify-table {
+            margin-bottom: 10px;
+        }
+        body.report-cashier-sales .cash-verify-table th,
+        body.report-cashier-sales .cash-verify-table td {
+            padding: 6px 8px;
+            font-size: 11px;
+        }
+        body.report-cashier-sales .write-cell {
+            min-height: 28px;
+            min-width: 70px;
+            background: #fff;
+            border: 1px solid #cbd5e1 !important;
+        }
+        body.report-cashier-sales .denomination-table {
+            margin-bottom: 14px;
+            table-layout: fixed;
+        }
+        body.report-cashier-sales .denomination-table th,
+        body.report-cashier-sales .denomination-table td {
+            padding: 4px 2px;
+            font-size: 9px;
+            text-align: center;
+            vertical-align: middle;
+        }
+        body.report-cashier-sales .denomination-table th {
+            font-size: 8px;
+            line-height: 1.15;
+            letter-spacing: 0;
+            white-space: nowrap;
+        }
+        body.report-cashier-sales .denom-row-label {
+            width: 42px;
+            text-align: left !important;
+            font-size: 9px !important;
+            padding-left: 6px !important;
+        }
+        body.report-cashier-sales .denom-cell {
+            min-height: 24px;
+            min-width: 0;
+        }
+        body.report-cashier-sales .denom-total-col,
+        body.report-cashier-sales .denom-total-cell {
+            width: 52px;
+            font-weight: 600;
+        }
+        body.report-cashier-sales .signature-row {
+            display: flex;
+            gap: 24px;
+            margin-top: 8px;
+            page-break-inside: avoid;
+        }
+        body.report-cashier-sales .signature-block {
+            flex: 1;
+            min-width: 0;
+        }
+        body.report-cashier-sales .signature-line {
+            height: 42px;
+            border-bottom: 1px solid #334155;
+            margin-bottom: 6px;
+        }
+        body.report-cashier-sales .signature-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #1e293b;
+            text-align: center;
+        }
+        body.report-cashier-sales .signature-meta {
+            margin-top: 8px;
+            font-size: 10px;
+            color: #475569;
+            text-align: center;
+        }
+        @media print {
+            @page {
+                size: A4 portrait;
+                margin: 8mm 7mm;
+            }
+            body.report-cashier-sales {
+                padding: 0;
+                font-size: 10px;
+            }
+            body.report-cashier-sales .header {
+                margin-bottom: 10px;
+                padding-bottom: 8px;
+            }
+            body.report-cashier-sales .header h1 {
+                font-size: 17px;
+            }
+            body.report-cashier-sales .header .business-name {
+                font-size: 14px;
+            }
+            body.report-cashier-sales .header .date-range {
+                font-size: 12px;
+                margin-top: 6px;
+            }
+            body.report-cashier-sales .summary-cards {
+                gap: 6px;
+                margin-bottom: 10px;
+            }
+            body.report-cashier-sales .summary-card {
+                padding: 6px 8px;
+                min-width: 0;
+                border-radius: 4px;
+            }
+            body.report-cashier-sales .summary-card .label {
+                font-size: 8px;
+            }
+            body.report-cashier-sales .summary-card .value {
+                font-size: 13px;
+                margin-top: 2px;
+            }
+            body.report-cashier-sales table th,
+            body.report-cashier-sales table td {
+                padding: 5px 6px;
+                font-size: 10px;
+            }
+            body.report-cashier-sales .cash-recon-section {
+                margin-top: 12px;
+            }
+            body.report-cashier-sales .denomination-table th {
+                font-size: 7px;
+                padding: 3px 1px;
+            }
+            body.report-cashier-sales .denomination-table td {
+                font-size: 8px;
+                padding: 3px 1px;
+            }
+            body.report-cashier-sales .write-cell {
+                min-height: 22px;
+                background: #fff !important;
+            }
+            body.report-cashier-sales .signature-line {
+                height: 36px;
+            }
+        }
     </style>
 </head>
-<body>
+<body<?= $reportType === 'cashier_sales' ? ' class="report-cashier-sales"' : '' ?>>
     <button class="print-btn" onclick="window.print()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M6 9V2h12v7"></path>
@@ -1983,6 +2139,11 @@ header('Content-Type: text/html; charset=utf-8');
             <div class="business-info">Tel: <?= htmlspecialchars($businessPhone) ?></div>
         <?php endif; ?>
         <div class="date-range"><?= htmlspecialchars($dateRange) ?></div>
+        <?php if ($reportType === 'cashier_sales'): ?>
+            <div class="business-info">Cashier: <?= htmlspecialchars($cashierId !== '' ? $cashierId : 'All cashiers') ?></div>
+        <?php elseif ($cashierId !== ''): ?>
+            <div class="business-info">Cashier: <?= htmlspecialchars($cashierId) ?></div>
+        <?php endif; ?>
         <?php if ($category !== '' && in_array($reportType, ['sales', 'daily_sales', 'monthly_sales'], true)): ?>
             <div class="business-info">Category: <?= htmlspecialchars($category) ?></div>
         <?php endif; ?>
@@ -2431,6 +2592,8 @@ header('Content-Type: text/html; charset=utf-8');
                     'Credit Outstanding' => $reportData['summary']['credit_outstanding'],
                     'Tab Payments (Cash)' => $reportData['summary']['tab_cash_payments'],
                     'Tab Payments (EFT)' => $reportData['summary']['tab_eft_payments'],
+                    'Medical Aid (Unpaid)' => $reportData['summary']['medical_aid_unpaid'] ?? 0,
+                    'Medical Aid Payments' => $reportData['summary']['medical_aid_payments'] ?? 0,
                 ];
                 foreach ($methods as $method => $amount):
                     $pct = $grandTotal > 0 ? ($amount / $grandTotal) * 100 : 0;
@@ -2916,6 +3079,57 @@ header('Content-Type: text/html; charset=utf-8');
             </tbody>
         </table>
         
+    <?php break; case 'medical_aid':
+    case 'medical_aid_sales':
+    case 'medical_aid_payments': ?>
+        <div class="summary-cards">
+            <div class="summary-card">
+                <div class="label">Sales / Claims</div>
+                <div class="value"><?= (int) ($reportData['summary']['total_sales'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Outstanding</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['outstanding'] ?? 0) ?></div>
+            </div>
+            <div class="summary-card positive">
+                <div class="label">Payments Received</div>
+                <div class="value">N$<?= formatCurrency($reportData['summary']['payments_received'] ?? 0) ?></div>
+            </div>
+        </div>
+        <?php if (($reportData['report_subtype'] ?? '') !== 'medical_aid_payments'): ?>
+        <h3 class="section-title">Medical Aid Sales</h3>
+        <table>
+            <thead><tr><th>Date</th><th>Patient</th><th>Scheme</th><th>Total</th><th>Status</th></tr></thead>
+            <tbody>
+                <?php foreach ($reportData['sales'] ?? [] as $s): ?>
+                <tr>
+                    <td><?= htmlspecialchars(substr($s['created_at'], 0, 16)) ?></td>
+                    <td><?= htmlspecialchars($s['patient_name']) ?></td>
+                    <td><?= htmlspecialchars($s['scheme_name'] ?? '-') ?></td>
+                    <td class="text-right">N$<?= formatCurrency($s['total_amount']) ?></td>
+                    <td><?= htmlspecialchars(ucfirst($s['payment_status'])) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php endif; ?>
+        <?php if (($reportData['report_subtype'] ?? '') !== 'medical_aid_sales'): ?>
+        <h3 class="section-title">Scheme Payments</h3>
+        <table>
+            <thead><tr><th>Date</th><th>Patient</th><th>Reference</th><th>Amount</th></tr></thead>
+            <tbody>
+                <?php foreach ($reportData['payments'] ?? [] as $p): ?>
+                <tr>
+                    <td><?= htmlspecialchars(substr($p['created_at'], 0, 16)) ?></td>
+                    <td><?= htmlspecialchars($p['patient_name']) ?></td>
+                    <td><?= htmlspecialchars($p['payment_reference'] ?? '-') ?></td>
+                    <td class="text-right">N$<?= formatCurrency($p['amount']) ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php endif; ?>
+
     <?php break; case 'expenses': ?>
         <div class="summary-cards">
             <div class="summary-card">
@@ -3273,109 +3487,7 @@ header('Content-Type: text/html; charset=utf-8');
         </table>
         
     <?php break; case 'cashier_sales': ?>
-        <div class="summary-cards">
-            <div class="summary-card">
-                <div class="label">Total Staff</div>
-                <div class="value"><?= $reportData['summary']['total_cashiers'] ?></div>
-            </div>
-            <div class="summary-card positive">
-                <div class="label">Total Sales</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></div>
-            </div>
-        </div>
-        
-        <table>
-            <thead>
-                <tr>
-                    <th>Cashier</th>
-                    <th>Role</th>
-                    <th class="text-right">Orders</th>
-                    <th class="text-right">Order Sales</th>
-                    <th class="text-right">Credit Sales</th>
-                    <th class="text-right">Total</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (!empty($reportData['cashiers'])): ?>
-                    <?php foreach ($reportData['cashiers'] as $cashier): ?>
-                    <?php if ($cashier['grand_total'] > 0): ?>
-                    <tr>
-                        <td><?= htmlspecialchars($cashier['cashier_name']) ?></td>
-                        <td><?= ucfirst($cashier['role']) ?></td>
-                        <td class="text-right"><?= $cashier['order_count'] ?></td>
-                        <td class="text-right">N$<?= formatCurrency($cashier['total_sales']) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($cashier['credit_total']) ?></td>
-                        <td class="text-right font-bold">N$<?= formatCurrency($cashier['grand_total']) ?></td>
-                    </tr>
-                    <?php endif; ?>
-                    <?php endforeach; ?>
-                    <tr class="total-row">
-                        <td colspan="5">Total</td>
-                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></td>
-                    </tr>
-                <?php else: ?>
-                    <tr><td colspan="6" class="no-data">No cashier sales found for this period</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-        
-        <h3 class="section-title">Cash &amp; card orders (line items)</h3>
-        <?php if (!empty($reportData['order_transactions'])): ?>
-        <table>
-            <thead>
-                <tr>
-                    <th>Order #</th>
-                    <th>Date/Time</th>
-                    <th>Cashier</th>
-                    <th>Products</th>
-                    <th class="text-right">Total</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($reportData['order_transactions'] as $tx): ?>
-                <tr>
-                    <td>#<?= $tx['id'] ?></td>
-                    <td><?= date('M j, Y H:i', strtotime($tx['created_at'])) ?></td>
-                    <td><?= htmlspecialchars($tx['cashier_name'] ?? 'Unknown') ?></td>
-                    <td class="items-list"><?php renderTransactionItemsCell($tx['items'] ?? []); ?></td>
-                    <td class="text-right font-bold">N$<?= formatCurrency($tx['total']) ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-        <?php else: ?>
-        <div class="no-data">No orders in this period</div>
-        <?php endif; ?>
-        
-        <h3 class="section-title">Credit sales (line items)</h3>
-        <?php if (!empty($reportData['credit_transactions'])): ?>
-        <table>
-            <thead>
-                <tr>
-                    <th>Sale #</th>
-                    <th>Date</th>
-                    <th>Customer</th>
-                    <th>Products</th>
-                    <th class="text-right">Amount</th>
-                    <th class="text-right">Paid</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($reportData['credit_transactions'] as $ctx): ?>
-                <tr>
-                    <td>#<?= $ctx['id'] ?></td>
-                    <td><?= date('M j, Y H:i', strtotime($ctx['created_at'])) ?></td>
-                    <td><?= htmlspecialchars($ctx['creditor_name'] ?? 'Unknown') ?></td>
-                    <td class="items-list"><?php renderTransactionItemsCell($ctx['items'] ?? []); ?></td>
-                    <td class="text-right">N$<?= formatCurrency($ctx['total_amount']) ?></td>
-                    <td class="text-right">N$<?= formatCurrency($ctx['paid_amount']) ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-        <?php else: ?>
-        <div class="no-data">No credit sales in this period</div>
-        <?php endif; ?>
+        <?php require __DIR__ . '/../includes/cashier_sales_report_view.php'; ?>
         
     <?php break; case 'terminal_sales': ?>
         <div class="summary-cards">
@@ -3842,6 +3954,653 @@ header('Content-Type: text/html; charset=utf-8');
     <?php break; default: ?>
         <div class="no-data">Unknown report type: <?= htmlspecialchars($reportType) ?></div>
     <?php endswitch; ?>
+
+    <?php
+    $canEditReportAmounts = false;
+    if (strtolower((string) ($_SESSION['role'] ?? '')) === 'admin') {
+        try {
+            try {
+                $db->exec("ALTER TABLE product_settings ADD COLUMN admin_edit_report_amounts BOOLEAN NOT NULL DEFAULT 0");
+            } catch (PDOException $e) {
+            }
+            $editAmtRow = $db->query("SELECT admin_edit_report_amounts FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+            $canEditReportAmounts = (int) ($editAmtRow['admin_edit_report_amounts'] ?? 0) === 1;
+        } catch (PDOException $e) {
+            $canEditReportAmounts = false;
+        }
+    }
+    ?>
+    <script>
+    window.REPORT_OVERRIDE_META = <?= json_encode([
+        'report_scope' => $reportScope,
+        'report_type' => $reportType,
+        'start_date' => $startDateTime,
+        'end_date' => $endDateTime,
+        'cashier_id' => $cashierId,
+        'terminal_mac' => $terminalMac,
+        'creditor_id' => $creditorId,
+        'category' => $category,
+        'supplier_id' => $supplierId,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    window.REPORT_AMOUNT_OVERRIDES = <?= json_encode($reportAmountOverrides, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    window.REPORT_OVERRIDE_CAN_EDIT = <?= $canEditReportAmounts ? 'true' : 'false' ?>;
+    </script>
+    <script>
+    (function () {
+        const MONEY_RE = /([+\u2212\-]?)\s*N\$\s*([\d,]+(?:\.\d+)?)/i;
+        const CAN_EDIT = !!window.REPORT_OVERRIDE_CAN_EDIT;
+        let overrides = Object.assign({}, window.REPORT_AMOUNT_OVERRIDES || {});
+
+        function parseMoney(text) {
+            if (text == null) return null;
+            const m = String(text).match(MONEY_RE);
+            if (!m) return null;
+            const sign = (m[1] === '-' || m[1] === '\u2212') ? -1 : 1;
+            return sign * parseFloat(m[2].replace(/,/g, ''));
+        }
+
+        function hasCurrency(text) {
+            return parseMoney(text) !== null;
+        }
+
+        function formatMoney(value, sampleText) {
+            const n = Number(value) || 0;
+            const abs = Math.abs(n).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+            const sample = sampleText || '';
+            if (/\+\s*N\$/i.test(sample)) {
+                return (n < 0 ? '\u2212 N$' : '+ N$') + abs;
+            }
+            if (/[\u2212\-]\s*N\$/i.test(sample) || (n < 0 && /N\$/i.test(sample))) {
+                return (n < 0 ? '\u2212 N$' : 'N$') + abs;
+            }
+            return (n < 0 ? '-N$' : 'N$') + abs;
+        }
+
+        function getMoneyText(el) {
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('.override-revert-btn').forEach((node) => node.remove());
+            return (clone.textContent || '').trim();
+        }
+
+        function setMoneyText(el, value) {
+            const sample = el.dataset.moneySample || getMoneyText(el);
+            const formatted = formatMoney(value, sample);
+            const revertBtn = el.querySelector(':scope > .override-revert-btn');
+            const strong = el.querySelector(':scope > strong');
+            if (strong && !revertBtn && el.children.length === 1) {
+                strong.textContent = formatted;
+            } else {
+                Array.from(el.childNodes).forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE && node.classList.contains('override-revert-btn')) {
+                        return;
+                    }
+                    el.removeChild(node);
+                });
+                if (revertBtn) {
+                    el.insertBefore(document.createTextNode(formatted), revertBtn);
+                } else {
+                    el.textContent = formatted;
+                }
+            }
+            el.dataset.moneySample = sample;
+        }
+
+        function normalizeLabel(text) {
+            return String(text || '')
+                .toLowerCase()
+                .replace(/\(.*?\)/g, ' ')
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\b(total|order|orders|sales|amount|n)\b/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function normalizeKeyPart(text) {
+            return String(text || '')
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function labelsMatch(a, b) {
+            const na = normalizeLabel(a);
+            const nb = normalizeLabel(b);
+            if (!na || !nb) return false;
+            if (na === nb) return true;
+            if (na.includes(nb) || nb.includes(na)) return true;
+            const tokensA = new Set(na.split(' ').filter(Boolean));
+            const tokensB = new Set(nb.split(' ').filter(Boolean));
+            let overlap = 0;
+            tokensA.forEach(t => { if (tokensB.has(t)) overlap++; });
+            return overlap > 0 && (overlap >= Math.min(tokensA.size, tokensB.size));
+        }
+
+        function isNestedItemAmount(el) {
+            return !!(el.closest('.tx-items, .tx-item-line, .items-list, .hint'));
+        }
+
+        function isTotalRow(tr) {
+            return tr && tr.classList.contains('total-row');
+        }
+
+        function getHeaderCells(table) {
+            const ths = table.querySelectorAll('thead th');
+            return Array.from(ths).map(th => (th.textContent || '').trim());
+        }
+
+        function visualColIndex(td) {
+            const tr = td.parentElement;
+            let idx = 0;
+            for (const cell of tr.children) {
+                if (cell === td) return idx;
+                idx += parseInt(cell.getAttribute('colspan') || '1', 10);
+            }
+            return td.cellIndex;
+        }
+
+        function cellAtVisualCol(tr, visualCol) {
+            let idx = 0;
+            for (const cell of tr.children) {
+                const span = parseInt(cell.getAttribute('colspan') || '1', 10);
+                if (visualCol >= idx && visualCol < idx + span) return cell;
+                idx += span;
+            }
+            return null;
+        }
+
+        function dataRows(table) {
+            return Array.from(table.querySelectorAll('tbody tr')).filter(tr =>
+                !isTotalRow(tr) && !tr.querySelector('.no-data')
+            );
+        }
+
+        function totalRows(table) {
+            return Array.from(table.querySelectorAll('tbody tr.total-row'));
+        }
+
+        function currencyCellsInRow(tr) {
+            return Array.from(tr.querySelectorAll('td')).filter(td =>
+                !isNestedItemAmount(td) && hasCurrency(getMoneyText(td))
+            );
+        }
+
+        function findRowTotalCell(tr, headers) {
+            const cells = currencyCellsInRow(tr);
+            if (cells.length < 2) return null;
+            for (let i = cells.length - 1; i >= 0; i--) {
+                const col = visualColIndex(cells[i]);
+                const header = (headers[col] || '').toLowerCase();
+                if ((/\b(total|grand)\b/.test(header) && !/subtotal/.test(header)) || header === 'total') {
+                    return cells[i];
+                }
+            }
+            for (const cell of cells) {
+                const header = (headers[visualColIndex(cell)] || '').toLowerCase();
+                if (/outstanding|balance|due/.test(header)) return cell;
+            }
+            const bold = cells.filter(c => c.classList.contains('font-bold'));
+            if (bold.length) return bold[bold.length - 1];
+            return cells[cells.length - 1];
+        }
+
+        function findOutstandingPair(tr, headers, totalCell) {
+            if (!totalCell) return null;
+            const totalHeader = (headers[visualColIndex(totalCell)] || '').toLowerCase();
+            if (!/outstanding|balance|due/.test(totalHeader)) return null;
+            const cells = currencyCellsInRow(tr).filter(c => c !== totalCell);
+            let amountCell = null;
+            let paidCell = null;
+            for (const cell of cells) {
+                const h = (headers[visualColIndex(cell)] || '').toLowerCase();
+                if (/amount|total|sale/.test(h) && !/paid|outstanding/.test(h)) amountCell = cell;
+                if (/paid|received/.test(h)) paidCell = cell;
+            }
+            if (amountCell && paidCell) return { amountCell, paidCell };
+            if (cells.length >= 2) return { amountCell: cells[0], paidCell: cells[1] };
+            return null;
+        }
+
+        function getSectionTitle(el) {
+            const table = el.closest('table');
+            if (table) {
+                let node = table.previousElementSibling;
+                while (node) {
+                    if (node.matches && node.matches('h3.section-title')) {
+                        return normalizeKeyPart(node.textContent);
+                    }
+                    node = node.previousElementSibling;
+                }
+                const caption = table.querySelector('caption');
+                if (caption) return normalizeKeyPart(caption.textContent);
+            }
+            if (el.closest('.summary-card')) return 'summary cards';
+            return 'report';
+        }
+
+        function getRowKey(tr) {
+            if (!tr || isTotalRow(tr)) return '';
+            const firstCell = tr.querySelector('td:first-child');
+            const text = firstCell ? firstCell.textContent.replace(/\s+/g, ' ').trim() : '';
+            if (text && !/^total\b/i.test(text)) return normalizeKeyPart(text);
+            const table = tr.closest('table');
+            if (!table) return 'row';
+            const rows = dataRows(table);
+            return 'row_' + rows.indexOf(tr);
+        }
+
+        function getColumnKey(el, headers) {
+            if (el.classList.contains('value') && el.closest('.summary-card')) {
+                const label = el.closest('.summary-card').querySelector('.label');
+                return normalizeKeyPart(label ? label.textContent : 'value');
+            }
+            const td = el.closest('td') || el;
+            if (td.tagName !== 'TD') return 'amount';
+            const col = visualColIndex(td);
+            return normalizeKeyPart(headers[col] || ('col_' + col));
+        }
+
+        function getCellKey(el) {
+            const td = el.closest('td') || el;
+            const tr = td.closest('tr');
+            const table = td.closest('table');
+            const headers = table ? getHeaderCells(table) : [];
+            return [getSectionTitle(el), getRowKey(tr), getColumnKey(el, headers)].join('|');
+        }
+
+        function markAmountCell(el) {
+            if (!el || el.classList.contains('report-amount-cell')) return;
+            el.classList.add('report-amount-cell');
+            el.dataset.moneySample = getMoneyText(el);
+            if (CAN_EDIT) {
+                el.classList.add('editable-amount');
+                el.title = 'Double-click to edit amount';
+            }
+        }
+
+        function initReportAmountCells() {
+            document.querySelectorAll('table').forEach(table => {
+                const headers = getHeaderCells(table);
+                dataRows(table).forEach(tr => {
+                    const totalCell = findRowTotalCell(tr, headers);
+                    currencyCellsInRow(tr).forEach(td => {
+                        if (totalCell && td === totalCell && currencyCellsInRow(tr).length > 1) {
+                            td.classList.add('amount-row-total');
+                            return;
+                        }
+                        markAmountCell(td);
+                    });
+                });
+            });
+
+            document.querySelectorAll('.summary-card .value').forEach(el => {
+                if (hasCurrency(getMoneyText(el))) markAmountCell(el);
+            });
+
+            document.querySelectorAll('table tbody tr').forEach(tr => {
+                if (isTotalRow(tr)) return;
+                const cells = currencyCellsInRow(tr);
+                if (!tr.closest('table').querySelector('thead') && cells.length) {
+                    cells.forEach(markAmountCell);
+                }
+            });
+        }
+
+        function assignCellKeys() {
+            document.querySelectorAll('.report-amount-cell').forEach(el => {
+                el.dataset.cellKey = getCellKey(el);
+            });
+        }
+
+        function captureOriginalAmounts() {
+            document.querySelectorAll('.report-amount-cell').forEach(el => {
+                if (el.dataset.originalAmount == null) {
+                    const val = parseMoney(getMoneyText(el));
+                    if (val !== null) el.dataset.originalAmount = String(val);
+                }
+            });
+        }
+
+        function ensureRevertButton(el) {
+            if (!CAN_EDIT || el.querySelector('.override-revert-btn')) return;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'override-revert-btn';
+            btn.title = 'Revert to original calculated amount';
+            btn.textContent = '\u21BA';
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                revertOverride(el);
+            });
+            el.appendChild(btn);
+        }
+
+        function markOverrideState(el, ov) {
+            el.classList.add('has-override');
+            el.dataset.overrideId = String(ov.id);
+            ensureRevertButton(el);
+        }
+
+        function clearOverrideState(el) {
+            el.classList.remove('has-override');
+            delete el.dataset.overrideId;
+            el.querySelector('.override-revert-btn')?.remove();
+        }
+
+        function sumColumn(table, visualCol) {
+            let sum = 0;
+            dataRows(table).forEach(tr => {
+                const cell = cellAtVisualCol(tr, visualCol);
+                if (!cell || isNestedItemAmount(cell)) return;
+                const v = parseMoney(getMoneyText(cell));
+                if (v !== null) sum += v;
+            });
+            return sum;
+        }
+
+        function updateRowTotal(tr, headers) {
+            const totalCell = findRowTotalCell(tr, headers);
+            if (!totalCell) return null;
+            const pair = findOutstandingPair(tr, headers, totalCell);
+            let total;
+            if (pair) {
+                const amount = parseMoney(getMoneyText(pair.amountCell)) || 0;
+                const paid = parseMoney(getMoneyText(pair.paidCell)) || 0;
+                total = amount - paid;
+                totalCell.classList.toggle('text-red', total > 0);
+            } else {
+                const components = currencyCellsInRow(tr).filter(c => c !== totalCell);
+                total = components.reduce((s, c) => s + (parseMoney(getMoneyText(c)) || 0), 0);
+            }
+            setMoneyText(totalCell, total);
+            return { totalCell, total, col: visualColIndex(totalCell) };
+        }
+
+        function updateTableTotals(table, editedVisualCol) {
+            const headers = getHeaderCells(table);
+            const colsToRefresh = new Set();
+            if (editedVisualCol != null) colsToRefresh.add(editedVisualCol);
+
+            dataRows(table).forEach(tr => {
+                const result = updateRowTotal(tr, headers);
+                if (result) colsToRefresh.add(result.col);
+            });
+
+            const sampleRow = dataRows(table)[0];
+            if (sampleRow) {
+                currencyCellsInRow(sampleRow).forEach(td => colsToRefresh.add(visualColIndex(td)));
+                const rt = findRowTotalCell(sampleRow, headers);
+                if (rt) colsToRefresh.add(visualColIndex(rt));
+            }
+
+            const footerUpdates = [];
+            totalRows(table).forEach(tr => {
+                colsToRefresh.forEach(col => {
+                    const cell = cellAtVisualCol(tr, col);
+                    if (!cell || !hasCurrency(getMoneyText(cell))) return;
+                    const sum = sumColumn(table, col);
+                    setMoneyText(cell, sum);
+                    footerUpdates.push({
+                        header: headers[col] || '',
+                        value: sum,
+                        col
+                    });
+                });
+            });
+
+            if (!totalRows(table).length && editedVisualCol != null) {
+                footerUpdates.push({
+                    header: headers[editedVisualCol] || '',
+                    value: sumColumn(table, editedVisualCol),
+                    col: editedVisualCol
+                });
+            }
+
+            return footerUpdates;
+        }
+
+        function updateSummaryCards(footerUpdates, table) {
+            const cards = Array.from(document.querySelectorAll('.summary-card'));
+            if (!cards.length) return;
+
+            const headers = table ? getHeaderCells(table) : [];
+
+            footerUpdates.forEach(upd => {
+                cards.forEach(card => {
+                    const label = card.querySelector('.label');
+                    const valueEl = card.querySelector('.value');
+                    if (!label || !valueEl || !hasCurrency(getMoneyText(valueEl))) return;
+                    const labelText = label.textContent || '';
+                    if (labelsMatch(labelText, upd.header) ||
+                        labelsMatch(labelText, upd.header.replace(/\/.*/, '')) ||
+                        (/cash/i.test(labelText) && /^cash$/i.test(upd.header.trim())) ||
+                        (/card|eft/i.test(labelText) && /card|eft/i.test(upd.header)) ||
+                        (/credit/i.test(labelText) && /^credit$/i.test(upd.header.trim()))) {
+                        const isGrandCard = /grand\s*total|total\s*sales|total\s*amount|total\s*cost|total\s*tips/i.test(labelText);
+                        const isTotalCol = /\b(total|grand)\b/i.test(upd.header);
+                        if (isGrandCard && !isTotalCol) return;
+                        if (!isGrandCard && isTotalCol && !labelsMatch(labelText, upd.header)) return;
+                        if (overrides[valueEl.dataset.cellKey]) return;
+                        setMoneyText(valueEl, upd.value);
+                    }
+                });
+            });
+
+            const grandCards = cards.filter(card => {
+                const label = (card.querySelector('.label')?.textContent || '');
+                return /grand\s*total|total\s*sales|total\s*amount|total\s*cost|total\s*tips|net\s*total/i.test(label);
+            });
+
+            if (grandCards.length && table) {
+                let grand = null;
+                const totalColIdx = headers.findIndex(h => {
+                    const x = (h || '').toLowerCase().trim();
+                    return x === 'total' || x === 'grand total' || /^total\b/.test(x);
+                });
+                if (totalColIdx >= 0) {
+                    grand = sumColumn(table, totalColIdx);
+                } else if (footerUpdates.length) {
+                    const seen = new Set();
+                    grand = 0;
+                    footerUpdates.forEach(u => {
+                        if (/\b(total|grand)\b/i.test(u.header) && !/^credit$/i.test(u.header.trim())) return;
+                        if (seen.has(u.col)) return;
+                        seen.add(u.col);
+                        grand += u.value;
+                    });
+                }
+                if (grand != null) {
+                    grandCards.forEach(card => {
+                        const valueEl = card.querySelector('.value');
+                        if (valueEl && !overrides[valueEl.dataset.cellKey]) {
+                            setMoneyText(valueEl, grand);
+                        }
+                    });
+                }
+            }
+        }
+
+        function afterAmountEdit(el) {
+            const td = el.closest('td') || el;
+            const table = td.closest('table');
+            if (table && td.tagName === 'TD') {
+                const col = visualColIndex(td);
+                const updates = updateTableTotals(table, col);
+                updateSummaryCards(updates, table);
+            }
+        }
+
+        function applySavedOverrides() {
+            const tableCells = [];
+            const summaryCells = [];
+
+            document.querySelectorAll('.report-amount-cell').forEach(el => {
+                const key = el.dataset.cellKey;
+                if (!key || !overrides[key]) return;
+                if (el.closest('.summary-card')) summaryCells.push(el);
+                else tableCells.push(el);
+            });
+
+            tableCells.forEach(el => {
+                const ov = overrides[el.dataset.cellKey];
+                setMoneyText(el, ov.adjusted_amount);
+                markOverrideState(el, ov);
+            });
+
+            const touchedTables = new Set();
+            tableCells.forEach(el => {
+                const table = el.closest('table');
+                if (table) touchedTables.add(table);
+            });
+            touchedTables.forEach(table => {
+                const updates = updateTableTotals(table, null);
+                updateSummaryCards(updates, table);
+            });
+
+            summaryCells.forEach(el => {
+                const ov = overrides[el.dataset.cellKey];
+                setMoneyText(el, ov.adjusted_amount);
+                markOverrideState(el, ov);
+            });
+        }
+
+        async function persistOverride(el, originalAmount, adjustedAmount) {
+            if (!CAN_EDIT) return null;
+            const cellKey = el.dataset.cellKey || getCellKey(el);
+            el.dataset.cellKey = cellKey;
+
+            const payload = Object.assign({}, window.REPORT_OVERRIDE_META || {}, {
+                action: 'save',
+                cell_key: cellKey,
+                original_amount: originalAmount,
+                adjusted_amount: adjustedAmount
+            });
+
+            const res = await fetch('report_amount_override_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!data.success) {
+                alert(data.error || 'Failed to save report change');
+                return null;
+            }
+            overrides[cellKey] = data.override;
+            markOverrideState(el, data.override);
+            return data.override;
+        }
+
+        async function revertOverride(el) {
+            if (!CAN_EDIT) return;
+            const cellKey = el.dataset.cellKey;
+            const ov = overrides[cellKey];
+            if (!ov) return;
+
+            const payload = Object.assign({}, window.REPORT_OVERRIDE_META || {}, {
+                action: 'revert',
+                override_id: ov.id,
+                cell_key: cellKey
+            });
+
+            const res = await fetch('report_amount_override_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!data.success) {
+                alert(data.error || 'Failed to revert report change');
+                return;
+            }
+
+            delete overrides[cellKey];
+            clearOverrideState(el);
+            setMoneyText(el, ov.original_amount);
+            afterAmountEdit(el);
+        }
+
+        function startEdit(el) {
+            if (!CAN_EDIT || el.classList.contains('editing')) return;
+            const current = parseMoney(getMoneyText(el));
+            if (current === null) return;
+
+            el.classList.add('editing');
+            el.dataset.moneySample = el.dataset.moneySample || getMoneyText(el);
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.step = '0.01';
+            input.className = 'amount-edit-input';
+            input.value = String(current);
+            const revertBtn = el.querySelector('.override-revert-btn');
+            Array.from(el.childNodes).forEach((node) => {
+                if (node === revertBtn) return;
+                el.removeChild(node);
+            });
+            el.insertBefore(input, revertBtn || null);
+            input.focus();
+            input.select();
+
+            let finished = false;
+            const finish = (commit) => {
+                if (finished) return;
+                finished = true;
+                const raw = input.value.trim();
+                el.classList.remove('editing');
+                input.remove();
+                if (!commit || raw === '') {
+                    setMoneyText(el, current);
+                    return;
+                }
+                const next = parseFloat(raw);
+                if (Number.isNaN(next)) {
+                    setMoneyText(el, current);
+                    return;
+                }
+                setMoneyText(el, next);
+                afterAmountEdit(el);
+
+                const existing = overrides[el.dataset.cellKey];
+                const originalAmount = existing
+                    ? existing.original_amount
+                    : parseFloat(el.dataset.originalAmount || String(current));
+                if (Math.abs(next - originalAmount) < 0.00001) {
+                    if (existing) revertOverride(el);
+                    return;
+                }
+                persistOverride(el, originalAmount, next);
+            };
+
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    finish(true);
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    finish(false);
+                }
+            });
+            input.addEventListener('blur', () => finish(true));
+        }
+
+        initReportAmountCells();
+        assignCellKeys();
+        captureOriginalAmounts();
+        applySavedOverrides();
+
+        if (CAN_EDIT) {
+            document.addEventListener('dblclick', (e) => {
+                const target = e.target.closest('.editable-amount');
+                if (!target || target.classList.contains('editing')) return;
+                e.preventDefault();
+                startEdit(target);
+            });
+        }
+    })();
+    </script>
     
 </body>
 </html>

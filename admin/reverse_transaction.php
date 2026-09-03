@@ -6,29 +6,6 @@ require_once __DIR__ . '/../recipe_stock_helper.php';
 $db = new PDO('sqlite:../pos.db');
 configureSqlitePdo($db);
 
-/**
- * Restore stock for a sold line (mirrors process_order / process_credit deduct rules).
- */
-function reverseRestoreSaleLineStock(PDO $db, string $productName, float $qty): void
-{
-    if ($qty <= 0) {
-        return;
-    }
-    if (in_array($productName, ['EFT Income', 'Lay-bye Payment', 'Cart Discount', 'Gratuity'], true)) {
-        return;
-    }
-    $infoStmt = $db->prepare('SELECT category FROM products WHERE name = ?');
-    $infoStmt->execute([$productName]);
-    $info = $infoStmt->fetch(PDO::FETCH_ASSOC);
-    $isFood = $info && strtolower(trim((string) ($info['category'] ?? ''))) === 'food';
-
-    restoreRecipeStockByProductName($db, $productName, $qty);
-    if (!$isFood) {
-        $db->prepare('UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name')
-            ->execute([':quantity' => $qty, ':product_name' => $productName]);
-    }
-}
-
 try {
     $db->beginTransaction();
 
@@ -115,7 +92,7 @@ try {
             $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
             foreach ($items as $item) {
-                reverseRestoreSaleLineStock($db, $item['product_name'], floatval($item['quantity']));
+                restoreSaleLineStock($db, $item['product_name'], floatval($item['quantity']));
             }
 
             $stmtDeleteItems = $db->prepare("DELETE FROM order_items WHERE order_id = :order_id");
@@ -136,7 +113,7 @@ try {
             $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
 
             foreach ($items as $item) {
-                reverseRestoreSaleLineStock($db, $item['product_name'], floatval($item['quantity']));
+                restoreSaleLineStock($db, $item['product_name'], floatval($item['quantity']));
             }
 
             $stmtDeletePayments = $db->prepare("DELETE FROM payments WHERE sale_id = :sale_id");

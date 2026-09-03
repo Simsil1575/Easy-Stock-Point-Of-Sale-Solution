@@ -19,24 +19,16 @@ if ($db->errorCode()) {
     exit();
 }
 
-// Get business closing time
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00';
-} catch (PDOException $e) {
-    $closingTime = '00:00';
-}
+require_once __DIR__ . '/../business_day_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Get selected date from GET parameter, default to today
-$selectedDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
-
-// Calculate business day boundaries
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+$selectedDate = isset($_GET['date']) ? $_GET['date'] : bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Fetch all items sold for the selected date
 $itemsQuery = $db->prepare("
@@ -47,19 +39,14 @@ $itemsQuery = $db->prepare("
         SUM(oi.price) as total_value
     FROM orders o
     JOIN order_items oi ON o.id = oi.order_id
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     AND o.cashier_id IS NOT NULL
     AND o.cashier_id != ''
     GROUP BY oi.product_name
     ORDER BY total_value DESC
 ");
 
-$itemsQuery->bindParam(':selectedDate', $selectedDate);
-$itemsQuery->bindParam(':nextDay', $nextDay);
-$itemsQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($itemsQuery, $selectedDate, $nextDay);
 $itemsQuery->execute();
 $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);
 
@@ -74,17 +61,12 @@ $totalsQuery = $db->prepare("
         ROUND(SUM(COALESCE((SELECT SUM(ep.amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)), 2) as total_eft,
         ROUND(SUM(o.total), 2) as total_sales
     FROM orders o
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     AND o.cashier_id IS NOT NULL
     AND o.cashier_id != ''
 ");
 
-$totalsQuery->bindParam(':selectedDate', $selectedDate);
-$totalsQuery->bindParam(':nextDay', $nextDay);
-$totalsQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($totalsQuery, $selectedDate, $nextDay);
 $totalsQuery->execute();
 $totals = $totalsQuery->fetch(PDO::FETCH_ASSOC);
 

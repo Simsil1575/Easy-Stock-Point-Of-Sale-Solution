@@ -29,16 +29,17 @@ if (!$cashierId) {
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
+require_once __DIR__ . '/../business_day_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
+$businessName = 'Business';
 try {
     $businessInfoDb = new PDO('sqlite:../info.db');
     $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00';
     $businessName = $businessInfo['name'] ?? 'Business';
 } catch (PDOException $e) {
-    $closingTime = '00:00';
-    $businessName = 'Business';
 }
 
 // Database connection
@@ -84,10 +85,8 @@ function getEmployeeName($cashierId, $userDb) {
 
 $employeeName = getEmployeeName($cashierId, $userDb);
 
-// Calculate business day boundaries
-$closingHour = (int)substr($closingTime, 0, 2);
-$isAfterMidnight = $closingHour < 12;
 $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Fetch cashier sales summary - using same logic as reports.php
 $summaryQuery = $db->prepare("
@@ -96,16 +95,12 @@ $summaryQuery = $db->prepare("
         ROUND(SUM(COALESCE((SELECT SUM(ep.amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)), 2) as total_eft,
         ROUND(SUM(o.total), 2) as total_sales
     FROM orders o
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     AND o.cashier_id = :cashierId
 ");
 
 $summaryQuery->bindParam(':selectedDate', $selectedDate);
 $summaryQuery->bindParam(':nextDay', $nextDay);
-$summaryQuery->bindParam(':closingTime', $closingTime);
 $summaryQuery->bindParam(':cashierId', $cashierId);
 $summaryQuery->execute();
 $summary = $summaryQuery->fetch(PDO::FETCH_ASSOC);
@@ -122,17 +117,13 @@ $ordersQuery = $db->prepare("
         o.created_at,
         COALESCE((SELECT SUM(ep.amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0) as eft_total
     FROM orders o
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     AND o.cashier_id = :cashierId
     ORDER BY o.created_at DESC
 ");
 
 $ordersQuery->bindParam(':selectedDate', $selectedDate);
 $ordersQuery->bindParam(':nextDay', $nextDay);
-$ordersQuery->bindParam(':closingTime', $closingTime);
 $ordersQuery->bindParam(':cashierId', $cashierId);
 $ordersQuery->execute();
 $orders = $ordersQuery->fetchAll(PDO::FETCH_ASSOC);
@@ -162,10 +153,7 @@ $itemsQuery = $db->prepare("
         SUM(oi.price) as total_value
     FROM orders o
     JOIN order_items oi ON o.id = oi.order_id
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     AND o.cashier_id = :cashierId
     GROUP BY oi.product_name
     ORDER BY total_value DESC
@@ -173,7 +161,6 @@ $itemsQuery = $db->prepare("
 
 $itemsQuery->bindParam(':selectedDate', $selectedDate);
 $itemsQuery->bindParam(':nextDay', $nextDay);
-$itemsQuery->bindParam(':closingTime', $closingTime);
 $itemsQuery->bindParam(':cashierId', $cashierId);
 $itemsQuery->execute();
 $items = $itemsQuery->fetchAll(PDO::FETCH_ASSOC);

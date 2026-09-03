@@ -73,7 +73,7 @@ require_once __DIR__ . '/business_day_helper.php';
 $menuBusinessHours = bdLoadBusinessHoursContext();
 $menuOpeningTime = htmlspecialchars($menuBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
 $menuClosingTime = htmlspecialchars($menuBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
-$uiCardsState = uiCardsInitPageState($infoDb, 'cashier_menu', (string) $_SESSION['user_id'], true);
+$uiCardsState = uiCardsInitPageState($infoDb, 'cashier_menu', (string) $_SESSION['user_id'], true, (string) $_SESSION['role']);
 extract($uiCardsState);
 $uiCardsApiUrl = 'ui_cards_api.php';
 $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
@@ -391,6 +391,19 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
                             </div>
                             <h3 class="font-semibold text-gray-800 mb-1">Invoices</h3>
                             <p class="text-sm text-gray-500">Issue invoices, record payments, track balances</p>
+                        </div>
+
+                        <!-- Medical Aid -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="medical_aid" onclick="window.location.href='medical_aid'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-sky-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-notes-medical text-sky-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-sky-100 text-sky-700 px-2 py-1 rounded-full">Medical</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Medical Aid</h3>
+                            <p class="text-sm text-gray-500">Manage patients, medical aid accounts, and claims</p>
                         </div>
                         
                         <!-- Credit Book -->
@@ -976,15 +989,17 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
                     })
                     .then(response => {
                         if (response.success) {
-                            openCashDrawer().then(() => {
-                                Swal.fire({
-                                    icon: 'success',
-                                    title: 'Cash Back Processed',
-                                    text: 'Cash back transaction completed successfully',
-                                    timer: 1500,
-                                    showConfirmButton: false
-                                });
-                                setTimeout(() => location.reload(), 1000);
+                            handleCashBackCompleted(response, {
+                                onDone: function() {
+                                    Swal.fire({
+                                        icon: 'success',
+                                        title: 'Cash Back Processed',
+                                        text: 'Cash back completed. Drawer opened and receipts printed.',
+                                        timer: 1500,
+                                        showConfirmButton: false
+                                    });
+                                    setTimeout(() => location.reload(), 1000);
+                                }
                             });
                         } else {
                             Swal.fire({
@@ -1162,6 +1177,7 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
             .then(r => r.json())
             .then(result => {
                 if (result.success) {
+                    openCashDrawer().catch(function() {});
                     Swal.fire({ icon: 'success', title: 'Success', text: result.message || 'Expense recorded.', timer: 2000 });
                     closeModal('expenseModal');
                     form.reset();
@@ -1195,6 +1211,15 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
         // CASH UP MODAL (Simple Z-Report)
         // ==========================================
         
+        const cashUpCurrentCashier = <?php echo json_encode($_SESSION['username'] ?? '', JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        const applyCashUpShiftTimes = drWireCashierShiftTimeAutoFill({
+            fixedCashier: cashUpCurrentCashier,
+            startDateId: 'cashUpStartDate',
+            endDateId: 'cashUpEndDate',
+            startTimeId: 'cashUpStartTime',
+            endTimeId: 'cashUpEndTime'
+        });
+
         function openCashUpModal() {
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('cashUpStartDate').value = today;
@@ -1203,6 +1228,7 @@ $uiCardsPosConfirmUrl = 'js/pos-confirm.js';
             const coh = document.getElementById('cashUpCashOnHand');
             if (coh) coh.value = '';
             document.getElementById('cashUpModal').classList.add('active');
+            applyCashUpShiftTimes();
             // Open drawer so cashier can count cash on hand
             openCashDrawer().catch(function() {});
         }

@@ -25,6 +25,7 @@ try {
         'success' => true,
         'terminal_mac' => $mac,
         'terminal_name' => $terminal['terminal_name'] ?? '',
+        'pole_display_port' => strtoupper(trim((string) ($terminal['pole_display_port'] ?? ''))),
     ]);
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);

@@ -75,6 +75,86 @@ function isSkipStockChecks(PDO $db): bool
     }
 }
 
+/** Synthetic till lines that must not affect physical inventory. */
+function isNonInventorySaleLineName(string $name): bool
+{
+    return in_array(trim($name), ['EFT Income', 'Lay-bye Payment', 'Cart Discount', 'Gratuity'], true);
+}
+
+/**
+ * Adjust daily_stock_summary.sold_quantity for a catalog product (positive = sold, negative = restored).
+ */
+function updateDailyStockSoldSummary(PDO $db, string $productName, float $soldQtyDelta): void
+{
+    if (abs($soldQtyDelta) < 0.0001) {
+        return;
+    }
+    $resolveProductStmt = $db->prepare('SELECT id FROM products WHERE name = ? LIMIT 1');
+    $resolveProductStmt->execute([$productName]);
+    if (!$resolveProductStmt->fetchColumn()) {
+        return;
+    }
+    $currentDate = date('Y-m-d');
+    $stmtEnsureDailySummary = $db->prepare('
+        INSERT OR IGNORE INTO daily_stock_summary
+        (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
+        VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
+    ');
+    $stmtEnsureDailySummary->execute([$currentDate, $productName]);
+    if ($soldQtyDelta > 0) {
+        $stmtUpdateDailySummary = $db->prepare('
+            UPDATE daily_stock_summary
+            SET sold_quantity = sold_quantity + ?
+            WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
+        ');
+        $stmtUpdateDailySummary->execute([$soldQtyDelta, $currentDate, $productName]);
+        return;
+    }
+    $restoreQty = abs($soldQtyDelta);
+    $stmtUpdateDailySummary = $db->prepare('
+        UPDATE daily_stock_summary
+        SET sold_quantity = CASE
+            WHEN sold_quantity - ? < 0 THEN 0
+            ELSE sold_quantity - ?
+        END
+        WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
+    ');
+    $stmtUpdateDailySummary->execute([$restoreQty, $restoreQty, $currentDate, $productName]);
+}
+
+/**
+ * Deduct recipe ingredients + main SKU for a sale line (mirrors process_order.php).
+ *
+ * @throws Exception on insufficient stock or missing product
+ */
+function deductSaleLineStock(PDO $db, string $productName, float $qty, bool $allowNegative = false, bool $adjustDailySummary = true): void
+{
+    if ($qty <= 0 || isNonInventorySaleLineName($productName)) {
+        return;
+    }
+    deductRecipeStockByProductName($db, $productName, $qty, $allowNegative);
+    deductProductStockByName($db, $productName, $qty, $allowNegative);
+    if ($adjustDailySummary) {
+        updateDailyStockSoldSummary($db, $productName, $qty);
+    }
+}
+
+/**
+ * Restore recipe ingredients + main SKU when reversing a sale line.
+ */
+function restoreSaleLineStock(PDO $db, string $productName, float $qty, bool $adjustDailySummary = true): void
+{
+    if ($qty <= 0 || isNonInventorySaleLineName($productName)) {
+        return;
+    }
+    restoreRecipeStockByProductName($db, $productName, $qty);
+    $db->prepare('UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name')
+        ->execute([':quantity' => $qty, ':product_name' => $productName]);
+    if ($adjustDailySummary) {
+        updateDailyStockSoldSummary($db, $productName, -$qty);
+    }
+}
+
 /**
  * Atomically deduct product stock by name. When $allowNegative is false, requires quantity >= deduct.
  *
@@ -436,10 +516,6 @@ function laybyeAssertStockForAddItem(PDO $db, string $productName, int $qty, ?ar
     }
     if (!$productInfo) {
         throw new Exception('Product not found: ' . $productName);
-    }
-    $category = strtolower(trim((string) ($productInfo['category'] ?? '')));
-    if ($category === 'food') {
-        return;
     }
     if (laybyeProductHasRecipe($db, $productName)) {
         laybyeAssertRecipeIngredientsAvailable($db, $productName, floatval($qty));

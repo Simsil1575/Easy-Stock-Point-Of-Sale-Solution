@@ -3,6 +3,7 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/cashier_helper.php';
 requireApiSession();
+require_once __DIR__ . '/cashback_accounting_helper.php';
 
 date_default_timezone_set('Africa/Harare');
 
@@ -100,12 +101,10 @@ try {
 
     foreach ($data['items'] as $item) {
         $buyingPrice = null;
-        $productCategory = null;
         if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && $item['name'] !== 'Cart Discount' && $item['name'] !== 'Gratuity') {
             $stmtGetProductInfo->execute([':product_name' => $item['name']]);
             $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
             $buyingPrice = $productInfo ? ($productInfo['buying_price'] ?? null) : null;
-            $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
         }
 
         $stmtOrderItems->execute([
@@ -118,10 +117,7 @@ try {
 
         if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && $item['name'] !== 'Cart Discount' && $item['name'] !== 'Gratuity') {
             deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']), $allowNegative);
-            $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-            if (!$isFood) {
-                deductProductStockByName($db, $item['name'], floatval($item['quantity']), $allowNegative);
-            }
+            deductProductStockByName($db, $item['name'], floatval($item['quantity']), $allowNegative);
 
             $stmtEnsureDailySummary->execute([
                 $currentDate,
@@ -142,7 +138,11 @@ try {
 
     if ($isEftPayment || $isMixedPayment) {
         $stmtEftPayment = $db->prepare("INSERT INTO eft_payments (order_id, transaction_ref, wallet_provider, amount, cashier_id, payment_date, terminal_mac, terminal_name) VALUES (:order_id, :transaction_ref, :wallet_provider, :amount, :cashier_id, :payment_date, :terminal_mac, :terminal_name)");
-        $eftAmount = $isEftPayment ? floatval($data['total']) : (isset($data['eft_amount']) ? floatval($data['eft_amount']) : 0);
+        if ($isEftPayment) {
+            $eftAmount = floatval($data['total']);
+        } else {
+            $eftAmount = isset($data['eft_amount']) ? floatval($data['eft_amount']) : 0;
+        }
         if ($eftAmount > 0) {
             $stmtEftPayment->execute([
                 ':order_id' => $orderId,
@@ -181,6 +181,22 @@ try {
                 ':terminal_name' => $terminal['name'],
             ]);
         }
+    }
+
+    $cashBack = round(floatval($data['cash_back'] ?? 0), 2);
+    if ($cashBack > 0.001 && ($isEftPayment || $isMixedPayment)) {
+        $walletProvider = trim((string) ($data['wallet_provider'] ?? ''));
+        $transactionRef = trim((string) ($data['transaction_ref'] ?? ''));
+        recordCashBackAccounting(
+            $db,
+            $cashBack,
+            $_SESSION['username'] ?? 'Unknown',
+            date('Y-m-d H:i:s'),
+            'Cash Back - POS change (Order #' . $orderId . ')',
+            true,
+            $walletProvider !== '' ? $walletProvider : 'Customer',
+            $transactionRef
+        );
     }
 
     $db->commit();

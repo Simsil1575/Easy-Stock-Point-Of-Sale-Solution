@@ -20,66 +20,28 @@ if ($activationStatus == 0) {
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-$closingTime = '00:00'; // Default
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    if ($businessInfo && isset($businessInfo['closing_time'])) {
-        $closingTime = $businessInfo['closing_time'];
-    }
-} catch (PDOException $e) {
-    error_log('Business info DB error: ' . $e->getMessage());
-    // Continue with default closing time
-}
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
 
-// Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
-// If closing time is after midnight (e.g., 2:00 AM), we need to consider transactions
-// that happened after midnight but before closing time as part of the previous day
-$isAfterMidnight = $closingHour < 12;
-
-// Optimized business day WHERE clause with caching
+// Optimized business day WHERE clause with caching (matches admin/cash.php)
 class BusinessDayCache {
     private static $cache = [];
     
     public static function getWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
-        $cacheKey = "$dateField-$startDate-$endDate-$closingTime-$isAfterMidnight";
+        $cacheKey = "$dateField-$startDate-$endDate-$closingTime-" . ($isAfterMidnight ? '1' : '0');
         
         if (!isset(self::$cache[$cacheKey])) {
-            if ($startDate === $endDate) {
-                // Single day - use business day logic
-                $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-                self::$cache[$cacheKey] = "
-                    (DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                    (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-                ";
-            } else {
-                // Multiple days - need to handle each day's business hours
-                $whereClauses = [];
-                $currentDate = new DateTime($startDate);
-                $endDateTime = new DateTime($endDate);
-                
-                while ($currentDate <= $endDateTime) {
-                    $dateStr = $currentDate->format('Y-m-d');
-                    $nextDay = clone $currentDate;
-                    $nextDay->modify('+1 day');
-                    $nextDayStr = $nextDay->format('Y-m-d');
-                    
-                    $whereClauses[] = "
-                        (DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                        (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-                    ";
-                    
-                    $currentDate->modify('+1 day');
-                }
-                
-                self::$cache[$cacheKey] = "(" . implode(") OR (", $whereClauses) . ")";
-            }
+            self::$cache[$cacheKey] = bdDateRangeWhereSql(
+                $dateField,
+                $startDate,
+                $endDate,
+                $closingTime,
+                (bool) $isAfterMidnight
+            );
         }
         
         return self::$cache[$cacheKey];
@@ -224,11 +186,39 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == '1') {
         function getTotalCashOutAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
             try {
                 $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-                $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out' AND ($whereClause)");
-                $stmt->execute();
-                return $stmt->fetchColumn();
+                return sumCashReportOutflowsForWhere($db, $whereClause);
             } catch (PDOException $e) {
                 error_log("Error in getTotalCashOutAjax: " . $e->getMessage());
+                return 0;
+            }
+        }
+
+        function getTotalExpensesAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+            try {
+                $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+                return sumCashReportExpensesForWhere($db, $whereClause);
+            } catch (PDOException $e) {
+                error_log("Error in getTotalExpensesAjax: " . $e->getMessage());
+                return 0;
+            }
+        }
+
+        function getTotalRefundsAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+            try {
+                $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+                return sumCashReportRefundsForWhere($db, $whereClause);
+            } catch (PDOException $e) {
+                error_log("Error in getTotalRefundsAjax: " . $e->getMessage());
+                return 0;
+            }
+        }
+
+        function getTotalCashBackAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+            try {
+                $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+                return sumCashReportCashBackForWhere($db, $whereClause);
+            } catch (PDOException $e) {
+                error_log("Error in getTotalCashBackAjax: " . $e->getMessage());
                 return 0;
             }
         }
@@ -241,7 +231,10 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == '1') {
         $topSellingProducts = getTopSellingProductsAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
         $topProductsForChart = getTopSellingProductsAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight, 10);
         $totalCashIn = getTotalCashInAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $totalCashOut = getTotalCashOutAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $totalExpenses = getTotalExpensesAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $totalRefunds = getTotalRefundsAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $totalCashBack = getTotalCashBackAjax($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+        $totalCashOut = $totalExpenses + $totalRefunds + $totalCashBack;
         $netProfit = $grossProfit + $totalCashIn - $totalCashOut;
         
         // Date display
@@ -292,7 +285,10 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == '1') {
                 'openingInventory' => $openingInventory,
                 'purchases' => $purchases,
                 'closingInventory' => $closingInventory,
-                'totalCashOut' => $totalCashOut
+                'totalCashOut' => $totalCashOut,
+                'totalExpenses' => $totalExpenses,
+                'totalRefunds' => $totalRefunds,
+                'totalCashBack' => $totalCashBack
             ]
         ]);
         exit;
@@ -392,40 +388,20 @@ $availableMonths = getMonthsWithData($db);
 // Handle view selection (daily, weekly, monthly) and period picking
 $view = isset($_GET['view']) ? $_GET['view'] : 'daily';
 
-// Default period based on current time (or first available data)
+// Default period based on current calendar date (show zeros when no data yet)
 switch ($view) {
     case 'weekly':
-        if (!empty($availableWeeks)) {
-            $firstWeek = $availableWeeks[0];
-            $dt = new DateTime();
-            $dt->setISODate($firstWeek['year'], $firstWeek['week']);
-            $startDate = $dt->format('Y-m-d');
-            $dt->modify('+6 days');
-            $endDate = $dt->format('Y-m-d');
-        } else {
-            $startDate = date('Y-m-d', strtotime('monday this week'));
-            $endDate = date('Y-m-d', strtotime('sunday this week'));
-        }
+        $startDate = date('Y-m-d', strtotime('monday this week'));
+        $endDate = date('Y-m-d', strtotime('sunday this week'));
         break;
     case 'monthly':
-        if (!empty($availableMonths)) {
-            $ts = strtotime($availableMonths[0] . '-01');
-            $startDate = date('Y-m-01', $ts);
-            $endDate = date('Y-m-t', $ts);
-        } else {
-            $startDate = date('Y-m-01');
-            $endDate = date('Y-m-t');
-        }
+        $startDate = date('Y-m-01');
+        $endDate = date('Y-m-t');
         break;
     case 'daily':
     default:
-        if (!empty($availableDates)) {
-            $startDate = $availableDates[0];
-            $endDate = $availableDates[0];
-        } else {
-            $startDate = date('Y-m-d');
-            $endDate = date('Y-m-d');
-        }
+        $startDate = date('Y-m-d');
+        $endDate = date('Y-m-d');
         break;
 }
 
@@ -608,15 +584,43 @@ function getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnigh
     }
 }
 
-// Function to get total cash out (with business closing time logic)
+// Function to get total cash out (expenses + refunds, with business closing time logic)
 function getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out' AND ($whereClause)");
-        $stmt->execute();
-        return $stmt->fetchColumn();
+        return sumCashReportOutflowsForWhere($db, $whereClause);
     } catch (PDOException $e) {
         error_log("Error in getTotalCashOut: " . $e->getMessage());
+        return 0;
+    }
+}
+
+function getTotalExpenses($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+    try {
+        $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        return sumCashReportExpensesForWhere($db, $whereClause);
+    } catch (PDOException $e) {
+        error_log("Error in getTotalExpenses: " . $e->getMessage());
+        return 0;
+    }
+}
+
+function getTotalRefunds($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+    try {
+        $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        return sumCashReportRefundsForWhere($db, $whereClause);
+    } catch (PDOException $e) {
+        error_log("Error in getTotalRefunds: " . $e->getMessage());
+        return 0;
+    }
+}
+
+function getTotalCashBack($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
+    try {
+        $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
+        return sumCashReportCashBackForWhere($db, $whereClause);
+    } catch (PDOException $e) {
+        error_log("Error in getTotalCashBack: " . $e->getMessage());
         return 0;
     }
 }
@@ -635,7 +639,10 @@ $grossProfit = $totalRevenue - $costOfGoodsSold;
 $topSellingProducts = getTopSellingProducts($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
 $topProductsForChart = getTopSellingProducts($db, $startDate, $endDate, $closingTime, $isAfterMidnight, 10);
 $totalCashIn = getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
-$totalCashOut = getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+$totalExpenses = getTotalExpenses($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+$totalRefunds = getTotalRefunds($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+$totalCashBack = getTotalCashBack($db, $startDate, $endDate, $closingTime, $isAfterMidnight);
+$totalCashOut = $totalExpenses + $totalRefunds + $totalCashBack;
 $netProfit = calculateNetProfit($grossProfit, $totalCashIn, $totalCashOut);
 
 // Determine date display format based on view
@@ -996,6 +1003,15 @@ try {
                                     }
                                     $datesByMonth[$monthKey][] = $date;
                                 }
+                                // Always include today so empty days show zeros instead of falling back
+                                $todayDate = date('Y-m-d');
+                                $todayMonthKey = date('Y-m');
+                                if (!isset($datesByMonth[$todayMonthKey])) {
+                                    $datesByMonth[$todayMonthKey] = [];
+                                }
+                                if (!in_array($todayDate, $datesByMonth[$todayMonthKey], true)) {
+                                    $datesByMonth[$todayMonthKey][] = $todayDate;
+                                }
                                 krsort($datesByMonth); // Most recent first
                                 
                                 $currentDateValue = $selectedDate;
@@ -1128,6 +1144,21 @@ try {
                                     }
                                     return $b['week'] - $a['week'];
                                 });
+                                // Ensure current week is selectable even when it has no sales yet
+                                $currentWeekInList = false;
+                                foreach ($availableWeeks as $weekRow) {
+                                    if (($weekRow['week_key'] ?? '') === $thisWeekValue) {
+                                        $currentWeekInList = true;
+                                        break;
+                                    }
+                                }
+                                if (!$currentWeekInList) {
+                                    array_unshift($availableWeeks, [
+                                        'week_key' => $thisWeekValue,
+                                        'year' => $thisWeekYear,
+                                        'week' => $thisWeekNumber,
+                                    ]);
+                                }
                                 ?>
                                 
                                 <!-- Week Badge Grid -->
@@ -1184,6 +1215,10 @@ try {
                                         $availableYears[] = $year;
                                     }
                                 }
+                                $currentCalendarYear = date('Y');
+                                if (!in_array($currentCalendarYear, $availableYears, true)) {
+                                    $availableYears[] = $currentCalendarYear;
+                                }
                                 rsort($availableYears); // Most recent first
                                 $currentYear = date('Y', strtotime($startDate));
                                 ?>
@@ -1207,11 +1242,12 @@ try {
                                     $monthsForYear = array_filter($availableMonths, function($month) use ($currentYear) {
                                         return substr($month, 0, 4) == $currentYear;
                                     });
+                                    $currentCalendarMonth = date('Y-m');
                                     
-                                    // Show all 12 months, but disable ones without data
+                                    // Show all 12 months; current month always selectable
                                     for ($i = 1; $i <= 12; $i++):
                                         $monthKey = $currentYear . '-' . str_pad($i, 2, '0', STR_PAD_LEFT);
-                                        $hasData = in_array($monthKey, $monthsForYear);
+                                        $hasData = in_array($monthKey, $monthsForYear, true) || $monthKey === $currentCalendarMonth;
                                         $isSelected = ($monthKey === $currentMonthValue);
                                         $monthName = $monthNames[$i - 1];
                                     ?>
@@ -1371,7 +1407,19 @@ try {
                                 <td class="py-2 px-4"></td>
                             </tr>
                             <tr class="border-b">
-                                <td class="py-2 px-4 pl-8 text-gray-600">Total Cash Out (Expenses)</td>
+                                <td class="py-2 px-4 pl-8 text-gray-600">Expenses</td>
+                                <td id="is-expenses" class="py-2 px-4 text-right text-gray-600">N$<?php echo number_format($totalExpenses, 2); ?></td>
+                            </tr>
+                            <tr class="border-b">
+                                <td class="py-2 px-4 pl-8 text-gray-600">Refunds</td>
+                                <td id="is-refunds" class="py-2 px-4 text-right text-gray-600">N$<?php echo number_format($totalRefunds, 2); ?></td>
+                            </tr>
+                            <tr class="border-b">
+                                <td class="py-2 px-4 pl-8 text-gray-600">Cash Back</td>
+                                <td id="is-cash-back" class="py-2 px-4 text-right text-gray-600">N$<?php echo number_format($totalCashBack, 2); ?></td>
+                            </tr>
+                            <tr class="border-b">
+                                <td class="py-2 px-4 pl-8 text-gray-600 font-medium">Total Cash Out</td>
                                 <td id="is-cash-out" class="py-2 px-4 text-right text-gray-600">N$<?php echo number_format($totalCashOut, 2); ?></td>
                             </tr>
                             <tr class="border-b">
@@ -1947,6 +1995,9 @@ try {
             if (el('is-closing-inv')) el('is-closing-inv').textContent = formatCurrency(data.closingInventory);
             if (el('is-gross-profit')) el('is-gross-profit').textContent = formatCurrency(data.grossProfit);
             if (el('is-gross-margin')) el('is-gross-margin').textContent = `${Number(data.grossMarginPct).toFixed(1)}%`;
+            if (el('is-expenses')) el('is-expenses').textContent = formatCurrency(data.totalExpenses ?? 0);
+            if (el('is-refunds')) el('is-refunds').textContent = formatCurrency(data.totalRefunds ?? 0);
+            if (el('is-cash-back')) el('is-cash-back').textContent = formatCurrency(data.totalCashBack ?? 0);
             if (el('is-cash-out')) el('is-cash-out').textContent = formatCurrency(data.totalCashOut);
             if (el('is-net-profit')) el('is-net-profit').textContent = formatCurrency(data.netProfit);
             if (el('is-net-margin')) el('is-net-margin').textContent = `${Number(data.netMarginPct).toFixed(1)}%`;

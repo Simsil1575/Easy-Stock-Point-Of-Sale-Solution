@@ -78,7 +78,7 @@ function getProductSalesForDate($db, $productId, $date) {
              WHERE csi.product_name = (SELECT name FROM products WHERE id = ?)
              AND DATE(cs.created_at) = ?
             ), 0
-        ) as total_sold
+        )
     ");
     $salesStmt->execute([$productId, $date, $productId, $date]);
     return (float)$salesStmt->fetchColumn();
@@ -262,11 +262,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stockTakingItems = []; // Store items for PDF generation
             $today = date('Y-m-d');
             $stockType = isset($stockTakingData['stock_type']) ? $stockTakingData['stock_type'] : 'closing'; // 'opening' or 'closing'
+            $includeSold = !empty($stockTakingData['include_sold']) && $stockType === 'closing';
+            require_once __DIR__ . '/../includes/stock_taking_calc.php';
             
             foreach ($stockTakingData['items'] as $item) {
                 if (!empty($item['product_id']) && isset($item['actual_quantity'])) {
                     $productId = $item['product_id'];
-                    $actualQuantity = floatval($item['actual_quantity']);
+                    $physicalQuantity = floatval($item['actual_quantity']);
                     
                     // Get opening stock for today
                     $openingStmt = $db->prepare("
@@ -291,26 +293,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $receivedStmt->execute([$productId]);
                     $receivedStock = $receivedStmt->fetchColumn();
                     
-                    // Get actual sales for today from both cash and credit sales
-                    $salesStmt = $db->prepare("
-                        SELECT COALESCE(
-                            (SELECT SUM(oi.quantity)
-                             FROM order_items oi
-                             JOIN orders o ON oi.order_id = o.id
-                             WHERE oi.product_name = (SELECT name FROM products WHERE id = ?)
-                             AND DATE(o.created_at) = date('now')
-                            ), 0
-                        ) + COALESCE(
-                            (SELECT SUM(csi.quantity)
-                             FROM credit_sale_items csi
-                             JOIN credit_sales cs ON csi.sale_id = cs.id
-                             WHERE csi.product_name = (SELECT name FROM products WHERE id = ?)
-                             AND DATE(cs.created_at) = date('now')
-                            ), 0
-                        ) as total_sold
-                    ");
-                    $salesStmt->execute([$productId, $productId]);
-                    $actualSales = $salesStmt->fetchColumn();
+                    // Get actual sales for today
+                    $actualSales = getProductSalesForDate($db, $productId, date('Y-m-d'));
                     
                     // Get product details and current quantity from products table
                     $stmt = $db->prepare("SELECT name, price, buying_price, quantity FROM products WHERE id = ?");
@@ -321,17 +305,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         // Ensure daily stock summary exists for this product and date
                         ensureDailyStockSummary($db, $productId, $today);
                         
-                        // Expected quantity should always be the current quantity in products table
-                        $expectedStock = (int)$product['quantity'];
-                        $variance = $actualQuantity - $expectedStock;
+                        $calc = stCalculateStockTakeQuantities(
+                            $stockType,
+                            $includeSold,
+                            $physicalQuantity,
+                            (float) $openingStock,
+                            (float) $receivedStock,
+                            (float) $actualSales,
+                            (float) $product['quantity']
+                        );
+                        $expectedStock = $calc['expected_quantity'];
+                        $actualQuantity = $calc['actual_quantity'];
+                        $variance = $calc['variance'];
+                        $soldQuantity = $calc['sold_quantity'];
                         
-                        // Calculate sold quantity based on stock type
-                        if ($stockType === 'opening') {
-                            $soldQuantity = 0; // No sales calculation for opening stock
-                        } else {
-                            // Use actual recorded sales
-                            $soldQuantity = $actualSales;
-                        }
+                        // When include_sold is active, store adjusted actual (physical - sold) in database
+                        $quantityToStore = $includeSold ? ($actualQuantity - $soldQuantity) : $actualQuantity;
                         
                         // Store item details for PDF
                         $stockTakingItems[] = [
@@ -341,11 +330,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'received_stock' => $receivedStock,
                             'expected_quantity' => $expectedStock,
                             'actual_quantity' => $actualQuantity,
+                            'accounted_quantity' => $calc['accounted_quantity'],
                             'sold_quantity' => $soldQuantity,
                             'variance' => $variance,
                             'actual_sales' => $actualSales,
+                            'include_sold' => $includeSold,
                             'price' => $product['price'],
                             'buying_price' => $product['buying_price'],
+                            'value_difference' => $variance * (float) $product['price'],
                             'sales_income' => $soldQuantity * $product['price'],
                             'profit' => ($soldQuantity * $product['price']) - ($soldQuantity * $product['buying_price'])
                         ];
@@ -357,7 +349,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         
                         // Update product quantity to actual count
                         $updateStmt = $db->prepare("UPDATE products SET quantity = ? WHERE id = ?");
-                        $updateStmt->execute([$actualQuantity, $productId]);
+                        $updateStmt->execute([$quantityToStore, $productId]);
                         
                         // Log the stock adjustment if there's a variance
                         if ($variance != 0) {
@@ -367,7 +359,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 (product_id, action, quantity_change, old_quantity, new_quantity, is_stock_taken, username) 
                                 VALUES (?, ?, ?, ?, ?, 1, ?)
                             ");
-                            $logStmt->execute([$productId, $action, $variance, $currentQuantity, $actualQuantity, currentStockChangeUsername()]);
+                            $logStmt->execute([$productId, $action, $variance, $currentQuantity, $quantityToStore, currentStockChangeUsername()]);
                         }
                         
                         // Mark restocks as taken only for closing stock
@@ -389,7 +381,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             INSERT INTO opening_stock (product_id, opening_quantity, recorded_by, notes) 
                             VALUES (?, ?, ?, ?)
                         ");
-                        $openingStmt->execute([$productId, $actualQuantity, $_SESSION['user_id'], 'Opening stock recorded during stock taking']);
+                        $openingStmt->execute([$productId, $quantityToStore, $_SESSION['user_id'], 'Opening stock recorded during stock taking']);
                         
                         // Reset sold quantities for the current day when opening stock is recorded
                         // This ensures sales tracking starts fresh from the opening stock
@@ -406,7 +398,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             SET opening_quantity = ?, sold_quantity = 0
                             WHERE product_id = ? AND date = ?
                         ");
-                        $updateExistingStmt->execute([$actualQuantity, $productId, $today]);
+                        $updateExistingStmt->execute([$quantityToStore, $productId, $today]);
                             
                             // Update daily stock summary with opening stock
                             $summaryStmt = $db->prepare("
@@ -423,7 +415,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 )
                             ");
                             $summaryStmt->execute([
-                                $today, $productId, $actualQuantity, $today, $productId,
+                                $today, $productId, $quantityToStore, $today, $productId,
                                 $today, $productId, $today, $productId
                             ]);
                         } else {
@@ -432,7 +424,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             INSERT INTO closing_stock (product_id, closing_quantity, recorded_by, notes) 
                             VALUES (?, ?, ?, ?)
                         ");
-                        $closingStmt->execute([$productId, $actualQuantity, $_SESSION['user_id'], 'Closing stock recorded during stock taking']);
+                        $closingStmt->execute([$productId, $quantityToStore, $_SESSION['user_id'], 'Closing stock recorded during stock taking']);
                         
                         // Update daily stock summary with closing stock and sold quantity
                         // Use actual recorded sales, not calculated from stock movement
@@ -450,7 +442,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 )
                             ");
                             $summaryStmt->execute([
-                                $today, $productId, $today, $productId, $openingStock, $actualQuantity,
+                                $today, $productId, $today, $productId, $openingStock, $quantityToStore,
                                 $today, $productId, $receivedStock, $actualSales,
                                 $today, $productId
                             ]);
@@ -503,7 +495,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 ");
                                 $tomorrowOpeningStmt->execute([
                                     $productId, 
-                                    $actualQuantity, 
+                                    $quantityToStore, 
                                     $_SESSION['user_id'], 
                                     'Opening stock automatically set from previous day closing stock'
                                 ]);
@@ -523,7 +515,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     )
                                 ");
                                 $tomorrowSummaryStmt->execute([
-                                    $tomorrow, $productId, $actualQuantity, $tomorrow, $productId,
+                                    $tomorrow, $productId, $quantityToStore, $tomorrow, $productId,
                                     $tomorrow, $productId
                                 ]);
                             }
@@ -533,6 +525,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $db->commit();
+
+            if (!empty($stockTakingItems)) {
+                try {
+                    require_once __DIR__ . '/../includes/stock_take_records_lib.php';
+                    strSaveRecord($db, [
+                        'user_id' => (int) $_SESSION['user_id'],
+                        'username' => (string) $_SESSION['username'],
+                        'stock_type' => $stockType,
+                        'stock_date' => $today,
+                        'taken_at' => date('Y-m-d H:i:s'),
+                        'category' => isset($stockTakingData['category']) ? trim((string) $stockTakingData['category']) : '',
+                        'items' => $stockTakingItems,
+                    ]);
+                } catch (Throwable $e) {
+                    error_log('Failed to save stock take record: ' . $e->getMessage());
+                }
+            }
             
             // Generate PDF if there are items and it's a form submission
             if (!empty($stockTakingItems) && isset($_POST['stock_taking_data'])) {
@@ -702,11 +711,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $today = date('Y-m-d');
                     
                     class ClosingStockPDF extends FPDF {
+                        public $includeSold = false;
                         function Header() {
                             $this->SetFont('Arial', 'B', 16);
                             $this->Cell(0, 10, 'CLOSING STOCK REPORT', 0, 1, 'C');
                             $this->SetFont('Arial', '', 10);
                             $this->Cell(0, 8, 'Generated on ' . date('Y-m-d H:i:s'), 0, 1, 'C');
+                if ($this->includeSold) {
+                    $this->SetFont('Arial', 'I', 9);
+                    $this->Cell(0, 6, 'Adj. Actual = Physical count - Sold today; reflects true remaining stock', 0, 1, 'C');
+                }
                             $this->Ln(3);
                         }
                         
@@ -717,76 +731,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                     
+                    $pdfLayout = stClosingPdfLayout($includeSold);
+
                     // Initialize PDF in landscape orientation
                     $pdf = new ClosingStockPDF('L'); // Landscape orientation
+                    $pdf->includeSold = $includeSold;
                     $pdf->AliasNbPages();
                     $pdf->AddPage();
                     $pdf->SetFont('Arial', '', 9);
                     
-                    // Calculate column widths for A4 landscape (297mm total width)
-                    // Adjusted to fit: 20+60+28+32+30+26+32 = 228mm (leaves margin)
-                    $colWidths = [
-                        'id' => 20,
-                        'name' => 60,
-                        'unit_price' => 28,
-                        'system_qty' => 32,
-                        'physical_qty' => 30,
-                        'difference' => 26,
-                        'value_diff' => 32
-                    ];
-                    
-                    // Draw table header
-                    $pdf->SetFont('Arial', 'B', 9);
-                    $pdf->Cell($colWidths['id'], 10, 'ID', 1, 0, 'C');
-                    $pdf->Cell($colWidths['name'], 10, 'Product Name', 1, 0, 'C');
-                    $pdf->Cell($colWidths['unit_price'], 10, 'Unit Price', 1, 0, 'C');
-                    $pdf->Cell($colWidths['system_qty'], 10, 'System Qty (Exp)', 1, 0, 'C');
-                    $pdf->Cell($colWidths['physical_qty'], 10, 'Physical (Act)', 1, 0, 'C');
-                    $pdf->Cell($colWidths['difference'], 10, 'Difference', 1, 0, 'C');
-                    $pdf->Cell($colWidths['value_diff'], 10, 'Value Diff', 1, 1, 'C');
+                    stClosingPdfWriteHeader($pdf, $pdfLayout);
                     
                     $totalValueDifference = 0;
                     $pdf->SetFont('Arial', '', 9);
                     
                     // Process each stock taking item
                     foreach ($stockTakingItems as $item) {
-                        $productId = $item['product_id'];
-                        $productName = $item['product_name'];
-                        $unitPrice = $item['price'];
-                        $systemQuantity = (int)$item['expected_quantity'];
-                        $physicalCount = (float)$item['actual_quantity'];
-                        $difference = $physicalCount - $systemQuantity;
-                        $valueDifference = $difference * $unitPrice;
-                        $totalValueDifference += $valueDifference;
-                        
-                        // Format difference with + or - sign
-                        $differenceFormatted = $difference > 0 ? '+' . $difference : (string)$difference;
-                        $valueDifferenceFormatted = $valueDifference > 0 ? '+' . number_format($valueDifference, 2) : number_format($valueDifference, 2);
-                        
-                        // Add row to PDF
-                        $pdf->Cell($colWidths['id'], 8, $productId, 1, 0, 'C');
-                        $pdf->Cell($colWidths['name'], 8, substr($productName, 0, 32), 1, 0, 'L');
-                        $pdf->Cell($colWidths['unit_price'], 8, number_format($unitPrice, 2), 1, 0, 'R');
-                        $pdf->Cell($colWidths['system_qty'], 8, $systemQuantity, 1, 0, 'C');
-                        $pdf->Cell($colWidths['physical_qty'], 8, $physicalCount, 1, 0, 'C');
-                        $pdf->Cell($colWidths['difference'], 8, $differenceFormatted, 1, 0, 'C');
-                        $pdf->Cell($colWidths['value_diff'], 8, $valueDifferenceFormatted, 1, 1, 'R');
+                        $amounts = stClosingPdfWriteRow($pdf, $pdfLayout, $item);
+                        $totalValueDifference += $amounts['value_difference'];
                     }
                     
-                    // Add empty row for spacing
-                    $pdf->Cell($colWidths['id'], 8, '', 1, 0, 'C');
-                    $pdf->Cell($colWidths['name'], 8, '', 1, 0, 'L');
-                    $pdf->Cell($colWidths['unit_price'], 8, '', 1, 0, 'R');
-                    $pdf->Cell($colWidths['system_qty'], 8, '', 1, 0, 'C');
-                    $pdf->Cell($colWidths['physical_qty'], 8, '', 1, 0, 'C');
-                    $pdf->Cell($colWidths['difference'], 8, '', 1, 0, 'C');
-                    $pdf->Cell($colWidths['value_diff'], 8, '', 1, 1, 'R');
+                    stClosingPdfWriteSpacer($pdf, $pdfLayout);
                     
                     // Add total value difference line
                     $pdf->Ln(5);
                     $pdf->SetFont('Arial', 'B', 12);
                     $totalValueDiffFormatted = $totalValueDifference > 0 ? '+' . number_format($totalValueDifference, 2) : number_format($totalValueDifference, 2);
                     $pdf->Cell(0, 10, 'TOTAL VALUE DIFFERENCE: ' . $totalValueDiffFormatted, 0, 1, 'L');
+                    if ($includeSold) {
+                        $pdf->SetFont('Arial', 'I', 9);
+                        $pdf->Cell(0, 6, 'Adj. Actual = Physical count - Sold today', 0, 1, 'L');
+                        $pdf->Cell(0, 6, 'Difference = Adj. Actual - System qty', 0, 1, 'L');
+                    }
                     
                     // Generate filename
                     $fileName = 'Closing_Stock_Report_' . date('Y-m-d_H-i-s') . '.pdf';
@@ -896,110 +872,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch products from the database with correct sales calculation
-$stmt = $db->query('
-    SELECT 
-        p.*,
-        COALESCE(
-            (SELECT SUM(oi.quantity)
-             FROM order_items oi
-             JOIN orders o ON oi.order_id = o.id
-             WHERE oi.product_name = p.name
-             AND DATE(o.created_at) = date("now")
-            ), 0
-        ) + COALESCE(
-            (SELECT SUM(csi.quantity)
-             FROM credit_sale_items csi
-             JOIN credit_sales cs ON csi.sale_id = cs.id
-             WHERE csi.product_name = p.name
-             AND DATE(cs.created_at) = date("now")
-            ), 0
-        ) as total_sold,
-        (SELECT COALESCE(SUM(sc.quantity_change), 0) 
-         FROM stock_changes sc 
-         WHERE sc.product_id = p.id 
-         AND sc.action = "Restock"
-         AND DATE(sc.changed_at) = date("now")) as received_stock,
-        COALESCE(
-            (SELECT os.opening_quantity
-             FROM opening_stock os 
-             WHERE os.product_id = p.id 
-             AND os.recorded_at >= date("now", "start of day")
-             ORDER BY os.recorded_at DESC 
-             LIMIT 1),
-            (SELECT os.opening_quantity
-             FROM opening_stock os 
-             WHERE os.product_id = p.id 
-             ORDER BY os.recorded_at DESC 
-             LIMIT 1),
-            0
-        ) as opening_stock
-    FROM products p
-    ORDER BY p.name ASC
-');
-
-$products = [];
-$lowStock = [];
-$outOfStock = [];
-
-// Post-process the data to handle sold quantities that should be reset after closing stock
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    // Check if closing stock exists for this product and today
-    $closingStmt = $db->prepare("
-        SELECT COUNT(*) 
-        FROM closing_stock 
-        WHERE product_id = ? AND DATE(recorded_at) = date('now')
-    ");
-    $closingStmt->execute([$row['id']]);
-    $hasClosingStock = $closingStmt->fetchColumn() > 0;
-    
-    // If closing stock exists for today, sold quantity should be 0
-    if ($hasClosingStock) {
-        $row['total_sold'] = 0;
-    }
-    
-    // Also check if there's a closing stock record for a previous date that should reset today's sold quantities
-    $previousClosingStmt = $db->prepare("
-        SELECT COUNT(*) 
-        FROM closing_stock 
-        WHERE product_id = ? AND DATE(recorded_at) < date('now')
-        ORDER BY recorded_at DESC
-        LIMIT 1
-    ");
-    $previousClosingStmt->execute([$row['id']]);
-    $hasPreviousClosingStock = $previousClosingStmt->fetchColumn() > 0;
-    
-    // If there's a previous closing stock, sold quantity should be 0
-    if ($hasPreviousClosingStock) {
-        $lastClosingStmt = $db->prepare("
-            SELECT DATE(recorded_at) as closing_date
-            FROM closing_stock 
-            WHERE product_id = ? AND DATE(recorded_at) < date('now')
-            ORDER BY recorded_at DESC
-            LIMIT 1
-        ");
-        $lastClosingStmt->execute([$row['id']]);
-        $lastClosingDate = $lastClosingStmt->fetchColumn();
-        
-        if ($lastClosingDate) {
-            $row['total_sold'] = 0;
-        }
-    }
-    
-    $products[] = $row;
-    if ($row['received_stock'] <= 0) {
-        $outOfStock[] = $row;
-    } else if ($row['received_stock'] < 5) {
-        $lowStock[] = $row;
-    }
-}
-
-// Fetch unique categories
-$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category");
-$categories = [];
-while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
-    $categories[] = $cat['category'];
-}
+require_once __DIR__ . '/../includes/stock_taking_list_lib.php';
+$categories = stockTakingListFetchCategories($db);
 ?>
 
 <!DOCTYPE html>
@@ -1631,24 +1505,25 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             
             <div class="w-full px-4 lg:px-6 py-6">
 
-                <!-- Stock Type Selection -->
-                <div class="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <h3 class="text-lg font-medium text-gray-900 mb-2">Stock Type Selection</h3>
-                            <p class="text-sm text-gray-600">Choose whether you are recording opening stock or closing stock for the day.</p>
-                   
-                        </div>
-                        <div class="flex items-center gap-6">
-                            <label class="flex items-center">
-                                <input type="radio" name="stockType" value="opening" class="h-4 w-4 text-teal-600 focus:ring-teal-500 border-gray-300">
-                                <span class="ml-2 text-sm font-medium text-gray-700">Opening Stock</span>
-                            </label>
-                            <label class="flex items-center">
-                                <input type="radio" name="stockType" value="closing" class="h-4 w-4 text-teal-600 focus:ring-teal-500 border-gray-300" checked>
-                                <span class="ml-2 text-sm font-medium text-gray-700">Closing Stock</span>
-                            </label>
-                        </div>
+                <div class="mb-4 bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+                    <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
+                        <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                            <input type="radio" name="stockType" value="opening" class="h-4 w-4 text-teal-600 focus:ring-teal-500 border-gray-300">
+                            Opening
+                        </label>
+                        <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                            <input type="radio" name="stockType" value="closing" class="h-4 w-4 text-teal-600 focus:ring-teal-500 border-gray-300" checked>
+                            Closing
+                        </label>
+                        <span class="hidden sm:block w-px h-5 bg-gray-200"></span>
+                        <label id="includeSoldWrap" class="inline-flex items-center gap-2 text-sm text-gray-700">
+                            <input type="checkbox" id="includeSoldToggle" class="rounded border-gray-300 text-teal-600 focus:ring-teal-500">
+                            Include sold today
+                        </label>
+                        <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                            <input type="checkbox" id="onlyCountedToggle" checked class="rounded border-gray-300 text-teal-600 focus:ring-teal-500">
+                            Only counted items
+                        </label>
                     </div>
                 </div>
 
@@ -1711,9 +1586,17 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                                         </svg>
                                     </div>
                                 </th>
+                                <th scope="col" class="sold-today-column px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider" style="display: none;">
+                                    <span class="hidden sm:inline">Sold Today</span>
+                                    <span class="sm:hidden">Sold</span>
+                                </th>
                                 <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
                                     <span class="hidden sm:inline">Actual Count</span>
                                     <span class="sm:hidden">Actual</span>
+                                </th>
+                                <th scope="col" class="adjusted-actual-column px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider" style="display: none;">
+                                    <span class="hidden sm:inline">Adj. Actual</span>
+                                    <span class="sm:hidden">Adj.</span>
                                 </th>
                                 <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
                                     <span class="hidden sm:inline">Difference</span>
@@ -1722,38 +1605,9 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
-                            <?php foreach ($products as $product): ?>
-                                <tr class="stock-taking-row hover:bg-gray-50 transition-colors" data-category="<?= htmlspecialchars($product['category'] ?? '') ?>" data-product-id="<?= $product['id'] ?>" data-sold="<?= $product['total_sold'] ?>" data-price="<?= htmlspecialchars($product['price'] ?? 0) ?>" data-buying-price="<?= htmlspecialchars($product['buying_price'] ?? 0) ?>" data-quantity="<?= $product['quantity'] ?>">
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="checkbox" class="product-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" data-product-id="<?= $product['id'] ?>">
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <div class="flex items-center justify-center"><img src="../products/<?= htmlspecialchars($product['image_url']) ?>" alt="Product" class="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 rounded-lg object-cover" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-block';"><i class="fas fa-cube text-gray-400 text-xl sm:text-2xl lg:text-3xl" style="display:none;"></i></div>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs lg:text-sm font-medium text-black-900 truncate" title="<?= htmlspecialchars($product['name']) ?>">
-                                        <?= htmlspecialchars($product['name']) ?>
-                                        <?php if ($product['quantity'] <= 0): ?>
-                                            <span class="ml-1 sm:ml-2 inline-flex items-center px-1 sm:px-2.5 py-0.5 rounded-full text-[8px] sm:text-xs font-medium bg-red-100 text-red-800">Out</span>
-                                        <?php elseif ($product['quantity'] < 5): ?>
-                                            <span class="ml-1 sm:ml-2 inline-flex items-center px-1 sm:px-2.5 py-0.5 rounded-full text-[8px] sm:text-xs font-medium bg-yellow-100 text-yellow-800">Low</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500">
-                                        <span class="expected-stock"><?= $product['opening_stock'] ?></span>
-                                        <span class="expected-closing-stock" style="display: none;"><?= $product['quantity'] ?></span>
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm text-black-500 received-stock-cell" style="display: none;">
-                                        <span class="received-stock"><?= $product['received_stock'] ?></span>
-                                    
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center">
-                                        <input type="number" min="0" step="any" class="actual-quantity quantity-input px-1 sm:px-2 py-0.5 sm:py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 text-center text-[10px] sm:text-xs" placeholder="0" value="">
-                                    </td>
-                                    <td class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs lg:text-sm font-semibold">
-                                        <span class="count-difference text-gray-400">—</span>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
+                            <tr>
+                                <td colspan="9" class="py-8 px-6 text-center text-gray-500">Loading products...</td>
+                            </tr>
                         </tbody>
                     </table>
                     </div>
@@ -1842,8 +1696,8 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                                             <span class="sm:hidden">Exp</span>
                                         </th>
                                         <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
-                                            <span class="hidden sm:inline">Actual</span>
-                                            <span class="sm:hidden">Act</span>
+                                            <span id="countedActualHeaderFull" class="hidden sm:inline">Actual</span>
+                                            <span id="countedActualHeaderShort" class="sm:hidden">Act</span>
                                         </th>
                                         <th scope="col" class="px-1 sm:px-2 lg:px-6 py-2 sm:py-3 lg:py-3 text-center text-[10px] sm:text-xs lg:text-xs font-medium text-black uppercase tracking-wider">
                                             Actions
@@ -1879,33 +1733,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
     </div>
 
     <script>
-        // Dynamic rows per page: 10 on mobile, 6 on desktop
-        function getRowsPerPage() {
-            return window.innerWidth < 640 ? 10 : 6;
-        }
-        
-        let rowsPerPage = getRowsPerPage();
         const tableBody = document.getElementById("tableBody");
-        let allRows = Array.from(tableBody.children);
-        let rows = [...allRows];
-        const pageNumber = document.getElementById("pageNumber");
-        let sortDirection = {};
-        let currentPage = 1;
-        
-        // Update rowsPerPage on window resize
-        let resizeTimeout;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => {
-                const newRowsPerPage = getRowsPerPage();
-                if (newRowsPerPage !== rowsPerPage) {
-                    rowsPerPage = newRowsPerPage;
-                    currentPage = 1;
-                    showPage(currentPage);
-                }
-            }, 100);
-        });
-        
         const searchInput = document.getElementById('searchInput');
         const categoryFilter = document.getElementById('categoryFilter');
         const revertStockBtn = document.getElementById('revertStockBtn');
@@ -1920,14 +1748,40 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
             return STOCK_TAKING_DRAFT_PREFIX + serverDate + '_' + stockType;
         }
+        function normalizeStockTakingEntry(entry) {
+            if (entry === undefined || entry === null) return null;
+            if (typeof entry === 'string') return { v: entry };
+            return entry;
+        }
+        function readStockTakingDraftMap() {
+            let map = {};
+            try {
+                const raw = localStorage.getItem(getStockTakingDraftKey());
+                if (raw) map = JSON.parse(raw) || {};
+            } catch (e) { map = {}; }
+            return map;
+        }
         function collectActualQuantitiesMap() {
-            const map = {};
+            const map = readStockTakingDraftMap();
             document.querySelectorAll('.stock-taking-row').forEach(row => {
                 const id = row.dataset.productId;
                 const input = row.querySelector('.actual-quantity');
                 if (!id || !input) return;
                 const v = input.value.trim();
-                if (v !== '') map[id] = v;
+                if (v === '') {
+                    delete map[id];
+                    return;
+                }
+                const nameCell = row.children[2];
+                map[id] = {
+                    v: v,
+                    sold: row.dataset.sold,
+                    opening: row.dataset.opening,
+                    received: row.dataset.received,
+                    quantity: row.dataset.quantity,
+                    price: row.dataset.price,
+                    name: nameCell ? (nameCell.getAttribute('title') || nameCell.textContent.trim()) : (map[id]?.name || '')
+                };
             });
             return map;
         }
@@ -1950,24 +1804,22 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             stockTakingDraftSaveTimer = setTimeout(saveStockTakingDraftToStorage, 250);
         }
         function applyStockTakingDraftFromStorage() {
-            const key = getStockTakingDraftKey();
-            let map = {};
-            try {
-                const raw = localStorage.getItem(key);
-                if (raw) map = JSON.parse(raw) || {};
-            } catch (e) { map = {}; }
+            syncStockTypeRowDisplay();
+            updateIncludeSoldColumnsVisibility();
+            const map = readStockTakingDraftMap();
             document.querySelectorAll('.stock-taking-row').forEach(row => {
                 const id = row.dataset.productId;
                 const input = row.querySelector('.actual-quantity');
                 if (!input) return;
-                if (map[id] !== undefined && map[id] !== null && String(map[id]).trim() !== '') {
-                    input.value = String(map[id]);
+                const entry = normalizeStockTakingEntry(map[id]);
+                if (entry && entry.v !== undefined && String(entry.v).trim() !== '') {
+                    input.value = String(entry.v);
                 } else {
                     input.value = '';
                 }
             });
-            updateItemsBeingCounted();
             document.querySelectorAll('.stock-taking-row').forEach(updateCountDifference);
+            updateItemsBeingCounted();
         }
         function clearCurrentStockTakingDraft() {
             try {
@@ -1984,12 +1836,85 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             updateItemsBeingCounted();
         }
 
+        function includeSoldActive() {
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
+            return stockType === 'closing' && !!document.getElementById('includeSoldToggle')?.checked;
+        }
+
         function getExpectedForRow(row) {
             const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
             if (stockType === 'opening') {
-                return parseQty(row.querySelector('.expected-stock')?.textContent) || 0;
+                return parseQty(row.dataset.opening) || parseQty(row.querySelector('.expected-stock')?.textContent) || 0;
             }
-            return parseQty(row.querySelector('.expected-closing-stock')?.textContent) || parseQty(row.dataset.quantity) || 0;
+            return parseQty(row.dataset.quantity) || parseQty(row.querySelector('.expected-closing-stock')?.textContent) || 0;
+        }
+
+        function getExpectedForDraftEntry(entry) {
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
+            if (stockType === 'opening') {
+                return parseQty(entry.opening) || 0;
+            }
+            return parseQty(entry.quantity) || 0;
+        }
+
+        function getLiveStockTakingDraftMap() {
+            return collectActualQuantitiesMap();
+        }
+
+        function getCountedForRow(row) {
+            const raw = row.querySelector('.actual-quantity')?.value.trim() ?? '';
+            if (raw === '') return NaN;
+            return parseQty(raw);
+        }
+
+        function getShelfCountForSubmit(row) {
+            const counted = getCountedForRow(row);
+            if (!Number.isFinite(counted)) return NaN;
+            return counted;
+        }
+
+        function getAccountedForRow(row) {
+            const counted = getCountedForRow(row);
+            if (!Number.isFinite(counted)) return NaN;
+            if (!includeSoldActive()) return counted;
+            const sold = parseQty(row.dataset.sold) || 0;
+            return counted - sold;
+        }
+
+        function updateAdjustedActualForRow(row) {
+            const el = row.querySelector('.adjusted-actual');
+            if (!el) return;
+            if (!includeSoldActive()) {
+                el.textContent = '—';
+                el.className = 'adjusted-actual text-gray-400';
+                return;
+            }
+            const raw = row.querySelector('.actual-quantity')?.value.trim() ?? '';
+            const counted = raw === '' ? 0 : getCountedForRow(row);
+            if (!Number.isFinite(counted)) {
+                el.textContent = '—';
+                el.className = 'adjusted-actual text-gray-400';
+                return;
+            }
+            const sold = parseQty(row.dataset.sold) || 0;
+            const adjusted = counted - sold;
+            el.textContent = adjusted > 0 ? '+' + formatQty(adjusted) : formatQty(adjusted);
+            el.className = 'adjusted-actual font-medium ' + (
+                adjusted < 0 ? 'text-red-600' : adjusted > 0 ? 'text-green-600' : 'text-gray-900'
+            );
+        }
+
+        function updateIncludeSoldColumnsVisibility() {
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
+            const soldColumn = document.querySelector('.sold-today-column');
+            const soldCells = document.querySelectorAll('.sold-today-cell');
+            const adjustedColumn = document.querySelector('.adjusted-actual-column');
+            const adjustedCells = document.querySelectorAll('.adjusted-actual-cell');
+            const show = stockType === 'closing' && includeSoldActive();
+            soldColumn?.style && (soldColumn.style.display = show ? 'table-cell' : 'none');
+            soldCells.forEach(cell => { cell.style.display = show ? 'table-cell' : 'none'; });
+            adjustedColumn?.style && (adjustedColumn.style.display = show ? 'table-cell' : 'none');
+            adjustedCells.forEach(cell => { cell.style.display = show ? 'table-cell' : 'none'; });
         }
 
         function parseQty(value) {
@@ -2008,6 +1933,7 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
 
         function updateCountDifference(row) {
             if (!row) return;
+            updateAdjustedActualForRow(row);
             const diffEl = row.querySelector('.count-difference');
             const actualInput = row.querySelector('.actual-quantity');
             if (!diffEl || !actualInput) return;
@@ -2017,14 +1943,14 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 diffEl.className = 'count-difference text-gray-400';
                 return;
             }
-            const actual = parseQty(raw);
-            if (!Number.isFinite(actual)) {
+            const counted = getCountedForRow(row);
+            if (!Number.isFinite(counted)) {
                 diffEl.textContent = '—';
                 diffEl.className = 'count-difference text-gray-400';
                 return;
             }
             const expected = getExpectedForRow(row);
-            const difference = actual - expected;
+            const difference = getAccountedForRow(row) - expected;
             if (difference > 0) {
                 diffEl.textContent = '+' + formatQty(difference);
                 diffEl.className = 'count-difference text-green-600';
@@ -2043,27 +1969,15 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             saveStockTakingDraftToStorage();
         });
 
-        // Initialize
-        showPage(currentPage);
+        window.onStockTakingTableBeforeLoad = function () {
+            saveStockTakingDraftToStorage();
+        };
+        window.onStockTakingTableAfterLoad = function () {
+            applyStockTakingDraftFromStorage();
+            updateBulkActionsVisibility();
+        };
+
         updateBulkActionsVisibility();
-
-        // Search and filter functionality
-        searchInput.addEventListener('input', (e) => {
-            filterRows(e.target.value);
-        });
-
-        categoryFilter.addEventListener('change', () => {
-            filterRows(searchInput.value);
-        });
-
-        // View All button functionality
-        document.getElementById('viewAllBtn').addEventListener('click', () => {
-            categoryFilter.value = '';
-            searchInput.value = '';
-            filterRows('');
-            // Show all rows without pagination
-            showAllRows();
-        });
 
         revertStockBtn.addEventListener('click', async () => {
             const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
@@ -2111,180 +2025,6 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 revertStockBtn.innerHTML = originalHtml;
             }
         });
-
-        function filterRows(searchTerm) {
-            const selectedCategory = categoryFilter.value;
-            rows = allRows.filter(row => {
-                const productName = row.children[2].textContent.toLowerCase();
-                const productCategory = row.dataset.category || '';
-                const matchesSearch = productName.includes(searchTerm.toLowerCase());
-                const matchesCategory = !selectedCategory || productCategory === selectedCategory;
-                return matchesSearch && matchesCategory;
-            });
-            currentPage = 1;
-            
-            // If no filters are applied, show all rows
-            if (!searchTerm && !selectedCategory) {
-                showAllRows();
-            } else {
-                showPage(currentPage);
-            }
-        }
-
-        function showPage(page) {
-            const start = (page - 1) * rowsPerPage;
-            const end = start + rowsPerPage;
-            const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-            
-            allRows.forEach(row => row.style.display = 'none');
-            rows.slice(start, end).forEach(row => row.style.display = 'table-row');
-            
-            // Update both mobile and desktop page numbers
-            const pageNumberMobile = document.getElementById('pageNumber');
-            const pageNumberDesktop = document.getElementById('pageNumberDesktop');
-            if (pageNumberMobile) pageNumberMobile.textContent = `Page ${page} of ${maxPage}`;
-            if (pageNumberDesktop) pageNumberDesktop.textContent = `Page ${page} of ${maxPage}`;
-            
-            // Update both mobile and desktop page inputs
-            const pageInputMobile = document.getElementById('pageInput');
-            const pageInputDesktop = document.getElementById('pageInputDesktop');
-            if (pageInputMobile) {
-                pageInputMobile.value = page;
-                pageInputMobile.placeholder = `Pg (1-${maxPage})`;
-            }
-            if (pageInputDesktop) {
-                pageInputDesktop.value = page;
-                pageInputDesktop.placeholder = `Page (1-${maxPage})`;
-            }
-        }
-
-        function showAllRows() {
-            // Show all rows without pagination
-            allRows.forEach(row => row.style.display = 'table-row');
-            
-            // Update both mobile and desktop page numbers
-            const pageNumberMobile = document.getElementById('pageNumber');
-            const pageNumberDesktop = document.getElementById('pageNumberDesktop');
-            if (pageNumberMobile) pageNumberMobile.textContent = `Showing all ${rows.length} items`;
-            if (pageNumberDesktop) pageNumberDesktop.textContent = `Showing all ${rows.length} items`;
-            
-            // Clear both mobile and desktop page inputs
-            const pageInputMobile = document.getElementById('pageInput');
-            const pageInputDesktop = document.getElementById('pageInputDesktop');
-            if (pageInputMobile) pageInputMobile.value = '';
-            if (pageInputDesktop) pageInputDesktop.value = '';
-            
-            currentPage = 1;
-        }
-
-        // Sorting functionality
-        function sortTable(columnIndex, isNumeric = false) {
-            if (!sortDirection[columnIndex]) {
-                sortDirection[columnIndex] = 'asc';
-            } else {
-                sortDirection[columnIndex] = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
-            }
-
-            rows.sort((a, b) => {
-                let aValue, bValue;
-                    const stockType = document.querySelector('input[name="stockType"]:checked').value;
-                
-                if (columnIndex === 3 && stockType === 'closing') {
-                    // For closing stock, column 3 shows expected closing stock
-                    aValue = parseInt(a.querySelector('.expected-closing-stock')?.textContent) || parseInt(a.dataset.quantity) || 0;
-                    bValue = parseInt(b.querySelector('.expected-closing-stock')?.textContent) || parseInt(b.dataset.quantity) || 0;
-                } else {
-                    aValue = a.children[columnIndex].textContent.trim();
-                    bValue = b.children[columnIndex].textContent.trim();
-                    if (isNumeric) {
-                        aValue = parseFloat(aValue);
-                        bValue = parseFloat(bValue);
-                    } else {
-                        aValue = aValue.toLowerCase();
-                        bValue = bValue.toLowerCase();
-                    }
-                }
-
-                if (sortDirection[columnIndex] === 'asc') {
-                    return aValue > bValue ? 1 : -1;
-                } else {
-                    return aValue < bValue ? 1 : -1;
-                }
-            });
-
-            while (tableBody.firstChild) {
-                tableBody.removeChild(tableBody.firstChild);
-            }
-            rows.forEach(row => tableBody.appendChild(row));
-
-            showPage(currentPage);
-        }
-
-        // Helper function to handle prev page
-        function handlePrevPage() {
-            if (currentPage > 1) {
-                currentPage--;
-                showPage(currentPage);
-            }
-        }
-        
-        // Helper function to handle next page
-        function handleNextPage() {
-            if (currentPage * rowsPerPage < rows.length) {
-                currentPage++;
-                showPage(currentPage);
-            }
-        }
-        
-        // Helper function to handle first page
-        function handleFirstPage() {
-            currentPage = 1;
-            showPage(currentPage);
-        }
-        
-        // Helper function to handle last page
-        function handleLastPage() {
-            currentPage = Math.ceil(rows.length / rowsPerPage);
-            showPage(currentPage);
-        }
-        
-        // Helper function to handle page input
-        function handlePageInput(inputElement) {
-            const desiredPage = parseInt(inputElement.value);
-            if (!isNaN(desiredPage)) {
-                const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-                currentPage = Math.min(Math.max(1, desiredPage), maxPage);
-                showPage(currentPage);
-            }
-        }
-        
-        // Mobile pagination controls
-        const prevPageMobile = document.getElementById("prevPage");
-        const nextPageMobile = document.getElementById("nextPage");
-        const firstPageMobile = document.getElementById("firstPage");
-        const lastPageMobile = document.getElementById("lastPage");
-        const pageInputMobile = document.getElementById("pageInput");
-        
-        // Desktop pagination controls
-        const prevPageDesktop = document.getElementById("prevPageDesktop");
-        const nextPageDesktop = document.getElementById("nextPageDesktop");
-        const firstPageDesktop = document.getElementById("firstPageDesktop");
-        const lastPageDesktop = document.getElementById("lastPageDesktop");
-        const pageInputDesktop = document.getElementById("pageInputDesktop");
-        
-        // Add event listeners for mobile
-        if (prevPageMobile) prevPageMobile.addEventListener("click", handlePrevPage);
-        if (nextPageMobile) nextPageMobile.addEventListener("click", handleNextPage);
-        if (firstPageMobile) firstPageMobile.addEventListener("click", handleFirstPage);
-        if (lastPageMobile) lastPageMobile.addEventListener("click", handleLastPage);
-        if (pageInputMobile) pageInputMobile.addEventListener("change", () => handlePageInput(pageInputMobile));
-        
-        // Add event listeners for desktop
-        if (prevPageDesktop) prevPageDesktop.addEventListener("click", handlePrevPage);
-        if (nextPageDesktop) nextPageDesktop.addEventListener("click", handleNextPage);
-        if (firstPageDesktop) firstPageDesktop.addEventListener("click", handleFirstPage);
-        if (lastPageDesktop) lastPageDesktop.addEventListener("click", handleLastPage);
-        if (pageInputDesktop) pageInputDesktop.addEventListener("change", () => handlePageInput(pageInputDesktop));
 
         // Checkbox functionality
         selectAllCheckbox.addEventListener('change', (e) => {
@@ -2358,43 +2098,44 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
         // Real-time list of counted items
         function updateItemsBeingCounted() {
             const items = [];
-            const rows = document.querySelectorAll('.stock-taking-row');
-            const stockType = document.querySelector('input[name="stockType"]:checked').value;
+            const map = getLiveStockTakingDraftMap();
+            const actualHeaderFull = document.getElementById('countedActualHeaderFull');
+            const actualHeaderShort = document.getElementById('countedActualHeaderShort');
+            if (actualHeaderFull) actualHeaderFull.textContent = 'Actual';
+            if (actualHeaderShort) actualHeaderShort.textContent = 'Act';
             let totalShortAmount = 0;
             let totalOverAmount = 0;
-            rows.forEach(row => {
-                const productName = row.children[2].textContent.trim();
-                const openingStock = parseQty(row.querySelector('.expected-stock').textContent) || 0;
-                const actualQuantityInput = row.querySelector('.actual-quantity');
-                const actualQuantityRaw = actualQuantityInput ? actualQuantityInput.value.trim() : '';
-                const hasActualQuantity = actualQuantityRaw !== '';
-                const actualQuantity = hasActualQuantity ? (parseQty(actualQuantityRaw) || 0) : 0;
-                const unitPrice = parseFloat(row.dataset.price) || 0;
-                
-                let expected;
-                if (stockType === 'opening') {
-                    expected = openingStock;
-                } else {
-                    expected = parseQty(row.querySelector('.expected-closing-stock')?.textContent) || parseQty(row.dataset.quantity) || 0;
+
+            Object.keys(map).forEach(id => {
+                const entry = normalizeStockTakingEntry(map[id]);
+                if (!entry || entry.v === undefined || String(entry.v).trim() === '') return;
+
+                const counted = parseQty(entry.v);
+                if (!Number.isFinite(counted)) return;
+
+                const productName = (entry.name || ('Product #' + id)).replace(/\s*(Out|Low)\s*$/i, '').trim();
+                const sold = parseQty(entry.sold) || 0;
+                const unitPrice = parseFloat(entry.price) || 0;
+                const expected = getExpectedForDraftEntry(entry);
+                const accounted = includeSoldActive() ? counted - sold : counted;
+                const difference = accounted - expected;
+                const actualQuantity = includeSoldActive() ? counted - sold : counted;
+                const amountDifference = difference * unitPrice;
+
+                if (amountDifference < 0) {
+                    totalShortAmount += Math.abs(amountDifference);
+                } else if (amountDifference > 0) {
+                    totalOverAmount += amountDifference;
                 }
-                
-                if (hasActualQuantity) {
-                    const difference = actualQuantity - expected;
-                    const amountDifference = difference * unitPrice;
-                    if (amountDifference < 0) {
-                        totalShortAmount += Math.abs(amountDifference);
-                    } else if (amountDifference > 0) {
-                        totalOverAmount += amountDifference;
-                    }
-                    items.push({ 
-                        productName, 
-                        expected, 
-                        actualQuantity, 
-                        productId: row.dataset.productId,
-                        difference,
-                        amountDifference
-                    });
-                }
+
+                items.push({
+                    productName,
+                    expected,
+                    actualQuantity,
+                    productId: id,
+                    difference,
+                    amountDifference
+                });
             });
 
             const container = document.getElementById('itemsBeingCounted');
@@ -2431,10 +2172,19 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             `).join('');
         }
 
-        // Function to remove item from counted list
         function removeItemFromCounted(productId) {
-            // Find the row in the main table and clear the actual quantity input
-            const mainTableRow = document.querySelector(`tr[data-product-id="${productId}"]`);
+            const map = readStockTakingDraftMap();
+            delete map[productId];
+            try {
+                const key = getStockTakingDraftKey();
+                if (Object.keys(map).length === 0) {
+                    localStorage.removeItem(key);
+                } else {
+                    localStorage.setItem(key, JSON.stringify(map));
+                }
+            } catch (e) { /* ignore */ }
+
+            const mainTableRow = document.querySelector(`.stock-taking-row[data-product-id="${productId}"]`);
             if (mainTableRow) {
                 const actualQuantityInput = mainTableRow.querySelector('.actual-quantity');
                 if (actualQuantityInput) {
@@ -2442,31 +2192,26 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 }
                 updateCountDifference(mainTableRow);
             }
-            
-            // Update the items being counted list
+
             updateItemsBeingCounted();
-            saveStockTakingDraftToStorage();
         }
 
         // Submit stock taking
         submitStockTakingBtn.addEventListener('click', async () => {
+            const map = getLiveStockTakingDraftMap();
+            try {
+                localStorage.setItem(getStockTakingDraftKey(), JSON.stringify(map));
+            } catch (e) { /* ignore */ }
             const items = [];
-            const rows = document.querySelectorAll('.stock-taking-row');
-            
-            // Get selected stock type
             const stockType = document.querySelector('input[name="stockType"]:checked').value;
-            
-            rows.forEach(row => {
-                const actualQuantityInput = row.querySelector('.actual-quantity');
-                const productId = row.dataset.productId;
-                const raw = actualQuantityInput ? actualQuantityInput.value.trim() : '';
-                if (raw === '') return;
-                
-                const actualQuantity = parseQty(raw);
+
+            Object.keys(map).forEach(id => {
+                const entry = normalizeStockTakingEntry(map[id]);
+                if (!entry || entry.v === undefined || String(entry.v).trim() === '') return;
+                const actualQuantity = parseQty(entry.v);
                 if (!Number.isFinite(actualQuantity)) return;
-                
                 items.push({
-                    product_id: productId,
+                    product_id: id,
                     actual_quantity: actualQuantity
                 });
             });
@@ -2496,7 +2241,10 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
                 const formData = new FormData();
                 formData.append('stock_taking_data', JSON.stringify({ 
                     items: items,
-                    stock_type: stockType
+                    stock_type: stockType,
+                    include_sold: includeSoldActive(),
+                    only_counted: document.getElementById('onlyCountedToggle')?.checked !== false,
+                    category: categoryFilter.value
                 }));
                 
                 // Fetch PDF as blob for reliable download
@@ -2628,44 +2376,64 @@ while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
             updateStockTypeDisplay();
         });
         
-        function updateStockTypeDisplay() {
-            const stockType = document.querySelector('input[name="stockType"]:checked').value;
+        function syncStockTypeRowDisplay() {
+            const stockType = document.querySelector('input[name="stockType"]:checked')?.value || 'closing';
             const openingStockHeader = document.querySelector('th:nth-child(4) div');
             const receivedStockColumn = document.querySelector('.received-stock-column');
             const receivedStockCells = document.querySelectorAll('.received-stock-cell');
-            
+            const soldColumn = document.querySelector('.sold-today-column');
+            const soldCells = document.querySelectorAll('.sold-today-cell');
+            const includeSoldWrap = document.getElementById('includeSoldWrap');
+            const includeSoldToggle = document.getElementById('includeSoldToggle');
+
             if (stockType === 'opening') {
-                openingStockHeader.innerHTML = '<span class="hidden sm:inline">Expected Opening</span><span class="sm:hidden">Opening</span>';
-                // Hide received stock column for opening stock
-                receivedStockColumn.style.display = 'none';
-                receivedStockCells.forEach(cell => cell.style.display = 'none');
-                
-                // Show expected stock, hide expected closing stock
-                const rows = document.querySelectorAll('.stock-taking-row');
-                rows.forEach(row => {
+                if (includeSoldToggle) includeSoldToggle.checked = false;
+                if (includeSoldWrap) includeSoldWrap.classList.add('hidden');
+                if (soldColumn) soldColumn.style.display = 'none';
+                soldCells.forEach(cell => { cell.style.display = 'none'; });
+                const adjustedColumn = document.querySelector('.adjusted-actual-column');
+                if (adjustedColumn) adjustedColumn.style.display = 'none';
+                document.querySelectorAll('.adjusted-actual-cell').forEach(cell => { cell.style.display = 'none'; });
+                if (openingStockHeader) {
+                    openingStockHeader.innerHTML = '<span class="hidden sm:inline">Expected Opening</span><span class="sm:hidden">Opening</span>';
+                }
+                if (receivedStockColumn) receivedStockColumn.style.display = 'none';
+                receivedStockCells.forEach(cell => { cell.style.display = 'none'; });
+                document.querySelectorAll('.stock-taking-row').forEach(row => {
                     const expectedStockSpan = row.querySelector('.expected-stock');
                     const expectedClosingStockSpan = row.querySelector('.expected-closing-stock');
-                    expectedStockSpan.style.display = 'inline';
-                    expectedClosingStockSpan.style.display = 'none';
+                    if (expectedStockSpan) expectedStockSpan.style.display = 'inline';
+                    if (expectedClosingStockSpan) expectedClosingStockSpan.style.display = 'none';
                 });
             } else {
-                openingStockHeader.innerHTML = '<span class="hidden sm:inline">Expected Closing Stock</span><span class="sm:hidden">Closing</span>';
-                // Hide received stock column for closing stock
-                receivedStockColumn.style.display = 'none';
-                receivedStockCells.forEach(cell => cell.style.display = 'none');
-                
-                // For closing stock, show closing stock (current quantity from inventory) instead of opening stock
-                const rows = document.querySelectorAll('.stock-taking-row');
-                rows.forEach(row => {
+                if (includeSoldWrap) includeSoldWrap.classList.remove('hidden');
+                if (openingStockHeader) {
+                    openingStockHeader.innerHTML = '<span class="hidden sm:inline">Expected Closing Stock</span><span class="sm:hidden">Closing</span>';
+                }
+                if (receivedStockColumn) receivedStockColumn.style.display = 'none';
+                receivedStockCells.forEach(cell => { cell.style.display = 'none'; });
+                document.querySelectorAll('.stock-taking-row').forEach(row => {
                     const expectedStockSpan = row.querySelector('.expected-stock');
                     const expectedClosingStockSpan = row.querySelector('.expected-closing-stock');
-                    expectedStockSpan.style.display = 'none';
-                    expectedClosingStockSpan.style.display = 'inline';
+                    if (expectedStockSpan) expectedStockSpan.style.display = 'none';
+                    if (expectedClosingStockSpan) expectedClosingStockSpan.style.display = 'inline';
                 });
             }
+        }
+
+        function updateStockTypeDisplay() {
+            syncStockTypeRowDisplay();
+            updateIncludeSoldColumnsVisibility();
             applyStockTakingDraftFromStorage();
         }
+
+        document.getElementById('includeSoldToggle')?.addEventListener('change', () => {
+            updateIncludeSoldColumnsVisibility();
+            document.querySelectorAll('.stock-taking-row').forEach(updateCountDifference);
+            updateItemsBeingCounted();
+        });
     </script>
+    <script src="../js/stock-taking-table.js"></script>
 
     <script>
         // Mobile sidebar functions

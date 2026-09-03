@@ -62,11 +62,10 @@ try {
     $use_qz_tray = 0;
 }
 
-// Get all cashiers and waitresses for cash modal dropdown
+// All users for cash up modal dropdown
 $allCashUpEmployees = [];
 try {
-    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress', 'hubbly') ORDER BY username");
-    $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
+    $allCashUpEmployees = $userDb->query("SELECT id, username, role FROM users ORDER BY username")->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     // If query fails, leave empty
 }
@@ -78,20 +77,26 @@ if ($activationStatus == 0) {
     exit();
 }
 
-// Get business closing time from business_info with caching
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
+
 $businessInfo = [];
-$closingTime = '00:00';
 try {
-    $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00';
+    $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
 } catch (PDOException $e) {
-    $closingTime = '00:00';
+    $businessInfo = [];
 }
 
-// Calculate business day boundaries (cached calculation)
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+// Match admin/cash.php business-day boundaries
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
+$currentBusinessDate = bdDefaultSelectedDate($closingTime, $isAfterMidnight);
+$nextBusinessDay = date('Y-m-d', strtotime($currentBusinessDate . ' +1 day'));
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePPayment = bdSingleDayWhereSql('p.payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereEPayment = bdSingleDayWhereSql('e.payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Optimized business day WHERE clause with caching
 class BusinessDayCache {
@@ -101,35 +106,7 @@ class BusinessDayCache {
         $cacheKey = "$dateField-$startDate-$endDate-$closingTime-$isAfterMidnight";
         
         if (!isset(self::$cache[$cacheKey])) {
-    if ($startDate === $endDate) {
-        // Single day - use business day logic
-        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-                self::$cache[$cacheKey] = "
-            (DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-            (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-        ";
-    } else {
-        // Multiple days - need to handle each day's business hours
-        $whereClauses = [];
-        $currentDate = new DateTime($startDate);
-        $endDateTime = new DateTime($endDate);
-        
-        while ($currentDate <= $endDateTime) {
-            $dateStr = $currentDate->format('Y-m-d');
-            $nextDay = clone $currentDate;
-            $nextDay->modify('+1 day');
-            $nextDayStr = $nextDay->format('Y-m-d');
-            
-            $whereClauses[] = "
-                (DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-            ";
-            
-            $currentDate->modify('+1 day');
-        }
-        
-                self::$cache[$cacheKey] = "(" . implode(") OR (", $whereClauses) . ")";
-            }
+            self::$cache[$cacheKey] = bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight);
         }
         
         return self::$cache[$cacheKey];
@@ -161,11 +138,11 @@ function getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnigh
 function getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $stmt = $db->prepare("
-            SELECT COALESCE(SUM(amount), 0) 
+        $stmt = $db->prepare('
+            SELECT ' . cashWithdrawalsSumSql() . '
             FROM cash_transactions 
-            WHERE type = 'cash-out' AND ($whereClause)
-        ");
+            WHERE (' . $whereClause . ')
+        ');
         $stmt->execute();
         return $stmt->fetchColumn();
     } catch (PDOException $e) {
@@ -534,7 +511,8 @@ $outOfStock = [];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manager Dashboard</title>
-    <script src="../navigation.js" async></script>
+    <script src="../session_guard.js"></script>
+    <script src="../navigation.js"></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/chart.js"></script>
     <!-- Load sendToPrinter function from receipt.php -->
@@ -824,34 +802,16 @@ $outOfStock = [];
                         <div>
                             <p class="text-sm font-medium text-gray-600">Cash In Till</p>
                             <h3 class="text-2xl font-bold <?php 
-                                // Get today's date
-                                $today = date('Y-m-d');
-                                $nextBusinessDay = date('Y-m-d', strtotime($today . ' +1 day'));
-                                
-                                // Use the actual business closing time from database
-                                $closingTime = $closingTime; // This is already set from business_info
-                                $isAfterMidnight = $isAfterMidnight; // This is already calculated from business_info
-                                
-                                // Check if current time is after midnight but before closing time
-                                $currentTime = date('H:i');
-                                $currentIsAfterMidnight = 0;
-                                if ($isAfterMidnight && $currentTime < $closingTime) {
-                                    $currentIsAfterMidnight = 1;
-                                }
+                                // Use current business date filters (matches admin/cash.php)
+                                $businessDate = $currentBusinessDate;
                                 
                                 // 1. Today's cash in (deposits)
                                 $cashInQuery = $db->prepare("
                                     SELECT COALESCE(SUM(amount), 0) 
                                     FROM cash_transactions 
-                                    WHERE type='cash-in' AND (
-                                        (DATE(created_at) = :today AND strftime('%H:%M', created_at) >= :closingTime) OR
-                                        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE type='cash-in' AND ($bdWhereCreated)
                                 ");
-                                $cashInQuery->bindParam(':today', $today);
-                                $cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $cashInQuery->bindParam(':closingTime', $closingTime);
-                                $cashInQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($cashInQuery, $businessDate, $nextBusinessDay);
                                 $cashInQuery->execute();
                                 $totalCashIn = $cashInQuery->fetchColumn();
                                 
@@ -870,31 +830,17 @@ $outOfStock = [];
                                             o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
                                         ), 0)
                                         FROM orders o
-                                        WHERE (
-                                            (DATE(o.created_at) = :today AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                                            (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-                                        )
+                                        WHERE ($bdWhereOCreated)
                                     ");
-                                    $cashSalesQuery->bindParam(':today', $today);
-                                    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                    $cashSalesQuery->bindParam(':closingTime', $closingTime);
-                                    $cashSalesQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
-                                    $cashSalesQuery->execute();
                                 } else {
                                     $cashSalesQuery = $db->prepare("
                                         SELECT COALESCE(SUM(total), 0) 
                                         FROM orders 
-                                        WHERE (
-                                            (DATE(created_at) = :today AND strftime('%H:%M', created_at) >= :closingTime) OR
-                                            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                                        )
+                                        WHERE ($bdWhereCreated)
                                     ");
-                                    $cashSalesQuery->bindParam(':today', $today);
-                                    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                    $cashSalesQuery->bindParam(':closingTime', $closingTime);
-                                    $cashSalesQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
-                                    $cashSalesQuery->execute();
                                 }
+                                bdBindSingleDayParams($cashSalesQuery, $businessDate, $nextBusinessDay);
+                                $cashSalesQuery->execute();
                                 $totalCashSales = $cashSalesQuery->fetchColumn();
                                 
                                 // 3. Today's cash received from credit sale payments (cash installments only; excludes rows mirrored in eft_payments)
@@ -908,15 +854,9 @@ $outOfStock = [];
                                         AND ABS(CAST(ep.amount AS REAL) - CAST(p.amount AS REAL)) < 0.021
                                         AND date(ep.payment_date) = date(p.payment_date)
                                         AND strftime('%H:%M', ep.payment_date) = strftime('%H:%M', p.payment_date)
-                                    ) AND (
-                                        (DATE(p.payment_date) = :today AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-                                        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    ) AND ($bdWherePPayment)
                                 ");
-                                $creditPaymentsQuery->bindParam(':today', $today);
-                                $creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-                                $creditPaymentsQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($creditPaymentsQuery, $businessDate, $nextBusinessDay);
                                 $creditPaymentsQuery->execute();
                                 $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
                                 
@@ -925,15 +865,9 @@ $outOfStock = [];
                                     SELECT COALESCE(SUM(e.amount), 0)
                                     FROM eft_payments e
                                     JOIN orders o ON e.order_id = o.id
-                                    WHERE (
-                                        (DATE(o.created_at) = :today AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                                        (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE ($bdWhereOCreated)
                                 ");
-                                $eftDirectQuery->bindParam(':today', $today);
-                                $eftDirectQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $eftDirectQuery->bindParam(':closingTime', $closingTime);
-                                $eftDirectQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($eftDirectQuery, $businessDate, $nextBusinessDay);
                                 $eftDirectQuery->execute();
                                 $eftDirectTotal = $eftDirectQuery->fetchColumn();
 
@@ -942,41 +876,29 @@ $outOfStock = [];
                                     SELECT COALESCE(SUM(e.amount), 0)
                                     FROM eft_payments e
                                     JOIN credit_sales cs ON e.order_id = cs.id
-                                    WHERE (
-                                        (DATE(e.payment_date) = :today AND strftime('%H:%M', e.payment_date) >= :closingTime) OR
-                                        (DATE(e.payment_date) = :nextBusinessDay AND strftime('%H:%M', e.payment_date) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE ($bdWhereEPayment)
                                 ");
-                                $eftCreditQuery->bindParam(':today', $today);
-                                $eftCreditQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $eftCreditQuery->bindParam(':closingTime', $closingTime);
-                                $eftCreditQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($eftCreditQuery, $businessDate, $nextBusinessDay);
                                 $eftCreditQuery->execute();
                                 $eftCreditTotal = $eftCreditQuery->fetchColumn();
 
-                                // 4. Today's cash out (withdrawals)
-                                $cashOutQuery = $db->prepare("
-                                    SELECT COALESCE(SUM(amount), 0) 
+                                // 4. Today's withdrawals (cash-out, refunds, expenses)
+                                $cashOutQuery = $db->prepare('
+                                    SELECT ' . cashWithdrawalsSumSql() . '
                                     FROM cash_transactions 
-                                    WHERE type='cash-out' AND (
-                                        (DATE(created_at) = :today AND strftime('%H:%M', created_at) >= :closingTime) OR
-                                        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                                    )
-                                ");
-                                $cashOutQuery->bindParam(':today', $today);
-                                $cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $cashOutQuery->bindParam(':closingTime', $closingTime);
-                                $cashOutQuery->bindParam(':isAfterMidnight', $currentIsAfterMidnight, PDO::PARAM_INT);
+                                    WHERE (' . $bdWhereCreated . ')
+                                ');
+                                bdBindSingleDayParams($cashOutQuery, $businessDate, $nextBusinessDay);
                                 $cashOutQuery->execute();
                                 $totalCashOut = $cashOutQuery->fetchColumn();
                                 
                                 // Total EFT payments (direct + credit EFT)
                                 $totalEftPayments = ($eftDirectTotal ?: 0) + ($eftCreditTotal ?: 0);
 
-                                // Calculate cash in till for today's business day using businessClosingTime (matching cash.php)
-                                // All components use business day WHERE clauses with closingTime and isAfterMidnight
+                                // Calculate cash in till for today's business day (matching cash.php)
                                 $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
-                                echo $cashInTill >= 0 ? 'text-blue-600' : 'text-red-600'; 
+                                $netRevenue = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+                                echo $cashInTill >= 0 ? 'text-blue-600' : 'text-red-600';
                             ?>">
                                 N$<?php
                                 echo number_format($cashInTill, 2);
@@ -3997,7 +3919,7 @@ if (!$businessInfo) {
                         </div>
                         <p class="text-xs text-gray-500 -mt-2 mb-1">Selecting dates uses full days (00:00–23:59); totals follow your business closing time (<strong><?php echo htmlspecialchars($cashUpClosingHmJs, ENT_QUOTES, 'UTF-8'); ?></strong>) the same way as cash reports.</p>
                         <div>
-                            <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Cashier / Waitress (Optional)</label>
+                            <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Staff Member (Optional)</label>
                             <select id="cashup_cashier" class="w-full px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100">
                                 <option value="all">All Staff</option>
                                 <?php foreach ($allCashUpEmployees as $employee): ?>

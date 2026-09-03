@@ -491,6 +491,12 @@ $settingsSectionTitles = [
                     $skip_stock_checks_checked = $skip_stock_checks ? 'checked' : '';
                     $use_qz_tray = $setting['use_qz_tray'] ?? 0;
                     $use_qz_tray_checked = $use_qz_tray ? 'checked' : '';
+                    require_once __DIR__ . '/../pole_display_settings_helper.php';
+                    $poleDisplay = loadPoleDisplaySettings($posDb);
+                    $pole_display_enabled_checked = !empty($poleDisplay['enabled']) ? 'checked' : '';
+                    $pole_display_port_val = htmlspecialchars($poleDisplay['port'], ENT_QUOTES, 'UTF-8');
+                    $pole_display_baud_val = (int) $poleDisplay['baud'];
+                    $pole_display_mode_val = $poleDisplay['mode'];
                     $kitchen_printer_ip_val = htmlspecialchars($setting['kitchen_printer_ip'] ?? '', ENT_QUOTES, 'UTF-8');
                     $kitchen_printer_port_val = (int)($setting['kitchen_printer_port'] ?? 9100);
                     if ($kitchen_printer_port_val <= 0 || $kitchen_printer_port_val > 65535) {
@@ -532,6 +538,11 @@ $settingsSectionTitles = [
                     $skip_stock_checks_checked = '';
                     $use_qz_tray = 0;
                     $use_qz_tray_checked = '';
+                    $poleDisplay = ['enabled' => false, 'port' => '', 'baud' => 9600, 'mode' => 'epson'];
+                    $pole_display_enabled_checked = '';
+                    $pole_display_port_val = '';
+                    $pole_display_baud_val = 9600;
+                    $pole_display_mode_val = 'epson';
                     $kitchen_printer_ip_val = '';
                     $kitchen_printer_port_val = 9100;
                     $cashier_idle_timeout_seconds_val = 120;
@@ -586,6 +597,45 @@ $settingsSectionTitles = [
                     }
                 } catch (PDOException $e) {
                 }
+
+                $managerPermissions = [
+                    'allow_menu' => 1,
+                    'allow_sales' => 1,
+                    'allow_reports' => 1,
+                    'allow_inventory' => 1,
+                    'allow_transactions' => 1,
+                    'allow_settings' => 1,
+                ];
+                try {
+                    if (!isset($infoDb) || !($infoDb instanceof PDO)) {
+                        $infoDb = new PDO('sqlite:../info.db');
+                        $infoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                    }
+                    $infoDb->exec("CREATE TABLE IF NOT EXISTS manager_permissions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        allow_menu BOOLEAN NOT NULL DEFAULT 1,
+                        allow_sales BOOLEAN NOT NULL DEFAULT 1,
+                        allow_reports BOOLEAN NOT NULL DEFAULT 1,
+                        allow_inventory BOOLEAN NOT NULL DEFAULT 1,
+                        allow_transactions BOOLEAN NOT NULL DEFAULT 1,
+                        allow_settings BOOLEAN NOT NULL DEFAULT 1
+                    )");
+                    $mgrPerms = $infoDb->query("SELECT * FROM manager_permissions LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                    if ($mgrPerms) {
+                        $managerPermissions = [
+                            'allow_menu' => (int)($mgrPerms['allow_menu'] ?? 1),
+                            'allow_sales' => (int)($mgrPerms['allow_sales'] ?? 1),
+                            'allow_reports' => (int)($mgrPerms['allow_reports'] ?? 1),
+                            'allow_inventory' => (int)($mgrPerms['allow_inventory'] ?? 1),
+                            'allow_transactions' => (int)($mgrPerms['allow_transactions'] ?? 1),
+                            'allow_settings' => (int)($mgrPerms['allow_settings'] ?? 1),
+                        ];
+                    }
+                } catch (PDOException $e) {
+                }
+
+                require_once __DIR__ . '/../cart_permissions_helper.php';
+                $cartPermissions = loadCartPermissions();
 
                 $defaultPrintReceipt = 0;
                 $cashierInactivityEnabled = 1;
@@ -738,6 +788,54 @@ $settingsSectionTitles = [
                         </section>
 
 
+                        <!-- Cart feature permissions -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-cart-shopping text-violet-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Cart features</h2>
+                                    <p class="text-xs text-gray-500">Extra POS buttons (cash back, refund, tips, etc.)</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-600 mb-3">Disabled features are hidden on the POS cart. Managers and admins bypass PIN requirements on the POS.</p>
+                            <form action="business_settings" method="POST" class="space-y-2 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <div class="space-y-1">
+                                    <?php foreach (CART_FEATURE_DEFS as $featureKey => $featureDef):
+                                        $allowField = 'allow_' . $featureKey;
+                                        $pinField = 'require_pin_' . $featureKey;
+                                    ?>
+                                    <div class="flex items-center justify-between gap-3 py-2 border-b border-gray-100">
+                                        <div class="min-w-0">
+                                            <span class="block text-sm font-medium text-gray-700"><?php echo htmlspecialchars($featureDef['label'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                        </div>
+                                        <div class="flex items-center gap-4 shrink-0">
+                                            <label class="inline-flex items-center gap-2 text-xs text-gray-600 cursor-pointer" title="Show on POS">
+                                                <span>Show</span>
+                                                <span class="relative inline-flex items-center">
+                                                    <input type="checkbox" name="<?php echo $allowField; ?>" class="sr-only peer" <?php echo !empty($cartPermissions[$allowField]) ? 'checked' : ''; ?>>
+                                                    <span class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-teal-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></span>
+                                                </span>
+                                            </label>
+                                            <label class="inline-flex items-center gap-2 text-xs text-gray-600 cursor-pointer" title="Require manager PIN for cashiers">
+                                                <span>PIN</span>
+                                                <span class="relative inline-flex items-center">
+                                                    <input type="checkbox" name="<?php echo $pinField; ?>" class="sr-only peer" <?php echo !empty($cartPermissions[$pinField]) ? 'checked' : ''; ?>>
+                                                    <span class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-amber-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></span>
+                                                </span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_cart_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save cart features</button>
+                                </div>
+                            </form>
+                        </section>
+
                         <!-- Cashier sidebar permissions -->
                         <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
                             <div class="flex items-center gap-3 mb-4">
@@ -774,6 +872,48 @@ $settingsSectionTitles = [
                                 <?php endforeach; ?>
                                 <div class="mt-auto pt-3 flex justify-end">
                                     <button type="submit" name="update_cashier_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save permissions</button>
+                                </div>
+                            </form>
+                        </section>
+
+                        <!-- Manager sidebar permissions -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-user-tie text-orange-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Manager sidebar permissions</h2>
+                                    <p class="text-xs text-gray-500">One toggle per sidebar item</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-600 mb-3">Home and Logout always stay visible. Admins always see all items.</p>
+                            <form action="business_settings" method="POST" class="space-y-3 flex-1 flex flex-col">
+                                <input type="hidden" name="return_to" value="display">
+                                <?php
+                                $mgrPermRows = [
+                                    ['manager_allow_menu', 'allow_menu', 'Menu', 'Manager Menu'],
+                                    ['manager_allow_sales', 'allow_sales', 'Sales', 'Sales'],
+                                    ['manager_allow_reports', 'allow_reports', 'Reports', 'Reports center'],
+                                    ['manager_allow_inventory', 'allow_inventory', 'Inventory', 'Inventory'],
+                                    ['manager_allow_transactions', 'allow_transactions', 'Transactions', 'Transactions'],
+                                    ['manager_allow_settings', 'allow_settings', 'Settings', 'Settings'],
+                                ];
+                                foreach ($mgrPermRows as [$fieldName, $permKey, $plabel, $phint]):
+                                ?>
+                                <div class="flex items-center justify-between gap-3 py-2 border-b border-gray-100 last:border-0">
+                                    <div class="min-w-0">
+                                        <label for="<?php echo $fieldName; ?>" class="block text-sm font-medium text-gray-700"><?php echo $plabel; ?></label>
+                                        <p class="text-xs text-gray-500"><?php echo $phint; ?></p>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" name="<?php echo $fieldName; ?>" id="<?php echo $fieldName; ?>" class="sr-only peer" <?php echo !empty($managerPermissions[$permKey]) ? 'checked' : ''; ?>>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-600"></div>
+                                    </label>
+                                </div>
+                                <?php endforeach; ?>
+                                <div class="mt-auto pt-3 flex justify-end">
+                                    <button type="submit" name="update_manager_permissions" value="1" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save permissions</button>
                                 </div>
                             </form>
                         </section>
@@ -1010,12 +1150,92 @@ $settingsSectionTitles = [
                             </div>
                             <button type="button" id="saveKitchenPrinterBtn" class="mt-auto self-start inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">Save kitchen printer</button>
                         </section>
+
+                        <!-- Posiflex PD-320 customer display -->
+                        <section class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 sm:p-6 flex flex-col lg:col-span-2">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="w-10 h-10 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
+                                    <i class="fas fa-desktop text-teal-600"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-base font-semibold text-gray-900">Customer display (Posiflex PD-320)</h2>
+                                    <p class="text-xs text-gray-500">20 × 2 pole display — same QZ Tray as receipts</p>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-600 mb-4">RS-232 pole display: open <strong>Device Manager → Ports (COM &amp; LPT)</strong>, note the COM port (e.g. COM3), enter it below. Baud <strong>9600</strong>, 8 data bits, no parity (factory default). QZ Tray must be running.</p>
+                            <div class="flex items-start gap-3 mb-4">
+                                <input type="checkbox" id="pole_display_enabled" class="mt-0.5 h-5 w-5 shrink-0 text-gray-600 border-gray-300 rounded focus:ring-gray-500" <?php echo $pole_display_enabled_checked; ?>>
+                                <div class="min-w-0">
+                                    <label for="pole_display_enabled" class="font-medium text-sm text-gray-800 cursor-pointer">Show totals on the customer display</label>
+                                    <p class="text-xs text-gray-500 mt-1">Welcome, item name, total, tender, and thank-you on cashier Home.</p>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                                <div>
+                                    <label for="pole_display_port" class="block text-sm font-medium text-gray-700 mb-1">This till’s RS-232 COM port</label>
+                                    <select id="pole_display_port" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                        <option value="AUTO" <?php echo ($poleDisplay['port'] === '' || strtoupper($poleDisplay['port']) === 'AUTO') ? 'selected' : ''; ?>>Auto-detect</option>
+                                        <?php if ($pole_display_port_val !== '' && strtoupper($poleDisplay['port']) !== 'AUTO'): ?>
+                                        <option value="<?php echo $pole_display_port_val; ?>" selected><?php echo $pole_display_port_val; ?></option>
+                                        <?php endif; ?>
+                                    </select>
+                                    <input type="text" id="pole_display_port_manual" class="mt-2 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm" placeholder="Type COM port from Device Manager (e.g. COM3)" autocomplete="off" spellcheck="false">
+                                    <p class="text-xs text-amber-700 mt-1">RS-232 only — use COM3, COM4, etc. Not LPT (parallel) or printer ports.</p>
+                                </div>
+                                <div>
+                                    <label for="pole_display_baud" class="block text-sm font-medium text-gray-700 mb-1">Baud</label>
+                                    <select id="pole_display_baud" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                        <?php foreach ([2400, 4800, 9600, 19200] as $baudOpt): ?>
+                                        <option value="<?php echo $baudOpt; ?>" <?php echo $pole_display_baud_val === $baudOpt ? 'selected' : ''; ?>><?php echo $baudOpt; ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="pole_display_mode" class="block text-sm font-medium text-gray-700 mb-1">Command mode</label>
+                                    <select id="pole_display_mode" class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-600 focus:border-transparent shadow-sm text-sm">
+                                        <option value="epson" <?php echo $pole_display_mode_val === 'epson' ? 'selected' : ''; ?>>Epson (default)</option>
+                                        <option value="pst" <?php echo $pole_display_mode_val === 'pst' ? 'selected' : ''; ?>>PST (Posiflex)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2 mt-auto">
+                                <button type="button" id="refreshPolePortsBtn" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Refresh ports</button>
+                                <button type="button" id="testPoleDisplayBtn" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Test display</button>
+                                <button type="button" id="savePoleDisplayBtn" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700">Save display</button>
+                                <span id="poleDisplayStatus" class="text-xs text-gray-500"></span>
+                            </div>
+                        </section>
                     </div>
                 </div>
+                <script>window.TERMINAL_API_BASE = '../'; window.POS_POLE_DISPLAY = { enabled: false, port: 'AUTO', baud: 9600, mode: 'epson' };</script>
+                <script src="../receipt/js/qz-tray.js"></script>
+                <script src="../terminal.js"></script>
+                <script src="../js/pole-display.js?v=pd320-12"></script>
                 <script>
                     document.addEventListener('DOMContentLoaded', function() {
+                        function parseDisplaySettingResponse(response) {
+                            return response.text().then(function(text) {
+                                var body = (text || '').trim();
+                                var url = (response.url || '').split('?')[0];
+                                var file = url ? url.split('/').pop() : 'API';
+                                if (!body) {
+                                    throw new Error(file + ' returned an empty response');
+                                }
+                                try {
+                                    return JSON.parse(body);
+                                } catch (err) {
+                                    console.error('Display setting API returned non-JSON:', file, response.status, body.slice(0, 400));
+                                    if (response.status === 404 || body.indexOf('404') !== -1) {
+                                        throw new Error('Missing file: ' + file + '. Copy it to the POS root (same folder as pos.db).');
+                                    }
+                                    throw new Error(file + ' returned HTML instead of JSON (HTTP ' + response.status + '). Check PHP errors or that pole_display_settings_helper.php is in the POS root.');
+                                }
+                            });
+                        }
+
                         const checkbox = document.getElementById('hide_available_quantity');
-                        checkbox.checked = <?php echo $hide_available_quantity; ?>;
+                        if (!checkbox) return;
+                        checkbox.checked = <?php echo (int) $hide_available_quantity; ?> === 1;
                         checkbox.addEventListener('change', function() {
                             const hideQuantity = this.checked ? 1 : 0;
                             fetch('../update_display_setting.php', {
@@ -1025,7 +1245,7 @@ $settingsSectionTitles = [
                                 },
                                 body: JSON.stringify({ hide_available_quantity: hideQuantity })
                             })
-                            .then(response => response.json())
+                            .then(parseDisplaySettingResponse)
                             .then(data => {
                                 if (data.success) {
                                     showAlert('success', 'Success', 'Setting updated successfully');
@@ -1051,7 +1271,7 @@ $settingsSectionTitles = [
                                 },
                                 body: JSON.stringify({ skip_stock_checks: skipStockChecks })
                             })
-                            .then(response => response.json())
+                            .then(parseDisplaySettingResponse)
                             .then(data => {
                                 if (data.success) {
                                     showAlert('success', 'Success', 'Setting updated successfully');
@@ -1078,7 +1298,7 @@ $settingsSectionTitles = [
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ gratuity_percent: gp })
                             })
-                            .then(function(r) { return r.json(); })
+                            .then(parseDisplaySettingResponse)
                             .then(function(data) {
                                 if (data.success) showAlert('success', 'Success', 'Gratuity % saved');
                                 else showAlert('error', 'Error', data.error || 'Failed to save');
@@ -1087,12 +1307,12 @@ $settingsSectionTitles = [
                         });
 
                         const gratDefEn = document.getElementById('gratuity_default_enabled');
-                        gratDefEn.addEventListener('change', function() {
+                        if (gratDefEn) gratDefEn.addEventListener('change', function() {
                             fetch('../update_display_setting.php', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ gratuity_default_enabled: this.checked ? 1 : 0 })
-                            }).then(function(r) { return r.json(); }).then(function(data) {
+                            }).then(parseDisplaySettingResponse).then(function(data) {
                                 if (!data.success) { gratDefEn.checked = !gratDefEn.checked; showAlert('error', 'Error', 'Failed to update'); }
                                 else showAlert('success', 'Success', 'Setting updated');
                             }).catch(function() { gratDefEn.checked = !gratDefEn.checked; showAlert('error', 'Error', 'Failed'); });
@@ -1101,17 +1321,17 @@ $settingsSectionTitles = [
                         const creditInterestEnabled = document.getElementById('credit_interest_enabled');
                         const creditInterestRateRow = document.getElementById('creditInterestRateRow');
                         function syncCreditInterestRateRow() {
-                            if (creditInterestRateRow) {
+                            if (creditInterestRateRow && creditInterestEnabled) {
                                 creditInterestRateRow.style.opacity = creditInterestEnabled.checked ? '1' : '0.5';
                             }
                         }
                         syncCreditInterestRateRow();
-                        creditInterestEnabled.addEventListener('change', function() {
+                        if (creditInterestEnabled) creditInterestEnabled.addEventListener('change', function() {
                             fetch('../update_display_setting.php', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ credit_interest_enabled: this.checked ? 1 : 0 })
-                            }).then(function(r) { return r.json(); }).then(function(data) {
+                            }).then(parseDisplaySettingResponse).then(function(data) {
                                 if (!data.success) {
                                     creditInterestEnabled.checked = !creditInterestEnabled.checked;
                                     showAlert('error', 'Error', 'Failed to update');
@@ -1136,7 +1356,7 @@ $settingsSectionTitles = [
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ credit_interest_rate: rate })
                             })
-                            .then(function(r) { return r.json(); })
+                            .then(parseDisplaySettingResponse)
                             .then(function(data) {
                                 if (data.success) showAlert('success', 'Success', 'Credit interest rate saved');
                                 else showAlert('error', 'Error', data.error || 'Failed to save');
@@ -1145,7 +1365,8 @@ $settingsSectionTitles = [
                         });
 
                         const useQzTrayCheckbox = document.getElementById('use_qz_tray');
-                        useQzTrayCheckbox.checked = <?php echo $use_qz_tray ? 1 : 0; ?>;
+                        if (useQzTrayCheckbox) {
+                        useQzTrayCheckbox.checked = <?php echo $use_qz_tray ? 1 : 0; ?> === 1;
                         useQzTrayCheckbox.addEventListener('change', function() {
                             const useQzTray = this.checked ? 1 : 0;
                             fetch('../update_display_setting.php', {
@@ -1155,7 +1376,7 @@ $settingsSectionTitles = [
                                 },
                                 body: JSON.stringify({ use_qz_tray: useQzTray })
                             })
-                            .then(response => response.json())
+                            .then(parseDisplaySettingResponse)
                             .then(data => {
                                 if (data.success) {
                                     showAlert('success', 'Success', 'Setting updated successfully');
@@ -1169,6 +1390,7 @@ $settingsSectionTitles = [
                                 useQzTrayCheckbox.checked = !useQzTrayCheckbox.checked;
                             });
                         });
+                        }
 
                         document.getElementById('saveReceiptPaperWidthBtn').addEventListener('click', function() {
                             const paperWidth = parseInt(document.getElementById('receipt_paper_width_mm').value, 10) === 80 ? 80 : 58;
@@ -1177,7 +1399,7 @@ $settingsSectionTitles = [
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ receipt_paper_width_mm: paperWidth })
                             })
-                            .then(function(r) { return r.json(); })
+                            .then(parseDisplaySettingResponse)
                             .then(function(data) {
                                 if (data.success) {
                                     showAlert('success', 'Success', 'Receipt paper width saved');
@@ -1198,7 +1420,7 @@ $settingsSectionTitles = [
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ kitchen_printer_ip: ip, kitchen_printer_port: port })
                             })
-                            .then(function(r) { return r.json(); })
+                            .then(parseDisplaySettingResponse)
                             .then(function(data) {
                                 if (data.success) {
                                     showAlert('success', 'Success', 'Kitchen printer saved');
@@ -1210,6 +1432,237 @@ $settingsSectionTitles = [
                                 showAlert('error', 'Error', 'Failed to save kitchen printer');
                             });
                         });
+
+                        window.TERMINAL_API_BASE = '../';
+                        window.POS_POLE_DISPLAY = {
+                            enabled: true,
+                            port: document.getElementById('pole_display_port') ? document.getElementById('pole_display_port').value : 'AUTO',
+                            baud: document.getElementById('pole_display_baud') ? parseInt(document.getElementById('pole_display_baud').value, 10) : 9600,
+                            mode: document.getElementById('pole_display_mode') ? document.getElementById('pole_display_mode').value : 'epson'
+                        };
+
+                        function selectedPolePort() {
+                            var manual = document.getElementById('pole_display_port_manual');
+                            var select = document.getElementById('pole_display_port');
+                            var typed = manual && manual.value ? String(manual.value).trim().toUpperCase() : '';
+                            if (typed) {
+                                return typed;
+                            }
+                            return select ? select.value : 'AUTO';
+                        }
+
+                        function poleDisplayPayload() {
+                            return {
+                                pole_display_enabled: document.getElementById('pole_display_enabled').checked ? 1 : 0,
+                                pole_display_port: selectedPolePort(),
+                                pole_display_baud: parseInt(document.getElementById('pole_display_baud').value, 10) || 9600,
+                                pole_display_mode: document.getElementById('pole_display_mode').value || 'epson'
+                            };
+                        }
+
+                        function applyPoleConfigFromForm() {
+                            var p = poleDisplayPayload();
+                            if (window.PosPoleDisplay && window.PosPoleDisplay.applyRuntimeConfig) {
+                                window.PosPoleDisplay.applyRuntimeConfig({
+                                    enabled: true,
+                                    port: p.pole_display_port,
+                                    baud: p.pole_display_baud,
+                                    mode: p.pole_display_mode
+                                });
+                                return;
+                            }
+                            window.POS_POLE_DISPLAY = {
+                                enabled: true,
+                                port: p.pole_display_port,
+                                baud: p.pole_display_baud,
+                                mode: p.pole_display_mode
+                            };
+                        }
+
+                        function fillPolePorts(ports) {
+                            var select = document.getElementById('pole_display_port');
+                            if (!select) return;
+                            var current = select.value;
+                            select.innerHTML = '';
+                            var auto = document.createElement('option');
+                            auto.value = 'AUTO';
+                            auto.textContent = 'Auto-detect';
+                            select.appendChild(auto);
+                            var seen = {};
+                            function addOption(port) {
+                                port = String(port || '').trim().toUpperCase();
+                                if (!port || port === 'AUTO' || seen[port]) return;
+                                if (/^(ESDPRT|USB)\d+/i.test(port) || /^LPT\d+\.\d+$/i.test(port)) return;
+                                seen[port] = true;
+                                var opt = document.createElement('option');
+                                opt.value = port;
+                                opt.textContent = port;
+                                select.appendChild(opt);
+                            }
+                            (ports || []).forEach(addOption);
+                            if (current && current.toUpperCase() !== 'AUTO') {
+                                addOption(current);
+                            }
+                            if (current) {
+                                select.value = current;
+                            }
+                        }
+
+                        var refreshPolePortsBtn = document.getElementById('refreshPolePortsBtn');
+                        if (refreshPolePortsBtn) {
+                            refreshPolePortsBtn.addEventListener('click', function() {
+                                var status = document.getElementById('poleDisplayStatus');
+                                if (status) status.textContent = 'Looking for RS-232 COM ports...';
+                                if (!window.PosPoleDisplay) {
+                                    if (status) status.textContent = 'QZ Tray script not loaded';
+                                    return;
+                                }
+                                window.PosPoleDisplay.findPorts().then(function(ports) {
+                                    fillPolePorts(ports);
+                                    if (status) status.textContent = (ports && ports.length) ? ('Found ' + ports.length + ' COM port(s)') : 'No COM ports found — type the COM port from Device Manager above';
+                                }).catch(function(err) {
+                                    if (status) status.textContent = err && err.message ? err.message : 'Could not list ports';
+                                });
+                            });
+                        }
+
+                        var testPoleDisplayBtn = document.getElementById('testPoleDisplayBtn');
+                        if (testPoleDisplayBtn) {
+                            testPoleDisplayBtn.addEventListener('click', function() {
+                                var status = document.getElementById('poleDisplayStatus');
+                                var payload = poleDisplayPayload();
+                                applyPoleConfigFromForm();
+                                if (status) status.textContent = 'Connecting to QZ Tray...';
+                                if (!window.PosPoleDisplay) {
+                                    if (status) status.textContent = 'QZ Tray script not loaded. Refresh the page.';
+                                    return;
+                                }
+                                if (typeof qz === 'undefined') {
+                                    if (status) status.textContent = 'QZ Tray is not loaded. Enable QZ Tray and keep it running.';
+                                    return;
+                                }
+                                window.PosPoleDisplay.showTest().then(function() {
+                                    var port = window.PosPoleDisplay.getResolvedPort ? window.PosPoleDisplay.getResolvedPort() : payload.pole_display_port;
+                                    if (status) status.textContent = 'Test sent on ' + (port || payload.pole_display_port || 'AUTO');
+                                }).catch(function(err) {
+                                    if (status) status.textContent = err && err.message ? err.message : 'Test failed';
+                                });
+                            });
+                        }
+
+                        var savePoleDisplayBtn = document.getElementById('savePoleDisplayBtn');
+                        if (savePoleDisplayBtn) {
+                            savePoleDisplayBtn.addEventListener('click', function() {
+                                var payload = poleDisplayPayload();
+                                if (window.PosPoleDisplay && window.PosPoleDisplay.setThisTillPort) {
+                                    window.PosPoleDisplay.setThisTillPort(payload.pole_display_port);
+                                } else {
+                                    try { localStorage.setItem('pos_pole_display_port', payload.pole_display_port || 'AUTO'); } catch (e) {}
+                                }
+                                applyPoleConfigFromForm();
+                                var globalPayload = {
+                                    pole_display_enabled: payload.pole_display_enabled,
+                                    pole_display_baud: payload.pole_display_baud,
+                                    pole_display_mode: payload.pole_display_mode
+                                };
+                                fetch('../update_display_setting.php', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(globalPayload)
+                                })
+                                .then(parseDisplaySettingResponse)
+                                .then(function(data) {
+                                    if (!data.success) {
+                                        throw new Error(data.error || 'Failed to save');
+                                    }
+                                    var macPromise = (typeof getTerminalMac === 'function')
+                                        ? getTerminalMac()
+                                        : Promise.resolve(null);
+                                    return macPromise.then(function(mac) {
+                                        if (!mac) {
+                                            return data;
+                                        }
+                                        return fetch('../save_terminal_pole_port.php', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            credentials: 'same-origin',
+                                            body: JSON.stringify({
+                                                terminal_mac: mac,
+                                                pole_display_port: payload.pole_display_port
+                                            })
+                                        }).then(parseDisplaySettingResponse).then(function() { return data; });
+                                    });
+                                })
+                                .then(function() {
+                                    showAlert('success', 'Success', 'Saved for this till. Repeat on the other till with that till’s COM or LPT port.');
+                                })
+                                .catch(function(err) {
+                                    showAlert('error', 'Error', (err && err.message) ? err.message : 'Failed to save customer display');
+                                });
+                            });
+                        }
+
+                        (function prefillThisTillPort() {
+                            var select = document.getElementById('pole_display_port');
+                            if (!select) return;
+
+                            function applyPort(port) {
+                                port = String(port || '').trim().toUpperCase();
+                                if (!port) return;
+                                var manual = document.getElementById('pole_display_port_manual');
+                                var status = document.getElementById('poleDisplayStatus');
+                                if (/^(ESDPRT|USB)\d+/i.test(port) || /^LPT\d+/i.test(port)) {
+                                    if (manual) manual.value = '';
+                                    if (status) {
+                                        status.textContent = 'Port ' + port + ' is not RS-232. Enter the pole\'s COM port from Device Manager (e.g. COM3).';
+                                        status.className = 'text-xs text-red-600';
+                                    }
+                                    return;
+                                }
+                                if (/^COM\d+$/i.test(port) && manual) {
+                                    manual.value = port;
+                                    if (status) {
+                                        status.textContent = '';
+                                        status.className = 'text-xs text-gray-500';
+                                    }
+                                }
+                                var exists = false;
+                                for (var i = 0; i < select.options.length; i++) {
+                                    if (select.options[i].value === port) exists = true;
+                                }
+                                if (!exists && port !== 'AUTO') {
+                                    var opt = document.createElement('option');
+                                    opt.value = port;
+                                    opt.textContent = port + ' (this till)';
+                                    select.appendChild(opt);
+                                }
+                                select.value = port;
+                                if (window.PosPoleDisplay && window.PosPoleDisplay.setThisTillPort) {
+                                    window.PosPoleDisplay.setThisTillPort(port);
+                                }
+                            }
+
+                            var localPort = '';
+                            try { localPort = localStorage.getItem('pos_pole_display_port') || ''; } catch (e) {}
+                            if (localPort && localPort.toUpperCase() !== 'AUTO') {
+                                applyPort(localPort);
+                                return;
+                            }
+
+                            if (typeof getTerminalMac !== 'function') {
+                                return;
+                            }
+
+                            getTerminalMac().then(function(mac) {
+                                return fetch('../get_terminal_settings.php?mac=' + encodeURIComponent(mac), {
+                                    credentials: 'same-origin'
+                                }).then(function(response) { return response.json(); });
+                            }).then(function(data) {
+                                if (data && data.success && data.pole_display_port) {
+                                    applyPort(data.pole_display_port);
+                                }
+                            }).catch(function() {});
+                        })();
                     });
                 </script>
                 <?php endif; ?>

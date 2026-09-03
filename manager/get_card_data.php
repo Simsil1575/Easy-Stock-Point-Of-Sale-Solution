@@ -8,31 +8,16 @@ try {
     exit;
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-$closingTime = '22:00';
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '22:00';
-} catch (PDOException $e) {
-    $closingTime = '22:00';
-}
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
 
-// Calculate business day boundaries
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+// Match admin/cash.php business-day boundaries
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 function getCurrentBusinessDate($closingTime, $isAfterMidnight) {
-    $today = date('Y-m-d');
-    $yesterday = date('Y-m-d', strtotime('-1 day'));
-    $currentTime = date('H:i');
-
-    if ($isAfterMidnight && $currentTime >= '00:00' && $currentTime < $closingTime) {
-        return $yesterday;
-    }
-    return ($currentTime < $closingTime) ? $yesterday : $today;
+    return bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 }
 
 // Function to get date range based on view (using business days)
@@ -69,21 +54,7 @@ function getDateRange($view, $closingTime, $isAfterMidnight) {
 
 // Function to build business day WHERE clause (matches admin/cash.php)
 function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
-    if ($startDate === $endDate) {
-        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-        return "(DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)";
-    }
-
-    $whereClauses = [];
-    $currentDate = new DateTime($startDate);
-    $endDateTime = new DateTime($endDate);
-    while ($currentDate <= $endDateTime) {
-        $dateStr = $currentDate->format('Y-m-d');
-        $nextDayStr = (clone $currentDate)->modify('+1 day')->format('Y-m-d');
-        $whereClauses[] = "(DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)";
-        $currentDate->modify('+1 day');
-    }
-    return '(' . implode(') OR (', $whereClauses) . ')';
+    return bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight);
 }
 
 // Function to get total cash in for date range (using business days)
@@ -107,11 +78,11 @@ function getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnigh
 function getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         $whereClause = getBusinessDayWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $stmt = $db->prepare("
-            SELECT COALESCE(SUM(amount), 0) 
+        $stmt = $db->prepare('
+            SELECT ' . cashWithdrawalsSumSql() . '
             FROM cash_transactions 
-            WHERE type = 'cash-out' AND ($whereClause)
-        ");
+            WHERE (' . $whereClause . ')
+        ');
         $stmt->execute();
         return $stmt->fetchColumn();
     } catch (PDOException $e) {

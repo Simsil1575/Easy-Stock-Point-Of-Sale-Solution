@@ -81,6 +81,9 @@ function getUsernameById($userId) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     handle_tab_void_mark_post_request($db);
     handle_tab_item_void_mark_post_request($db);
+    handle_tab_void_post_request($db);
+    handle_tab_edit_item_post_request($db);
+    handle_tab_delete_item_post_request($db);
 
     if (isset($_POST['toggle_tab_gratuity'])) {
         $tabId = intval($_POST['tab_id'] ?? 0);
@@ -106,130 +109,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         tab_set_gratuity_enabled_on_tab($db, $tabId, (bool) $enabled);
         $_SESSION['success'] = $enabled ? 'Gratuity added to tab balance' : 'Gratuity removed from tab balance';
         header('Location: view-tab.php?id=' . $tabId);
-        exit();
-    }
-
-    if (isset($_POST['delete_item_id'])) {
-        // Delete tab item
-        $itemId = intval($_POST['delete_item_id']);
-        $tabId = intval($_POST['tab_id']);
-        $itemStmt = $db->prepare("SELECT tab_id, quantity, product_name FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $db->beginTransaction();
-            try {
-                // Restore product quantity to stock (catalog products only; prepayment/postpaid lines are not inventory)
-                if (!is_tab_non_inventory_tab_line_name($item['product_name'])) {
-                    $restoreStmt = $db->prepare("UPDATE products SET quantity = quantity + ? WHERE name = ?");
-                    $restoreStmt->execute([$item['quantity'], $item['product_name']]);
-                    
-                    $currentDate = date('Y-m-d');
-                    $resolveProductStmt = $db->prepare("SELECT id FROM products WHERE name = ? LIMIT 1");
-                    $resolveProductStmt->execute([$item['product_name']]);
-                    if ($resolveProductStmt->fetchColumn()) {
-                        $stmtEnsureDailySummary = $db->prepare("
-                            INSERT OR IGNORE INTO daily_stock_summary 
-                            (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
-                            VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
-                        ");
-                        $stmtEnsureDailySummary->execute([$currentDate, $item['product_name']]);
-                        
-                        $stmtUpdateDailySummary = $db->prepare("
-                            UPDATE daily_stock_summary 
-                            SET sold_quantity = CASE 
-                                WHEN sold_quantity - ? < 0 THEN 0 
-                                ELSE sold_quantity - ? 
-                            END
-                            WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
-                        ");
-                        $stmtUpdateDailySummary->execute([$item['quantity'], $item['quantity'], $currentDate, $item['product_name']]);
-                    }
-                }
-                
-                // Delete related tab_item_payments first (cascade should handle this, but being explicit)
-                $deletePaymentsStmt = $db->prepare("DELETE FROM tab_item_payments WHERE tab_item_id = ?");
-                $deletePaymentsStmt->execute([$itemId]);
-                
-                // Delete the item
-                $deleteStmt = $db->prepare("DELETE FROM tab_items WHERE id = ?");
-                $deleteStmt->execute([$itemId]);
-                
-                // Recalculate tab balance from scratch
-                recalculateTabBalance($db, $tabId);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product removed from tab and restored to stock successfully';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to delete item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['edit_item_id'])) {
-        // Edit tab item
-        $itemId = intval($_POST['edit_item_id']);
-        $tabId = intval($_POST['tab_id']);
-        $newQuantity = intval($_POST['edit_item_quantity']);
-        
-        if ($newQuantity <= 0) {
-            $_SESSION['error'] = 'Quantity must be greater than zero';
-            header('Location: view-tab.php?id=' . $tabId);
-            exit();
-        }
-        
-        $itemStmt = $db->prepare("SELECT tab_id, price, product_name FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            if (is_tab_prepayment_line_name($item['product_name'])) {
-                $_SESSION['error'] = 'Prepayment credit lines cannot be edited. Remove the line and add a new amount if needed.';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-            $db->beginTransaction();
-            try {
-                // Use original price (price cannot be changed if item has payments)
-                $originalPrice = floatval($item['price']);
-                
-                // Check if there are payments on this item
-                $paymentCheckStmt = $db->prepare("SELECT COUNT(*) FROM tab_item_payments WHERE tab_item_id = ?");
-                $paymentCheckStmt->execute([$itemId]);
-                $hasPayments = $paymentCheckStmt->fetchColumn() > 0;
-                
-                if ($hasPayments) {
-                    // If item has payments, price cannot be changed - use original price
-                    $updateStmt = $db->prepare("UPDATE tab_items SET quantity = ? WHERE id = ?");
-                    $updateStmt->execute([$newQuantity, $itemId]);
-                } else {
-                    // No payments, can update both quantity and price if needed
-                    // But for now, we only allow quantity changes (price stays same)
-                    $updateStmt = $db->prepare("UPDATE tab_items SET quantity = ? WHERE id = ?");
-                    $updateStmt->execute([$newQuantity, $itemId]);
-                }
-                
-                // Recalculate tab balance from scratch
-                recalculateTabBalance($db, $tabId);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product updated successfully';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to update item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
         exit();
     } elseif (isset($_POST['edit_tab_name'])) {
         $tabId = intval($_POST['tab_id']);
@@ -834,7 +713,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $tabBalanceStmt = $db->prepare("SELECT current_balance FROM tabs WHERE id = ?");
             $tabBalanceStmt->execute([$tabId]);
             $tabBalanceAfterPayment = floatval($tabBalanceStmt->fetchColumn());
-            if ($tabBalanceAfterPayment <= 0.01) {
+            if ($tabBalanceAfterPayment <= 0.01 && !tab_has_unresolved_void_pending($db, $tabId)) {
                 $closeTabStmt = $db->prepare("UPDATE tabs SET status = 'closed', closed_at = ?, closed_by = ? WHERE id = ?");
                 $closeTabStmt->execute([$paymentTimestamp, $cashierUsername, $tabId]);
             }
@@ -921,156 +800,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: view-tab.php?id=' . $tabId);
             exit();
         }
-    } elseif (isset($_POST['void_tab_id'])) {
-        // Void tab - Only admins or managers can void tabs
-        $allowedRoles = ['admin', 'manager'];
-        if (!isset($_SESSION['role']) || !in_array(strtolower($_SESSION['role']), $allowedRoles)) {
-            $_SESSION['error'] = 'Only admins or managers can void tabs';
-            header('Location: view-tab.php?id=' . intval($_POST['void_tab_id']));
-            exit();
-        }
-        
-        $tabId = intval($_POST['void_tab_id']);
-        
-        // Get tab details
-        $tabStmt = $db->prepare("SELECT * FROM tabs WHERE id = ?");
-        $tabStmt->execute([$tabId]);
-        $tab = $tabStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$tab) {
-            $_SESSION['error'] = 'Tab not found';
-            header('Location: credit-tabs');
-            exit();
-        }
-        
-        if ($tab['status'] === 'closed') {
-            $_SESSION['error'] = 'Cannot void a closed tab';
-            header('Location: view-tab.php?id=' . $tabId);
-            exit();
-        }
-        
-        $db->beginTransaction();
-        try {
-            $currentDate = date('Y-m-d');
-            
-            // Step 1: Get all orders linked to this tab via tab_payments
-            $ordersStmt = $db->prepare("SELECT DISTINCT order_id FROM tab_payments WHERE tab_id = ? AND order_id IS NOT NULL");
-            $ordersStmt->execute([$tabId]);
-            $orderIds = $ordersStmt->fetchAll(PDO::FETCH_COLUMN);
-            
-            // Step 2: Collect all products and quantities that need to be restored
-            // Products from order_items (fully paid items that were removed from tab_items)
-            $productsToRestore = [];
-            
-            if (!empty($orderIds)) {
-                $placeholders = str_repeat('?,', count($orderIds) - 1) . '?';
-                $orderItemsStmt = $db->prepare("SELECT product_name, SUM(quantity) as total_quantity FROM order_items WHERE order_id IN ($placeholders) GROUP BY product_name");
-                $orderItemsStmt->execute($orderIds);
-                $orderItems = $orderItemsStmt->fetchAll(PDO::FETCH_ASSOC);
-                
-                foreach ($orderItems as $orderItem) {
-                    $productName = $orderItem['product_name'];
-                    $quantity = intval($orderItem['total_quantity']);
-                    if (!isset($productsToRestore[$productName])) {
-                        $productsToRestore[$productName] = 0;
-                    }
-                    $productsToRestore[$productName] += $quantity;
-                }
-            }
-            
-            // Step 3: Get all remaining tab_items (unpaid or partially paid) and add to restore list
-            $tabItemsStmt = $db->prepare("SELECT product_name, SUM(quantity) as total_quantity FROM tab_items WHERE tab_id = ? GROUP BY product_name");
-            $tabItemsStmt->execute([$tabId]);
-            $tabItems = $tabItemsStmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            foreach ($tabItems as $item) {
-                $productName = $item['product_name'];
-                $quantity = intval($item['total_quantity']);
-                if (!isset($productsToRestore[$productName])) {
-                    $productsToRestore[$productName] = 0;
-                }
-                $productsToRestore[$productName] += $quantity;
-            }
-            
-            // Step 4: Restore all quantities
-            if (!empty($productsToRestore)) {
-                $restoreStmt = $db->prepare("UPDATE products SET quantity = quantity + ? WHERE name = ?");
-                $stmtUpdateDailySummary = $db->prepare("
-                    UPDATE daily_stock_summary 
-                    SET sold_quantity = CASE 
-                        WHEN sold_quantity - ? < 0 THEN 0 
-                        ELSE sold_quantity - ? 
-                    END
-                    WHERE date = ? AND product_id = (SELECT id FROM products WHERE name = ?)
-                ");
-                $stmtEnsureDailySummary = $db->prepare("
-                    INSERT OR IGNORE INTO daily_stock_summary 
-                    (date, product_id, opening_quantity, closing_quantity, received_quantity, sold_quantity, damaged_quantity)
-                    VALUES (?, (SELECT id FROM products WHERE name = ?), 0, 0, 0, 0, 0)
-                ");
-                
-                foreach ($productsToRestore as $productName => $quantity) {
-                    if ($quantity > 0) {
-                        // Restore quantity to products
-                        $restoreStmt->execute([$quantity, $productName]);
-                        
-                        // Ensure daily stock summary exists
-                        $stmtEnsureDailySummary->execute([$currentDate, $productName]);
-                        
-                        // Update daily stock summary (decrease sold_quantity)
-                        $stmtUpdateDailySummary->execute([$quantity, $quantity, $currentDate, $productName]);
-                    }
-                }
-            }
-            
-            // Step 5: Delete related payment records for orders
-            if (!empty($orderIds)) {
-                $placeholders = str_repeat('?,', count($orderIds) - 1) . '?';
-                
-                // Delete eft_payments
-                $deleteEftStmt = $db->prepare("DELETE FROM eft_payments WHERE order_id IN ($placeholders)");
-                $deleteEftStmt->execute($orderIds);
-                
-                // Delete mixed_payments
-                $deleteMixedStmt = $db->prepare("DELETE FROM mixed_payments WHERE order_id IN ($placeholders)");
-                $deleteMixedStmt->execute($orderIds);
-                
-                // Delete order_items
-                $deleteOrderItemsStmt = $db->prepare("DELETE FROM order_items WHERE order_id IN ($placeholders)");
-                $deleteOrderItemsStmt->execute($orderIds);
-                
-                // Delete orders
-                $deleteOrdersStmt = $db->prepare("DELETE FROM orders WHERE id IN ($placeholders)");
-                $deleteOrdersStmt->execute($orderIds);
-            }
-            
-            // Step 6: Delete all tab-related records
-            // Delete tab_item_payments
-            $deleteTabItemPaymentsStmt = $db->prepare("DELETE FROM tab_item_payments WHERE tab_item_id IN (SELECT id FROM tab_items WHERE tab_id = ?)");
-            $deleteTabItemPaymentsStmt->execute([$tabId]);
-            
-            // Delete tab_payments
-            $deleteTabPaymentsStmt = $db->prepare("DELETE FROM tab_payments WHERE tab_id = ?");
-            $deleteTabPaymentsStmt->execute([$tabId]);
-            
-            // Delete tab_items
-            $deleteTabItemsStmt = $db->prepare("DELETE FROM tab_items WHERE tab_id = ?");
-            $deleteTabItemsStmt->execute([$tabId]);
-            
-            // Step 7: Delete the tab
-            $deleteTabStmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
-            $deleteTabStmt->execute([$tabId]);
-            
-            $db->commit();
-            $_SESSION['success'] = 'Tab voided successfully. All items have been restored to stock.';
-            header('Location: credit-tabs');
-            exit();
-        } catch (Exception $e) {
-            $db->rollBack();
-            $_SESSION['error'] = 'Failed to void tab: ' . $e->getMessage();
-            header('Location: view-tab.php?id=' . $tabId);
-            exit();
-        }
     }
 }
 
@@ -1120,6 +849,8 @@ try {
 }
 
 $tabPrepaid = floatval($viewTab['prepaid_balance'] ?? 0);
+$tabShowItemActions = tab_show_item_row_actions($db, $viewTab);
+$tabItemTableColspan = tab_item_table_colspan($db, $viewTab);
 $tabGratuityAmount = tab_compute_gratuity_amount($db, $tabId, $viewTab);
 $tabGratuityRemaining = tab_gratuity_remaining($db, $tabId, $viewTab);
 $tabGratuityEnabled = tab_is_gratuity_enabled_for_tab($viewTab);
@@ -1130,7 +861,8 @@ $tabItemsStmt = $db->prepare("
     SELECT ti.*, ti.added_by,
            COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) as paid_amount,
            (ti.quantity * ti.price) as item_total,
-           (SELECT image_url FROM products WHERE name = ti.product_name LIMIT 1) as product_image
+           (SELECT image_url FROM products WHERE name = ti.product_name LIMIT 1) as product_image,
+           (SELECT quantity FROM products WHERE name = ti.product_name LIMIT 1) as product_stock
     FROM tab_items ti
     WHERE ti.tab_id = ?
         AND (
@@ -1307,6 +1039,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
     <script src="../lucide.js"></script>
     <script src="../sweetalert2@11.js"></script>
     <?= tab_pos_confirm_script_tag('../') ?>
+    <?= tab_edit_item_stock_scripts_html($db) ?>
     <?php $kbAssetPrefix = '../'; include __DIR__ . '/../includes/kioskboard_payment.php'; ?>
     <!-- Load sendToPrinter function from receipt.php -->
     <script src="../receipt.php?js=true"></script>
@@ -1717,8 +1450,8 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                 </button>
                                 <?php endif; ?>
                                 <?= tab_prepay_postpaid_action_html($viewTab) ?>
-                                <?php if ($viewTab['current_balance'] > 0 || tab_is_marked_for_void($viewTab) || tab_has_items_marked_for_void($db, (int) $viewTab['id'])): ?>
-                                <button onclick="openVoidTabModal(<?= $viewTab['id'] ?>, '<?= htmlspecialchars($viewTab['tab_name'], ENT_QUOTES) ?>')"
+                                <?php if (can_void_entire_tab_from_session()): ?>
+                                <button onclick="openVoidTabModal(<?= $viewTab['id'] ?>, <?= htmlspecialchars(json_encode($viewTab['tab_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>)"
                                     class="tab-header-action border border-red-300 text-red-800 bg-red-50 hover:bg-red-100" title="Void tab">
                                     <i data-lucide="x-circle" class="w-3.5 h-3.5 shrink-0"></i>Void
                                 </button>
@@ -1759,7 +1492,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                                 <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Qty</th>
                                                 <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Unit Price</th>
                                                 <th scope="col" class="px-6 py-3 text-end text-xs font-medium text-gray-500 uppercase">Total</th>
-                                                <?php if ($viewTab['status'] === 'open'): ?>
+                                                <?php if ($tabShowItemActions): ?>
                                                 <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
                                                 <?php endif; ?>
                                             </tr>
@@ -1767,7 +1500,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                         <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
                                 <?php if (empty($tabItems)): ?>
                                     <tr>
-                                        <td colspan="<?= $viewTab['status'] === 'open' ? '5' : '4' ?>" class="p-6 text-center text-sm text-gray-500">No products in this tab</td>
+                                        <td colspan="<?= $tabItemTableColspan ?>" class="p-6 text-center text-sm text-gray-500">No products in this tab</td>
                                     </tr>
                                 <?php else: ?>
                                     <?php 
@@ -1816,18 +1549,18 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200 text-end" data-label="Qty"><?= $item['quantity'] ?></td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200 text-end" data-label="Unit Price"><?php if ($isPrepayLine): ?>N$<?= number_format(abs((float)$item['price']), 2) ?> <span class="text-teal-700 text-xs">(credit)</span><?php elseif ($isPostpaidLine): ?>N$<?= number_format((float)$item['price'], 2) ?> <span class="text-amber-800 text-xs">(charge)</span><?php else: ?>N$<?= number_format($item['price'], 2) ?><?php endif; ?></td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-end <?= $isPrepayLine ? 'text-teal-800' : ($isPostpaidLine ? 'text-amber-900' : 'text-gray-800 dark:text-gray-200') ?>" data-label="Total"><?php if ($isPrepayLine): ?>−N$<?= number_format(abs($itemTotal), 2) ?><?php else: ?>N$<?= number_format($itemTotal, 2) ?><?php endif; ?></td>
-                                            <?php if ($viewTab['status'] === 'open'): ?>
+                                            <?php if ($tabShowItemActions): ?>
                                             <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium" data-label="Actions">
-                                                <div class="flex items-center justify-center gap-2">
-                                                    <?php if (!$isPrepayLine && !$itemVoidMarked): ?>
-                                                    <button onclick="openEditItemModal(<?= $item['id'] ?>, '<?= htmlspecialchars($item['product_name'], ENT_QUOTES) ?>', <?= $item['quantity'] ?>, <?= $item['price'] ?>, <?= $viewTab['id'] ?>)" 
+                                                <div class="flex items-center justify-center gap-2 flex-wrap">
+                                                    <?php if (can_edit_tab_item_quantities_from_session() && tab_is_open($viewTab) && !$isPrepayLine && !$itemVoidMarked): ?>
+                                                    <button onclick="openEditItemModal(<?= (int) $item['id'] ?>, <?= htmlspecialchars(json_encode($item['product_name']), ENT_QUOTES, 'UTF-8') ?>, <?= (int) $item['quantity'] ?>, <?= (float) $item['price'] ?>, <?= (int) $viewTab['id'] ?>, <?= json_encode(isset($item['product_stock']) ? (float) $item['product_stock'] : null) ?>)" 
                                                             class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:pointer-events-none dark:text-blue-500 dark:hover:text-blue-400" 
                                                             title="Edit">
                                                         <i data-lucide="pencil" class="w-4 h-4"></i>
                                                     </button>
                                                     <?php endif; ?>
                                                     <?= tab_item_void_mark_action_html($item, (int) $viewTab['id'], $isPrepayLine, $isPostpaidLine) ?>
-                                                    <?php if (!$itemVoidMarked): ?>
+                                                    <?php if (tab_is_open($viewTab) && !$itemVoidMarked): ?>
                                                     <button type="button"
                                                             onclick="openDeleteTabItemModal(this)"
                                                             data-delete-item-id="<?= (int)$item['id'] ?>"
@@ -1846,35 +1579,35 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
                                     <?php endforeach; ?>
                                     <?php if ($tabGratuityEnabled && $tabGratuityAmount > 0.001): ?>
                                     <tr class="bg-teal-50/40">
-                                        <td colspan="<?= $viewTab['status'] === 'open' ? '3' : '3' ?>" class="px-6 py-3 text-end text-sm text-gray-700" data-label="">Gratuity (<?= htmlspecialchars(rtrim(rtrim(number_format($tabGratuityPercent, 2, '.', ''), '0'), '.')) ?>%):</td>
+                                        <td colspan="3" class="px-6 py-3 text-end text-sm text-gray-700" data-label="">Gratuity (<?= htmlspecialchars(rtrim(rtrim(number_format($tabGratuityPercent, 2, '.', ''), '0'), '.')) ?>%):</td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-teal-800 text-end" data-label="">N$<?= number_format($tabGratuityAmount, 2) ?></td>
-                                        <?php if ($viewTab['status'] === 'open'): ?>
+                                        <?php if ($tabShowItemActions): ?>
                                         <td class="px-6 py-4" data-label=""></td>
                                         <?php endif; ?>
                                     </tr>
                                     <?php endif; ?>
                                     <?php if ($voidPendingTotal > 0.001): ?>
                                     <tr class="bg-red-50/50">
-                                        <td colspan="<?= $viewTab['status'] === 'open' ? '3' : '3' ?>" class="px-6 py-3 text-end text-sm text-red-700" data-label="">Excluded (void pending):</td>
+                                        <td colspan="3" class="px-6 py-3 text-end text-sm text-red-700" data-label="">Excluded (void pending):</td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-red-700 text-end" data-label="">N$<?= number_format($voidPendingTotal, 2) ?></td>
-                                        <?php if ($viewTab['status'] === 'open'): ?>
+                                        <?php if ($tabShowItemActions): ?>
                                         <td class="px-6 py-4" data-label=""></td>
                                         <?php endif; ?>
                                     </tr>
                                     <?php endif; ?>
                                     <?php if ($voidPendingTotal > 0.001): ?>
                                     <tr class="bg-red-50/50">
-                                        <td colspan="<?= $viewTab['status'] === 'open' ? '3' : '3' ?>" class="px-6 py-3 text-end text-sm text-red-700" data-label="">Excluded (void pending):</td>
+                                        <td colspan="3" class="px-6 py-3 text-end text-sm text-red-700" data-label="">Excluded (void pending):</td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-red-700 text-end" data-label="">N$<?= number_format($voidPendingTotal, 2) ?></td>
-                                        <?php if ($viewTab['status'] === 'open'): ?>
+                                        <?php if ($tabShowItemActions): ?>
                                         <td class="px-6 py-4" data-label=""></td>
                                         <?php endif; ?>
                                     </tr>
                                     <?php endif; ?>
                                     <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                                        <td colspan="<?= $viewTab['status'] === 'open' ? '3' : '3' ?>" class="px-6 py-4 text-end text-sm text-gray-700 dark:text-gray-300" data-label="">Total<?= ($tabGratuityEnabled && $tabGratuityAmount > 0.001) ? ' (incl. gratuity)' : '' ?>:</td>
+                                        <td colspan="3" class="px-6 py-4 text-end text-sm text-gray-700 dark:text-gray-300" data-label="">Total<?= ($tabGratuityEnabled && $tabGratuityAmount > 0.001) ? ' (incl. gratuity)' : '' ?>:</td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200 text-end" data-label="">N$<?= number_format($itemsTotal + ($tabGratuityEnabled ? $tabGratuityAmount : 0), 2) ?></td>
-                                        <?php if ($viewTab['status'] === 'open'): ?>
+                                        <?php if ($tabShowItemActions): ?>
                                         <td class="px-6 py-4" data-label=""></td>
                                         <?php endif; ?>
                                     </tr>
@@ -2152,10 +1885,7 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
         </div>
     </div>
 
-    <form id="deleteTabItemForm" method="POST" class="hidden" aria-hidden="true">
-        <input type="hidden" name="delete_item_id" value="">
-        <input type="hidden" name="tab_id" value="">
-    </form>
+    <?= tab_delete_item_form_html() ?>
 
     <!-- Edit Tab Name Modal -->
     <div id="editTabNameModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden" style="z-index: 10001;">
@@ -2270,75 +2000,6 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             }
             document.getElementById('editTabNameModal').classList.add('hidden');
             document.getElementById('editTabNameForm').reset();
-        }
-
-        function openDeleteTabItemModal(btn) {
-            const itemId = btn.getAttribute('data-delete-item-id');
-            const tabId = btn.getAttribute('data-tab-id');
-            const lineKind = btn.getAttribute('data-line-kind') || 'product';
-            const productName = btn.getAttribute('data-product-name') || '';
-
-            const kindMeta = {
-                prepay: {
-                    title: 'Remove prepayment credit?',
-                    hint: 'This removes the credit line from the tab. Inventory is not changed.'
-                },
-                postpaid: {
-                    title: 'Remove postpaid charge?',
-                    hint: 'This removes the charge line from the tab. Inventory is not changed.'
-                },
-                product: {
-                    title: 'Remove product from tab?',
-                    hint: 'This line will be removed. If it came from inventory, stock will be restored.'
-                }
-            };
-            const meta = kindMeta[lineKind] || kindMeta.product;
-
-            Swal.fire({
-                title: meta.title,
-                icon: 'warning',
-                iconColor: '#d97706',
-                showCancelButton: true,
-                focusCancel: true,
-                confirmButtonText: 'Remove',
-                cancelButtonText: 'Cancel',
-                buttonsStyling: false,
-                reverseButtons: true,
-                customClass: {
-                    popup: 'rounded-2xl shadow-2xl border border-gray-200/90 px-5 py-4 max-w-md !bg-white',
-                    title: 'text-xl font-semibold text-gray-900 tracking-tight pb-0',
-                    htmlContainer: 'text-left !mt-3',
-                    actions: 'flex flex-row-reverse flex-wrap gap-2 justify-end w-full mt-6 !mb-0 pt-2 border-t border-gray-100',
-                    confirmButton: 'inline-flex items-center justify-center rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-5 py-2.5 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1',
-                    cancelButton: 'inline-flex items-center justify-center rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-semibold px-5 py-2.5 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-300 focus:ring-offset-1'
-                },
-                html: '<p class="text-gray-600 text-sm leading-relaxed">' + meta.hint + '</p>' +
-                    '<p class="text-xs font-medium text-gray-500 uppercase tracking-wide mt-4 mb-1">Line</p>' +
-                    '<p id="swal-delete-tab-item-name" class="text-sm font-semibold text-gray-900 px-3 py-2.5 rounded-xl bg-gray-50 border border-gray-100/80"></p>',
-                didOpen: () => {
-                    const el = document.getElementById('swal-delete-tab-item-name');
-                    if (el) {
-                        el.textContent = productName;
-                    }
-                }
-            }).then((result) => {
-                if (!result.isConfirmed) {
-                    return;
-                }
-                const form = document.getElementById('deleteTabItemForm');
-                if (!form) {
-                    return;
-                }
-                const delInput = form.querySelector('[name="delete_item_id"]');
-                const tabInput = form.querySelector('[name="tab_id"]');
-                if (delInput) {
-                    delInput.value = itemId;
-                }
-                if (tabInput) {
-                    tabInput.value = tabId;
-                }
-                form.submit();
-            });
         }
 
         // Edit Item Modal functions
@@ -2557,10 +2218,17 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             if (!orderData) return false;
             const method = String(orderData.payment_method || '').toLowerCase();
             const cashBack = parseFloat(orderData.cash_back_amount) || 0;
+            const total = parseFloat(orderData.total) || 0;
             if (cashBack > 0.001) return true;
             if (method === 'cash') return true;
+            if (method === 'eft') {
+                const eft = parseFloat(orderData.eft_amount) || 0;
+                return eft > total + 0.001;
+            }
             if (method === 'mixed') {
                 const cashAmt = parseFloat(orderData.cash_amount) || parseFloat(orderData.cash_received) || 0;
+                const eft = parseFloat(orderData.eft_amount) || 0;
+                if (cashAmt + eft > total + 0.001) return true;
                 return cashAmt > 0.001;
             }
             return false;
@@ -3665,53 +3333,6 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             });
         }
         
-        // Void Tab function
-        function openVoidTabModal(tabId, tabName) {
-            Swal.fire({
-                icon: 'warning',
-                title: 'Void Tab',
-                html: `
-                    <div class="text-left">
-                        <p class="text-sm text-gray-700 mb-3">Are you sure you want to void this tab?</p>
-                        <p class="text-sm font-semibold text-gray-900 mb-2">Tab: <span class="text-gray-700">${tabName}</span></p>
-                        <div class="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                            <p class="text-xs text-red-800 font-semibold mb-1">⚠️ This action cannot be undone!</p>
-                            <ul class="text-xs text-red-700 space-y-1 list-disc list-inside">
-                                <li>All items will be restored to stock</li>
-                                <li>All payments and orders will be deleted</li>
-                                <li>The tab will be permanently deleted</li>
-                            </ul>
-                        </div>
-                    </div>
-                `,
-                showCancelButton: true,
-                confirmButtonText: 'Yes, Void Tab',
-                cancelButtonText: 'Cancel',
-                confirmButtonColor: '#DC2626',
-                cancelButtonColor: '#6B7280',
-                focusConfirm: false,
-                customClass: {
-                    popup: 'rounded-xl shadow-lg'
-                }
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    // Create and submit form
-                    const form = document.createElement('form');
-                    form.method = 'POST';
-                    form.action = 'view-tab.php';
-                    
-                    const tabIdInput = document.createElement('input');
-                    tabIdInput.type = 'hidden';
-                    tabIdInput.name = 'void_tab_id';
-                    tabIdInput.value = tabId;
-                    form.appendChild(tabIdInput);
-                    
-                    document.body.appendChild(form);
-                    form.submit();
-                }
-            });
-        }
-        
         // Mobile sidebar functions
         function toggleSidebar() {
             const sidebar = document.getElementById('sidebar');
@@ -3733,6 +3354,8 @@ if (isset($_GET['payment_success']) && isset($_GET['order_id'])) {
             if (hamburger) hamburger.classList.remove('open');
         }
     </script>
+    <?= tab_void_entire_tab_modal_scripts_html() ?>
+    <?= tab_delete_item_modal_scripts_html() ?>
     <?= tab_prepay_postpaid_modal_scripts_html() ?>
 </body>
 </html>

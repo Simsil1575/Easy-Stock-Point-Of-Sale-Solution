@@ -254,20 +254,13 @@ function laybyePermanentlyDeleteAccount(PDO $db, int $laybyeId, string $cashierU
         $itemsStmt->execute([$laybyeId]);
         $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
         $currentDate = date('Y-m-d');
-        $stmtGetProductInfo = $db->prepare('SELECT category FROM products WHERE name = ?');
         $resolveProductStmt = $db->prepare('SELECT id FROM products WHERE name = ? LIMIT 1');
 
         foreach ($items as $item) {
             $name = $item['product_name'];
             $qty = (int) $item['quantity'];
-            $stmtGetProductInfo->execute([$name]);
-            $info = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
-            $cat = $info ? ($info['category'] ?? '') : '';
-            $isFood = strtolower(trim($cat)) === 'food';
             restoreRecipeStockByProductName($db, $name, floatval($qty));
-            if (!$isFood) {
-                $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?')->execute([$qty, $name]);
-            }
+            $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?')->execute([$qty, $name]);
             $resolveProductStmt->execute([$name]);
             if ($resolveProductStmt->fetchColumn()) {
                 $db->prepare("

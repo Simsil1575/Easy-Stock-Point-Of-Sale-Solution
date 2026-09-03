@@ -559,10 +559,12 @@
             currentPage.startsWith('create_creditor') ||
             currentPage.startsWith('quotation') || currentPage.startsWith('quotations') ||
             currentPage.startsWith('invoice') || currentPage.startsWith('invoices') ||
+            currentPage.startsWith('medical_aid') ||
             currentPage.startsWith('document_settings') ||
             currentPage === 'categories' || currentPage.startsWith('categories') ||
             currentPage === 'purchase_orders.php' || currentPage.startsWith('purchase_orders') ||
-            currentPage === 'receiving_records.php' || currentPage.startsWith('receiving_records')
+            currentPage === 'receiving_records.php' || currentPage.startsWith('receiving_records') ||
+            currentPage === 'stock_take_records.php' || currentPage.startsWith('stock_take_records')
         );
         
         // Remove active class from all links
@@ -584,6 +586,9 @@
                 (href === 'inventory' && 
                     (currentPage === 'inventory' || 
                      currentPage === 'add_product' || 
+                     currentPage === 'barcode_labels' ||
+                     currentPage === 'barcode_labels.php' ||
+                     currentPage.startsWith('barcode_labels') ||
                      currentPage === 'bulk_edit_images' ||
                      currentPage === 'bulk_edit_images.php' ||
                      currentPage === 'receiving' ||

@@ -35,16 +35,21 @@ try {
     $businessInfo = [];
 }
 
-// Database connection
+require_once __DIR__ . '/../business_day_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
+
 $db = new PDO('sqlite:../pos.db');
 if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 
-// Prepare weekly data (same as in weekly_sales.php)
-$closingTime = $businessInfo['closing_time'] ?? '00:00';
-$closingHour = (int)substr($closingTime, 0, 2);
-$isAfterMidnight = $closingHour < 12;
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':date', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':date', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePayment = bdSingleDayWhereSql('p.payment_date', ':date', ':nextDay', $closingTime, $isAfterMidnight);
+
 $weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 $weeklyData = [];
 for ($i = 0; $i < 7; $i++) {
@@ -57,18 +62,10 @@ for ($i = 0; $i < 7; $i++) {
 
     // Cash sales for this day
     $cashSalesQuery = $db->prepare("
-        SELECT SUM(total) FROM (
-            SELECT o.total, 
-            CASE 
-                WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(o.created_at, '-1 day'))
-                ELSE date(o.created_at)
-            END AS business_date
-            FROM orders o
-            LEFT JOIN eft_payments e ON o.id = e.order_id
-            WHERE e.order_id IS NULL
-        ) 
-        WHERE business_date = :date
+        SELECT COALESCE(SUM(o.total), 0)
+        FROM orders o
+        LEFT JOIN eft_payments e ON o.id = e.order_id
+        WHERE e.order_id IS NULL AND ($bdWhereOCreated)
     ");
     $cashSalesQuery->bindParam(':date', $dateStr);
     $cashSalesQuery->execute();
@@ -79,10 +76,7 @@ for ($i = 0; $i < 7; $i++) {
         SELECT SUM(e.amount) 
         FROM eft_payments e 
         JOIN orders o ON e.order_id = o.id 
-        WHERE (
-            (DATE(o.created_at) = :date AND strftime('%H:%M', o.created_at) >= '$closingTime') OR
-            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWhereOCreated)
     ");
     $eftSalesQuery->bindParam(':date', $dateStr);
     $eftSalesQuery->bindParam(':nextDay', $nextDayStr);
@@ -93,10 +87,7 @@ for ($i = 0; $i < 7; $i++) {
     $creditIssuedQuery = $db->prepare("
         SELECT SUM(total_amount) 
         FROM credit_sales 
-        WHERE (
-            (DATE(created_at) = :date AND strftime('%H:%M', created_at) >= '$closingTime') OR
-            (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        ) AND payment_status IN ('unpaid', 'partial')
+        WHERE ($bdWhereCreated) AND payment_status IN ('unpaid', 'partial')
     ");
     $creditIssuedQuery->bindParam(':date', $dateStr);
     $creditIssuedQuery->bindParam(':nextDay', $nextDayStr);
@@ -108,10 +99,7 @@ for ($i = 0; $i < 7; $i++) {
         SELECT SUM(p.amount) 
         FROM payments p
         JOIN credit_sales cs ON p.sale_id = cs.id
-        WHERE (
-            (DATE(p.payment_date) = :date AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-            (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWherePayment)
     ");
     $creditPaymentsQuery->bindParam(':date', $dateStr);
     $creditPaymentsQuery->bindParam(':nextDay', $nextDayStr);
@@ -123,10 +111,7 @@ for ($i = 0; $i < 7; $i++) {
         SELECT SUM(p.amount) 
         FROM payments p
         JOIN credit_sales cs ON p.sale_id = cs.id
-        WHERE cs.payment_status = 'eft' AND (
-            (DATE(p.payment_date) = :date AND strftime('%H:%M', p.payment_date) >= '$closingTime') OR
-            (DATE(p.payment_date) = :nextDay AND strftime('%H:%M', p.payment_date) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE cs.payment_status = 'eft' AND ($bdWherePayment)
     ");
     $eftCreditPaymentsQuery->bindParam(':date', $dateStr);
     $eftCreditPaymentsQuery->bindParam(':nextDay', $nextDayStr);
@@ -135,17 +120,9 @@ for ($i = 0; $i < 7; $i++) {
 
     // Cash out for this day
     $cashOutQuery = $db->prepare("
-        SELECT SUM(amount) FROM (
-            SELECT amount,
-            CASE 
-                WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                THEN date(datetime(created_at, '-1 day'))
-                ELSE date(created_at)
-            END AS business_date
-            FROM cash_transactions
-            WHERE type = 'cash-out'
-        )
-        WHERE business_date = :date
+        SELECT COALESCE(SUM(amount), 0)
+        FROM cash_transactions
+        WHERE type = 'cash-out' AND ($bdWhereCreated)
     ");
     $cashOutQuery->bindParam(':date', $dateStr);
     $cashOutQuery->execute();

@@ -210,7 +210,7 @@ try {
         $itemTotal = $item['total_value'] ?? ($addedQty * $unitPrice);
         
         $pdf->Cell(80, 8, substr($productName, 0, 40), 1);
-        $pdf->Cell(35, 8, '+' . $addedQty, 1);
+        $pdf->Cell(35, 8, ($addedQty > 0 ? '+' : '') . $addedQty, 1);
         $pdf->Cell(35, 8, 'N$' . number_format($unitPrice, 2), 1);
         $pdf->Cell(35, 8, 'N$' . number_format($itemTotal, 2), 1);
         $pdf->Ln();

@@ -54,11 +54,10 @@ try {
     exit;
 }
 
-// Get all cashiers and waitresses for cash modal dropdown
+// All users for cash up modal dropdown
 $allCashUpEmployees = [];
 try {
-    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress', 'hubbly') ORDER BY username");
-    $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
+    $allCashUpEmployees = $userDb->query("SELECT id, username, role FROM users ORDER BY username")->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     // If query fails, leave empty
 }
@@ -70,20 +69,20 @@ if ($activationStatus == 0) {
     exit();
 }
 
-// Get business closing time from business_info with caching
+require_once __DIR__ . '/../business_day_helper.php';
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
+
 $businessInfo = [];
-$closingTime = '22:00';
 try {
-    $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '22:00';
+    $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
 } catch (PDOException $e) {
-    $closingTime = '22:00';
+    $businessInfo = [];
 }
 
-require_once __DIR__ . '/../business_day_helper.php';
-
-// Calculate business day boundaries (cached calculation)
-$isAfterMidnight = bdIsOvernightClosing($closingTime);
+// Match admin/cash.php business-day boundaries
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Match admin/cash.php business date resolution
 function getCurrentBusinessDate($closingTime, $isAfterMidnight) {
@@ -91,6 +90,10 @@ function getCurrentBusinessDate($closingTime, $isAfterMidnight) {
 }
 
 $currentBusinessDate = getCurrentBusinessDate($closingTime, $isAfterMidnight);
+$nextBusinessDay = date('Y-m-d', strtotime($currentBusinessDate . ' +1 day'));
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePPayment = bdSingleDayWhereSql('p.payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Optimized business day WHERE clause with caching
 class BusinessDayCache {
@@ -132,11 +135,11 @@ function getTotalCashIn($db, $startDate, $endDate, $closingTime, $isAfterMidnigh
 function getTotalCashOut($db, $startDate, $endDate, $closingTime, $isAfterMidnight) {
     try {
         $whereClause = BusinessDayCache::getWhereClause('created_at', $startDate, $endDate, $closingTime, $isAfterMidnight);
-        $stmt = $db->prepare("
-            SELECT COALESCE(SUM(amount), 0) 
+        $stmt = $db->prepare('
+            SELECT ' . cashWithdrawalsSumSql() . '
             FROM cash_transactions 
-            WHERE type = 'cash-out' AND ($whereClause)
-        ");
+            WHERE (' . $whereClause . ')
+        ');
         $stmt->execute();
         return $stmt->fetchColumn();
     } catch (PDOException $e) {
@@ -505,7 +508,8 @@ $outOfStock = [];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Dashboard</title>
-    <script src="../navigation.js" async></script>
+    <script src="../session_guard.js"></script>
+    <script src="../navigation.js"></script>
     <link href="../src/output.css" rel="stylesheet">
     <script src="../src/chart.js"></script>
     <!-- Load sendToPrinter function from receipt.php -->
@@ -793,23 +797,16 @@ $outOfStock = [];
                         <div>
                             <p class="text-sm font-medium text-gray-600">Cash In Till</p>
                             <h3 class="text-2xl font-bold <?php 
-                                // Use current business date (matches admin/cash.php)
+                                // Use current business date filters (matches admin/cash.php)
                                 $businessDate = $currentBusinessDate;
-                                $nextBusinessDay = date('Y-m-d', strtotime($businessDate . ' +1 day'));
                                 
                                 // 1. Business day cash in (deposits)
                                 $cashInQuery = $db->prepare("
                                     SELECT COALESCE(SUM(amount), 0) 
                                     FROM cash_transactions 
-                                    WHERE type='cash-in' AND (
-                                        (DATE(created_at) = :businessDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                                        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE type='cash-in' AND ($bdWhereCreated)
                                 ");
-                                $cashInQuery->bindParam(':businessDate', $businessDate);
-                                $cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $cashInQuery->bindParam(':closingTime', $closingTime);
-                                $cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($cashInQuery, $businessDate, $nextBusinessDay);
                                 $cashInQuery->execute();
                                 $totalCashIn = $cashInQuery->fetchColumn();
                                 
@@ -828,31 +825,17 @@ $outOfStock = [];
                                             o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
                                         ), 0)
                                         FROM orders o
-                                        WHERE (
-                                            (DATE(o.created_at) = :businessDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                                            (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-                                        )
+                                        WHERE ($bdWhereOCreated)
                                     ");
-                                    $cashSalesQuery->bindParam(':businessDate', $businessDate);
-                                    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                    $cashSalesQuery->bindParam(':closingTime', $closingTime);
-                                    $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-                                    $cashSalesQuery->execute();
                                 } else {
                                     $cashSalesQuery = $db->prepare("
                                         SELECT COALESCE(SUM(total), 0) 
                                         FROM orders 
-                                        WHERE (
-                                            (DATE(created_at) = :businessDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                                            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                                        )
+                                        WHERE ($bdWhereCreated)
                                     ");
-                                    $cashSalesQuery->bindParam(':businessDate', $businessDate);
-                                    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                    $cashSalesQuery->bindParam(':closingTime', $closingTime);
-                                    $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
-                                    $cashSalesQuery->execute();
                                 }
+                                bdBindSingleDayParams($cashSalesQuery, $businessDate, $nextBusinessDay);
+                                $cashSalesQuery->execute();
                                 $totalCashSales = $cashSalesQuery->fetchColumn();
                                 
                                 // 3. Today's cash received from credit sales payments
@@ -860,15 +843,9 @@ $outOfStock = [];
                                     SELECT COALESCE(SUM(p.amount), 0) 
                                     FROM payments p
                                     JOIN credit_sales cs ON p.sale_id = cs.id
-                                    WHERE cs.payment_status = 'paid' AND (
-                                        (DATE(p.payment_date) = :businessDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-                                        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE cs.payment_status = 'paid' AND ($bdWherePPayment)
                                 ");
-                                $creditPaymentsQuery->bindParam(':businessDate', $businessDate);
-                                $creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-                                $creditPaymentsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($creditPaymentsQuery, $businessDate, $nextBusinessDay);
                                 $creditPaymentsQuery->execute();
                                 $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
                                 
@@ -877,15 +854,9 @@ $outOfStock = [];
                                     SELECT COALESCE(SUM(e.amount), 0)
                                     FROM eft_payments e
                                     JOIN orders o ON e.order_id = o.id
-                                    WHERE (
-                                        (DATE(o.created_at) = :businessDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                                        (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE ($bdWhereOCreated)
                                 ");
-                                $eftDirectQuery->bindParam(':businessDate', $businessDate);
-                                $eftDirectQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $eftDirectQuery->bindParam(':closingTime', $closingTime);
-                                $eftDirectQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($eftDirectQuery, $businessDate, $nextBusinessDay);
                                 $eftDirectQuery->execute();
                                 $eftDirectTotal = $eftDirectQuery->fetchColumn();
 
@@ -894,40 +865,28 @@ $outOfStock = [];
                                     SELECT COALESCE(SUM(p.amount), 0)
                                     FROM payments p
                                     JOIN credit_sales cs ON p.sale_id = cs.id
-                                    WHERE cs.payment_status = 'eft' AND (
-                                        (DATE(p.payment_date) = :businessDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-                                        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-                                    )
+                                    WHERE cs.payment_status = 'eft' AND ($bdWherePPayment)
                                 ");
-                                $eftCreditQuery->bindParam(':businessDate', $businessDate);
-                                $eftCreditQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $eftCreditQuery->bindParam(':closingTime', $closingTime);
-                                $eftCreditQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                                bdBindSingleDayParams($eftCreditQuery, $businessDate, $nextBusinessDay);
                                 $eftCreditQuery->execute();
                                 $eftCreditTotal = $eftCreditQuery->fetchColumn();
 
-                                // 4. Today's cash out (withdrawals)
-                                $cashOutQuery = $db->prepare("
-                                    SELECT COALESCE(SUM(amount), 0) 
+                                // 4. Today's withdrawals (cash-out, refunds, expenses)
+                                $cashOutQuery = $db->prepare('
+                                    SELECT ' . cashWithdrawalsSumSql() . '
                                     FROM cash_transactions 
-                                    WHERE type='cash-out' AND (
-                                        (DATE(created_at) = :businessDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                                        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                                    )
-                                ");
-                                $cashOutQuery->bindParam(':businessDate', $businessDate);
-                                $cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                                $cashOutQuery->bindParam(':closingTime', $closingTime);
-                                $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                                    WHERE (' . $bdWhereCreated . ')
+                                ');
+                                bdBindSingleDayParams($cashOutQuery, $businessDate, $nextBusinessDay);
                                 $cashOutQuery->execute();
                                 $totalCashOut = $cashOutQuery->fetchColumn();
                                 
                                 // Total EFT payments (direct + credit EFT)
                                 $totalEftPayments = ($eftDirectTotal ?: 0) + ($eftCreditTotal ?: 0);
 
-                                // Calculate cash in till for today's business day using businessClosingTime (matching cash.php)
-                                // All components use business day WHERE clauses with closingTime and isAfterMidnight
+                                // Calculate cash in till for today's business day (matching cash.php)
                                 $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
+                                $netRevenue = $totalCashIn + $totalCashSales + $totalCreditPayments - $totalCashOut;
                                 echo $cashInTill >= 0 ? 'text-blue-600' : 'text-red-600'; 
                             ?>">
                                 N$<?php
@@ -3134,7 +3093,8 @@ if (!$businessInfo) {
                         start_time: startTime,
                         end_date: endDate,
                         end_time: endTime,
-                        cashier_id: cashierId
+                        cashier_id: cashierId,
+                        include_expected_amounts: true
                     })
                 });
                 cashUpSystemData = await response.json();
@@ -3151,11 +3111,13 @@ if (!$businessInfo) {
                 document.getElementById('cashup_hubbly').value = (cashUpSystemData.cash_back_hubbly ?? 0).toFixed(2);
                 document.getElementById('cashup_beerhouse').value = (cashUpSystemData.cash_back_beerhouse ?? 0).toFixed(2);
                 updateCashUpStep2Summary();
-                document.getElementById('step4_expected').textContent = '—';
+                const expCash = parseFloat(cashUpSystemData.cash_sales_expected) || 0;
+                const expEft = parseFloat(cashUpSystemData.card_sales_expected) || 0;
+                document.getElementById('step4_expected').textContent = 'N$ ' + expCash.toFixed(2);
                 document.getElementById('cashup_cash_on_hand').value = '';
                 document.getElementById('step4_over_short').textContent = '—';
                 document.getElementById('step4_over_short').className = 'text-2xl font-bold text-gray-500';
-                document.getElementById('step5_eft_expected').textContent = '—';
+                document.getElementById('step5_eft_expected').textContent = 'N$ ' + expEft.toFixed(2);
                 document.getElementById('step5_eft_over_short').textContent = '—';
                 document.getElementById('step5_eft_over_short').className = 'text-2xl font-bold text-gray-500';
                 const dateRangeText = startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime;
@@ -3209,19 +3171,22 @@ if (!$businessInfo) {
         const unpaidCredit = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
         const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
         const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
-        const hiddenExpectedLabel = '—';
+        const expCashReview = parseFloat(cashUpSystemData.cash_sales_expected) || 0;
+        const expEftReview = parseFloat(cashUpSystemData.card_sales_expected) || 0;
+        const cashVar = cashOnHand - expCashReview;
+        const eftVar = eftOnHand - expEftReview;
         const startDate = document.getElementById('cashup_start_date').value;
         const endDate = document.getElementById('cashup_end_date').value;
         document.getElementById('review_date').textContent = startDate + ' — ' + endDate;
         document.getElementById('review_cashier').textContent = document.getElementById('cashup_cashier').selectedOptions[0].text;
-        document.getElementById('review_cash_expected').textContent = hiddenExpectedLabel;
+        document.getElementById('review_cash_expected').textContent = 'N$ ' + expCashReview.toFixed(2);
         document.getElementById('review_cash_on_hand').textContent = 'N$ ' + cashOnHand.toFixed(2);
-        document.getElementById('review_over_short').textContent = hiddenExpectedLabel;
-        document.getElementById('review_over_short').className = 'font-semibold text-gray-500';
-        document.getElementById('review_eft_expected').textContent = hiddenExpectedLabel;
+        document.getElementById('review_over_short').textContent = 'N$ ' + cashVar.toFixed(2);
+        document.getElementById('review_over_short').className = 'font-semibold ' + (cashVar > 0 ? 'text-green-600' : (cashVar < 0 ? 'text-red-600' : 'text-gray-700'));
+        document.getElementById('review_eft_expected').textContent = 'N$ ' + expEftReview.toFixed(2);
         document.getElementById('review_eft_on_hand').textContent = 'N$ ' + eftOnHand.toFixed(2);
-        document.getElementById('review_eft_over_short').textContent = hiddenExpectedLabel;
-        document.getElementById('review_eft_over_short').className = 'font-semibold text-gray-500';
+        document.getElementById('review_eft_over_short').textContent = 'N$ ' + eftVar.toFixed(2);
+        document.getElementById('review_eft_over_short').className = 'font-semibold ' + (eftVar > 0 ? 'text-green-600' : (eftVar < 0 ? 'text-red-600' : 'text-gray-700'));
         document.getElementById('review_unpaid_credit').textContent = 'N$ ' + unpaidCredit.toFixed(2);
         document.getElementById('review_credit_returns').textContent = 'N$ ' + creditReturns.toFixed(2);
         document.getElementById('review_open_tabs').textContent = 'N$ ' + (cashUpSystemData.open_tabs_balance || 0).toFixed(2);
@@ -3415,29 +3380,52 @@ if (!$businessInfo) {
         }, 3000);
     }
     
+    function formatCashUpVarianceEl(display, variance, zeroClass) {
+        if (!display) return;
+        zeroClass = zeroClass || 'text-teal-700';
+        display.textContent = 'N$ ' + variance.toFixed(2);
+        display.className = 'text-2xl font-bold ' + (variance > 0 ? 'text-green-600' : (variance < 0 ? 'text-red-600' : zeroClass));
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         const cashOnHandInput = document.getElementById('cashup_cash_on_hand');
         if (cashOnHandInput) {
             cashOnHandInput.addEventListener('input', function() {
-                if (cashUpSystemData) {
-                    const display = document.getElementById('step4_over_short');
-                    if (display) {
-                        display.textContent = '—';
-                        display.className = 'text-2xl font-bold text-gray-500';
-                    }
+                const display = document.getElementById('step4_over_short');
+                if (!cashUpSystemData || !display) return;
+                const exp = parseFloat(cashUpSystemData.cash_sales_expected);
+                if (Number.isNaN(exp)) {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
                 }
+                const raw = cashOnHandInput.value.trim();
+                if (raw === '') {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
+                }
+                formatCashUpVarianceEl(display, (parseFloat(raw) || 0) - exp, 'text-teal-700');
             });
         }
         const eftOnHandInput = document.getElementById('cashup_eft_on_hand');
         if (eftOnHandInput) {
             eftOnHandInput.addEventListener('input', function() {
-                if (cashUpSystemData) {
-                    const display = document.getElementById('step5_eft_over_short');
-                    if (display) {
-                        display.textContent = '—';
-                        display.className = 'text-2xl font-bold text-gray-500';
-                    }
+                const display = document.getElementById('step5_eft_over_short');
+                if (!cashUpSystemData || !display) return;
+                const exp = parseFloat(cashUpSystemData.card_sales_expected);
+                if (Number.isNaN(exp)) {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
                 }
+                const raw = eftOnHandInput.value.trim();
+                if (raw === '') {
+                    display.textContent = '—';
+                    display.className = 'text-2xl font-bold text-gray-500';
+                    return;
+                }
+                formatCashUpVarianceEl(display, (parseFloat(raw) || 0) - exp, 'text-blue-700');
             });
         }
     });
@@ -3516,7 +3504,7 @@ if (!$businessInfo) {
                                 </div>
                             </div>
                             <div>
-                                <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Cashier / Waitress (Optional)</label>
+                                <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Staff Member (Optional)</label>
                                 <select id="cashup_cashier" class="w-full px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100">
                                     <option value="all">All Staff</option>
                                     <?php foreach ($allCashUpEmployees as $employee): ?>

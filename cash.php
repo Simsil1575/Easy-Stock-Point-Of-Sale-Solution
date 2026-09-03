@@ -36,22 +36,22 @@ if ($activationStatus == 0) {
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-$closingTime = '22:00'; // Default to 10:00 PM
-try {
-    $businessInfo = $pdoInfo->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    if ($businessInfo && isset($businessInfo['closing_time'])) {
-        $closingTime = $businessInfo['closing_time'];
-    }
-} catch (PDOException $e) {
-    // Use default closing time
-}
+require_once __DIR__ . '/business_day_helper.php';
+require_once __DIR__ . '/cash_transactions_totals_helper.php';
 
-// Parse closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
+
+$bdCaseCreated = bdBusinessDateCaseSql('created_at', $closingTime, $isAfterMidnight);
+$bdCasePayment = bdBusinessDateCaseSql('payment_date', $closingTime, $isAfterMidnight);
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWherePayment = bdSingleDayWhereSql('p.payment_date', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCashTxDate = 'DATE(created_at) = :selectedDate';
+
+// Pre-calculate default date for POST handler (needed before selected date is determined)
+$defaultDate = bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 
 // Create cash_transactions table if it doesn't exist
 try {
@@ -65,25 +65,6 @@ try {
 } catch (PDOException $e) {
     die("Error creating table: " . $e->getMessage());
 }
-
-// Helper function to get business date for a given datetime
-function getBusinessDate($datetime, $closingTime, $isAfterMidnight) {
-    $time = date('H:i', strtotime($datetime));
-    $date = date('Y-m-d', strtotime($datetime));
-    
-    // If time is before closing time and closing time is after midnight, it belongs to previous day
-    if ($isAfterMidnight && $time >= '00:00' && $time < $closingTime) {
-        return date('Y-m-d', strtotime($date . ' -1 day'));
-    }
-    
-    return $date;
-}
-
-// Pre-calculate default date for POST handler (needed before selected date is determined)
-$today = date('Y-m-d');
-$yesterday = date('Y-m-d', strtotime('-1 day'));
-$currentTime = date('H:i');
-$defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
 
 // Handle POST requests for cash in/out (cashiers cannot delete transactions)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -103,15 +84,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cashInQuery = $db->prepare("
                     SELECT COALESCE(SUM(amount), 0) 
                     FROM cash_transactions 
-                    WHERE type='cash-in' AND (
-                        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                    )
+                    WHERE type='cash-in' AND ($bdWhereCreated)
                 ");
-                $cashInQuery->bindParam(':selectedDate', $postSelectedDate);
-                $cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                $cashInQuery->bindParam(':closingTime', $closingTime);
-                $cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                $cashInQuery->bindValue(':selectedDate', $postSelectedDate);
+                $cashInQuery->bindValue(':nextDay', $nextBusinessDay);
                 $cashInQuery->execute();
                 $totalCashIn = $cashInQuery->fetchColumn();
                 
@@ -130,29 +106,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
                         ), 0)
                         FROM orders o
-                        WHERE (
-                            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                            (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-                        )
+                        WHERE ($bdWhereOCreated)
                     ");
-                    $cashSalesQuery->bindParam(':selectedDate', $postSelectedDate);
-                    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                    $cashSalesQuery->bindParam(':closingTime', $closingTime);
-                    $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                    $cashSalesQuery->bindValue(':selectedDate', $postSelectedDate);
+                    $cashSalesQuery->bindValue(':nextDay', $nextBusinessDay);
                     $cashSalesQuery->execute();
                 } else {
                     $cashSalesQuery = $db->prepare("
                         SELECT COALESCE(SUM(total), 0) 
                         FROM orders 
-                        WHERE (
-                            (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                        )
+                        WHERE ($bdWhereCreated)
                     ");
-                    $cashSalesQuery->bindParam(':selectedDate', $postSelectedDate);
-                    $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                    $cashSalesQuery->bindParam(':closingTime', $closingTime);
-                    $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                    $cashSalesQuery->bindValue(':selectedDate', $postSelectedDate);
+                    $cashSalesQuery->bindValue(':nextDay', $nextBusinessDay);
                     $cashSalesQuery->execute();
                 }
                 $totalCashSales = $cashSalesQuery->fetchColumn();
@@ -162,31 +128,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     SELECT COALESCE(SUM(p.amount), 0) 
                     FROM payments p
                     JOIN credit_sales cs ON p.sale_id = cs.id
-                    WHERE cs.payment_status = 'paid' AND (
-                        (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-                        (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-                    )
+                    WHERE cs.payment_status = 'paid' AND ($bdWherePayment)
                 ");
-                $creditPaymentsQuery->bindParam(':selectedDate', $postSelectedDate);
-                $creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                $creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-                $creditPaymentsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                $creditPaymentsQuery->bindValue(':selectedDate', $postSelectedDate);
+                $creditPaymentsQuery->bindValue(':nextDay', $nextBusinessDay);
                 $creditPaymentsQuery->execute();
                 $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
                 
-                // 4. Selected date's cash out (withdrawals)
-                $cashOutQuery = $db->prepare("
-                    SELECT COALESCE(SUM(amount), 0) 
+                // 4. Selected date's cash out (manual withdrawals and refunds)
+                $cashOutQuery = $db->prepare('
+                    SELECT ' . cashWithdrawalsSumSql() . '
                     FROM cash_transactions 
-                    WHERE type='cash-out' AND (
-                        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                        (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-                    )
-                ");
-                $cashOutQuery->bindParam(':selectedDate', $postSelectedDate);
-                $cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-                $cashOutQuery->bindParam(':closingTime', $closingTime);
-                $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+                    WHERE (' . $bdWhereCreated . ')
+                ');
+                $cashOutQuery->bindValue(':selectedDate', $postSelectedDate);
+                $cashOutQuery->bindValue(':nextDay', $nextBusinessDay);
                 $cashOutQuery->execute();
                 $totalCashOut = $cashOutQuery->fetchColumn();
 
@@ -244,6 +200,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Fetch distinct dates where transactions occurred
+$today = date('Y-m-d');
+$yesterday = date('Y-m-d', strtotime('-1 day'));
 try {
     $distinctDatesQuery = $db->query("
         SELECT DISTINCT date(created_at) as business_date
@@ -282,6 +240,7 @@ try {
     $selectedDateTransactionsQuery = $db->prepare("
         SELECT * FROM cash_transactions 
         WHERE date(created_at) = :selectedDate
+          AND " . cashManagementTypesSql() . "
         ORDER BY created_at DESC
     ");
     $selectedDateTransactionsQuery->execute([':selectedDate' => $selectedDate]);
@@ -301,11 +260,11 @@ try {
     $selectedDateCashInQuery->execute([':selectedDate' => $selectedDate]);
     $selectedDateCashIn = $selectedDateCashInQuery->fetchColumn();
     
-    $selectedDateCashOutQuery = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) 
+    $selectedDateCashOutQuery = $db->prepare('
+        SELECT ' . cashWithdrawalsSumSql() . '
         FROM cash_transactions 
-        WHERE type = 'cash-out' AND date(created_at) = :selectedDate
-    ");
+        WHERE date(created_at) = :selectedDate
+    ');
     $selectedDateCashOutQuery->execute([':selectedDate' => $selectedDate]);
     $selectedDateCashOut = $selectedDateCashOutQuery->fetchColumn();
     
@@ -321,21 +280,15 @@ try {
 
 // Calculate cash in till using selected date's business day logic (matching admin/cash.php)
 try {
-    $nextBusinessDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+    $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
     
     // 1. Selected date's cash in transactions
     $cashInQuery = $db->prepare("
         SELECT COALESCE(SUM(amount), 0) 
         FROM cash_transactions 
-        WHERE type='cash-in' AND (
-            (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-        )
+        WHERE type='cash-in' AND ($bdWhereCreated)
     ");
-    $cashInQuery->bindParam(':selectedDate', $selectedDate);
-    $cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-    $cashInQuery->bindParam(':closingTime', $closingTime);
-    $cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+    bdBindSingleDayParams($cashInQuery, $selectedDate, $nextDay);
     $cashInQuery->execute();
     $totalCashIn = $cashInQuery->fetchColumn();
     
@@ -354,29 +307,17 @@ try {
                 o.total - COALESCE((SELECT SUM(amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)
             ), 0)
             FROM orders o
-            WHERE (
-                (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-                (DATE(o.created_at) = :nextBusinessDay AND strftime('%H:%M', o.created_at) < :closingTime AND :isAfterMidnight = 1)
-            )
+            WHERE ($bdWhereOCreated)
         ");
-        $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
-        $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-        $cashSalesQuery->bindParam(':closingTime', $closingTime);
-        $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+        bdBindSingleDayParams($cashSalesQuery, $selectedDate, $nextDay);
         $cashSalesQuery->execute();
     } else {
         $cashSalesQuery = $db->prepare("
             SELECT COALESCE(SUM(total), 0) 
             FROM orders 
-            WHERE (
-                (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-                (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-            )
+            WHERE ($bdWhereCreated)
         ");
-        $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
-        $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-        $cashSalesQuery->bindParam(':closingTime', $closingTime);
-        $cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+        bdBindSingleDayParams($cashSalesQuery, $selectedDate, $nextDay);
         $cashSalesQuery->execute();
     }
     $totalCashSales = $cashSalesQuery->fetchColumn();
@@ -386,35 +327,23 @@ try {
         SELECT COALESCE(SUM(p.amount), 0) 
         FROM payments p
         JOIN credit_sales cs ON p.sale_id = cs.id
-        WHERE cs.payment_status = 'paid' AND (
-            (DATE(p.payment_date) = :selectedDate AND strftime('%H:%M', p.payment_date) >= :closingTime) OR
-            (DATE(p.payment_date) = :nextBusinessDay AND strftime('%H:%M', p.payment_date) < :closingTime AND :isAfterMidnight = 1)
-        )
+        WHERE cs.payment_status = 'paid' AND ($bdWherePayment)
     ");
-    $creditPaymentsQuery->bindParam(':selectedDate', $selectedDate);
-    $creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-    $creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-    $creditPaymentsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+    bdBindSingleDayParams($creditPaymentsQuery, $selectedDate, $nextDay);
     $creditPaymentsQuery->execute();
     $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
     
-    // 4. Selected date's cash out (withdrawals)
-    $cashOutQuery = $db->prepare("
-        SELECT COALESCE(SUM(amount), 0) 
+    // 4. Selected date's cash out (manual withdrawals and refunds)
+    $cashOutQuery = $db->prepare('
+        SELECT ' . cashWithdrawalsSumSql() . '
         FROM cash_transactions 
-        WHERE type='cash-out' AND (
-            (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-            (DATE(created_at) = :nextBusinessDay AND strftime('%H:%M', created_at) < :closingTime AND :isAfterMidnight = 1)
-        )
-    ");
-    $cashOutQuery->bindParam(':selectedDate', $selectedDate);
-    $cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-    $cashOutQuery->bindParam(':closingTime', $closingTime);
-    $cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
+        WHERE (' . $bdWhereCreated . ')
+    ');
+    bdBindSingleDayParams($cashOutQuery, $selectedDate, $nextDay);
     $cashOutQuery->execute();
     $totalCashOut = $cashOutQuery->fetchColumn();
 
-    $invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextBusinessDay, $closingTime, (bool) $isAfterMidnight);
+    $invoiceCashPayments = sumInvoiceCashPayments($db, $selectedDate, $nextDay, $closingTime, (bool) $isAfterMidnight);
     
     // Final cash in till calculation using selected date's business day
     $cashInTill = $totalCashIn + $totalCashSales + $totalCreditPayments + $invoiceCashPayments - $totalCashOut;
@@ -1101,20 +1030,23 @@ try {
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200" id="transactionsTableBody">
-                                <?php foreach ($transactions as $transaction): ?>
+                                <?php foreach ($transactions as $transaction):
+                                    $displayMeta = cashTransactionDisplayMeta($transaction);
+                                    $isCashIn = $displayMeta['direction'] === 'in';
+                                ?>
                                 <tr class="hover:bg-gray-50 transition-colors">
                                     <td data-label="ID" class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                         <?= $transaction['id'] ?>
                                     </td>
                                     <td data-label="Type" class="px-6 py-4 whitespace-nowrap text-sm">
                                         <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
-                                            <?= $transaction['type'] === 'cash-in' ? 'bg-teal-100 text-teal-800' : 'bg-red-100 text-red-800' ?>">
+                                            <?= $isCashIn ? 'bg-teal-100 text-teal-800' : 'bg-red-100 text-red-800' ?>">
                                             <?= ucfirst(str_replace('-', ' ', $transaction['type'])) ?>
                                         </span>
                                     </td>
                                     <td data-label="Amount" class="px-6 py-4 whitespace-nowrap text-sm 
-                                        <?= $transaction['type'] === 'cash-in' ? 'text-teal-600 font-medium' : 'text-red-600 font-medium' ?>">
-                                        N$<?= number_format($transaction['amount'], 2) ?>
+                                        <?= $isCashIn ? 'text-teal-600 font-medium' : 'text-red-600 font-medium' ?>">
+                                        N$<?= number_format($displayMeta['amount'], 2) ?>
                                     </td>
                                     <td data-label="Description" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                         <?= htmlspecialchars($transaction['description']) ?>
@@ -1179,6 +1111,11 @@ try {
         </div>
     </div>
 
+    <?php
+    $odReceiptJs = 'receipt.php?js=true';
+    $odDrawerUrl = 'open_drawer.php';
+    include __DIR__ . '/includes/open_cash_drawer_script.php';
+    ?>
     <script>
         // Mobile sidebar functions
         function toggleSidebar() {
@@ -1390,14 +1327,6 @@ try {
         }
 
         $(document).ready(function() {
-            function openCashDrawer() {
-                return $.ajax({
-                    url: 'open_drawer.php',
-                    method: 'GET',
-                    dataType: 'json'
-                });
-            }
-            
             function handleFormSubmitWithDrawer(formId) {
                 $(formId).on('submit', function(e) {
                     e.preventDefault();
@@ -1430,7 +1359,7 @@ try {
                                 'Cash withdrawal completed successfully.';
                             showAlert(successMessage, 'success');
                             
-                            openCashDrawer().always(function() {
+                            openCashDrawer().finally(function() {
                                 setTimeout(function() {
                                     location.reload();
                                 }, 2000);
@@ -1453,8 +1382,8 @@ try {
             $('#openCashDrawer').on('click', function() {
                 $(this).prop('disabled', true).addClass('bg-gray-500').removeClass('bg-teal-600 hover:bg-teal-700');
                 
-                openCashDrawer().done(function(response) {
-                    if (response.success) {
+                openCashDrawer().then(function(response) {
+                    if (response && response.success) {
                         $('#openCashDrawer').text('Drawer Opened').addClass('bg-teal-600').removeClass('bg-gray-500');
                         showAlert('Cash drawer opened successfully', 'success');
                         
@@ -1468,7 +1397,7 @@ try {
                         $('#openCashDrawer').prop('disabled', false)
                             .addClass('bg-teal-600 hover:bg-teal-700').removeClass('bg-gray-500');
                     }
-                }).fail(function(xhr) {
+                }).catch(function(xhr) {
                     let errorMessage = 'Error connecting to the printer service';
                     if (xhr.responseJSON && xhr.responseJSON.message) {
                         errorMessage = xhr.responseJSON.message;

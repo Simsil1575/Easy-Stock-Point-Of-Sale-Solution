@@ -44,10 +44,24 @@ try {
     ensureTerminalSchema($db);
     $terminal = resolveTerminalFromRequest(is_array($input) ? $input : [], $db);
     $cashier = getCashierInfo();
+    $chargedCashier = $cashier['username'];
+
+    if (!empty($input['cashier_id'])) {
+        $role = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+        if (in_array($role, ['admin', 'manager'], true)) {
+            $userDb = new PDO('sqlite:user.db');
+            $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $resolved = resolveToUsername($input['cashier_id'], $userDb);
+            if ($resolved !== '' && $resolved !== 'Unknown') {
+                $chargedCashier = $resolved;
+            }
+        }
+    }
+
     $createdAt = $expenseDate . ' 10:00:00';
 
     $stmt = $db->prepare("INSERT INTO cash_transactions (type, amount, description, cashier_id, created_at, terminal_mac, terminal_name) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    $stmt->execute(['cash-out', $amount, $description, $cashier['username'], $createdAt, $terminal['mac'], $terminal['name']]);
+    $stmt->execute(['cash-out', $amount, $description, $chargedCashier, $createdAt, $terminal['mac'], $terminal['name']]);
 
     header('Content-Type: application/json');
     echo json_encode([

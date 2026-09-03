@@ -30,28 +30,11 @@ try {
     exit;
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-$closingTime = '00:00'; // Default
-try {
-    $businessInfoDb = new PDO('sqlite:info.db');
-    $businessInfoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    if ($businessInfo && isset($businessInfo['closing_time'])) {
-        $closingTime = $businessInfo['closing_time'];
-    }
-} catch (PDOException $e) {
-    error_log('Business info DB error: ' . $e->getMessage());
-    // Continue with default closing time
-}
+require_once __DIR__ . '/business_day_helper.php';
 
-// Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-
-// If closing time is after midnight (e.g., 2:00 AM), we need to consider transactions
-// that happened after midnight but before closing time as part of the previous day
-$isAfterMidnight = $closingHour < 12;
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Handle date selection
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['selected_date'])) {
@@ -59,35 +42,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['selected_date'])) {
     $startDate = $selectedDate;
     $endDate = $selectedDate;
 } else {
-    // Determine which date to show by default based on current time vs closing time
-    $currentTime = date('H:i');
-    $today = date('Y-m-d');
-    $yesterday = date('Y-m-d', strtotime('-1 day'));
-    
-    // If current time is before closing time, show yesterday's data
-    // If current time is after closing time, show today's data
-    $defaultDate = ($currentTime < $closingTime) ? $yesterday : $today;
-    
-    $selectedDate = $defaultDate;
-    $startDate = $defaultDate;
-    $endDate = $defaultDate;
+    $selectedDate = bdDefaultSelectedDate($closingTime, $isAfterMidnight);
+    $startDate = $selectedDate;
+    $endDate = $selectedDate;
 }
 
 // Function to get business day where clause for date range
 function getBusinessDayWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
-    if ($startDate === $endDate) {
-        // Single day query
-        $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-        return "((DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR 
-                 (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "))";
-    } else {
-        // Date range query - use business date calculation
-        return "CASE 
-                    WHEN strftime('%H:%M', $dateField) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                    THEN date(datetime($dateField, '-1 day'))
-                    ELSE date($dateField)
-                END BETWEEN '$startDate' AND '$endDate'";
-    }
+    return bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, (bool) $isAfterMidnight);
 }
 
 // Function to get total sales using business day logic

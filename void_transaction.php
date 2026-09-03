@@ -7,6 +7,8 @@ session_start();
 // Set Central Africa Time timezone
 date_default_timezone_set('Africa/Harare');
 
+require_once __DIR__ . '/void_receipt_helper.php';
+
 // Database connection
 $db = new PDO('sqlite:pos.db');
 
@@ -79,10 +81,31 @@ try {
         ':voided_at' => date('Y-m-d H:i:s')
     ]);
 
+    $voidId = (int) $db->lastInsertId();
+
     // Commit the transaction
     $db->commit();
 
-    echo json_encode(['success' => true, 'message' => 'Transaction voided successfully']);
+    $voidReceipt = buildVoidReceiptData([
+        'void_id' => $voidId,
+        'order_id' => $data['order_id'] ?? null,
+        'total' => $data['total'],
+        'cash_received' => $cashReceived,
+        'items' => $data['items'] ?? [],
+        'payment_method' => $data['payment_method'] ?? 'cash',
+        'transaction_ref' => $data['transaction_ref'] ?? $data['ref'] ?? null,
+        'wallet_provider' => $data['wallet_provider'] ?? $data['provider'] ?? null,
+        'eft_amount' => isset($data['eft_amount']) ? floatval($data['eft_amount']) : null,
+        'cashier_username' => $_SESSION['username'] ?? 'Unknown',
+        'void_source' => 'void',
+    ]);
+
+    echo json_encode([
+        'success' => true,
+        'message' => 'Transaction voided successfully',
+        'void_id' => $voidId,
+        'void_receipt' => $voidReceipt,
+    ]);
 } catch (Exception $e) {
     // Rollback the transaction in case of error
     $db->rollBack();

@@ -111,6 +111,8 @@ try {
         }
     }
 
+    ensureTabItemVoidMarkColumns($db);
+
     // Prepare statements for checking and inserting/updating tab items
     $checkItemStmt = $db->prepare("
         SELECT ti.id, ti.quantity, ti.price,
@@ -119,6 +121,7 @@ try {
         WHERE ti.tab_id = ? 
           AND ti.product_name = ? 
           AND ti.price = ?
+          AND COALESCE(ti.marked_for_void, 0) = 0
           AND (
               (ti.quantity * ti.price) < 0
               OR COALESCE((SELECT SUM(amount) FROM tab_item_payments WHERE tab_item_id = ti.id), 0) < (ti.quantity * ti.price)
@@ -129,7 +132,6 @@ try {
     $updateItemStmt = $db->prepare("UPDATE tab_items SET quantity = quantity + ? WHERE id = ?");
     
     $allowNegative = isSkipStockChecks($db);
-    $stmtGetProductInfo = $db->prepare("SELECT buying_price, category FROM products WHERE name = ?");
     
     // Create tab_item_payments table if it doesn't exist (for the query above)
     try {
@@ -171,18 +173,10 @@ try {
         }
         
         // Reduce product quantities (similar to process_order.php)
-        // Skip inventory updates for non-stock tab lines (EFT, lay-bye, prepayment credit) and Food category
+        // Skip inventory updates for non-stock tab lines (EFT, lay-bye, prepayment credit)
         if ($item['name'] !== 'EFT Income' && $item['name'] !== 'Lay-bye Payment' && !is_tab_non_inventory_tab_line_name($item['name'])) {
-            $stmtGetProductInfo->execute([$item['name']]);
-            $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
-            $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
             deductRecipeStockByProductName($db, $item['name'], floatval($quantity), $allowNegative);
-            
-            // Only decrease main product quantity if category is not "Food" (ingredients always deducted above when linked)
-            $isFood = strtolower(trim($productCategory ?? '')) === 'food';
-            if (!$isFood) {
-                deductProductStockByName($db, $item['name'], floatval($quantity), $allowNegative);
-            }
+            deductProductStockByName($db, $item['name'], floatval($quantity), $allowNegative);
         }
     }
 

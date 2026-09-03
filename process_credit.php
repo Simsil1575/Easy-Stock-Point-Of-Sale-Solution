@@ -82,20 +82,15 @@ try {
 
     foreach ($data['items'] as $item) {
         $buyingPrice = null;
-        $productCategory = null;
         $stmtGetProductInfo->execute([$item['name']]);
         $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
         $buyingPrice = $productInfo ? ($productInfo['buying_price'] ?? null) : null;
-        $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
 
-        $skipStock = ($item['name'] === 'Cart Discount' || $item['name'] === 'Gratuity');
+        $skipStock = isNonInventorySaleLineName($item['name']);
 
         if (!$skipStock) {
-            $isFood = strtolower(trim($productCategory ?? '')) === 'food';
             deductRecipeStockByProductName($db, $item['name'], floatval($item['quantity']), $allowNegative);
-            if (!$isFood) {
-                deductProductStockByName($db, $item['name'], floatval($item['quantity']), $allowNegative);
-            }
+            deductProductStockByName($db, $item['name'], floatval($item['quantity']), $allowNegative);
         }
 
         $itemStmt->execute([

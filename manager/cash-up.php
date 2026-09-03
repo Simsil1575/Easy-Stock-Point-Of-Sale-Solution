@@ -20,16 +20,11 @@ if ($activationCheck['status'] === 'not_activated' || $activationCheck['status']
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00'; // Default to 00:00 if not set
-} catch (PDOException $e) {
-    // Default closing time if DB error
-    $closingTime = '00:00';
-}
+require_once __DIR__ . '/../business_day_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Database connection
 $db = new PDO('sqlite:../pos.db');
@@ -77,16 +72,9 @@ function getEmployeeName($cashierId, $userDb) {
     return $cashierId;
 }
 
-// Get selected date from GET parameter, default to today
-$selectedDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
-
-// Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
-
-// Calculate next day for business day logic
+$selectedDate = isset($_GET['date']) ? $_GET['date'] : bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Fetch daily sales grouped by employee (cashier_id)
 // Using same calculation logic as reports.php: cash = total - eft_payments
@@ -97,10 +85,7 @@ $employeeSalesQuery = $db->prepare("
         ROUND(SUM(COALESCE((SELECT SUM(ep.amount) FROM eft_payments ep WHERE ep.order_id = o.id), 0)), 2) as total_eft,
         ROUND(SUM(o.total), 2) as total_sales
     FROM orders o
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     AND o.cashier_id IS NOT NULL
     AND o.cashier_id != ''
     GROUP BY o.cashier_id
@@ -108,9 +93,7 @@ $employeeSalesQuery = $db->prepare("
     ORDER BY total_sales DESC
 ");
 
-$employeeSalesQuery->bindParam(':selectedDate', $selectedDate);
-$employeeSalesQuery->bindParam(':nextDay', $nextDay);
-$employeeSalesQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($employeeSalesQuery, $selectedDate, $nextDay);
 $employeeSalesQuery->execute();
 $employeeSales = $employeeSalesQuery->fetchAll(PDO::FETCH_ASSOC);
 

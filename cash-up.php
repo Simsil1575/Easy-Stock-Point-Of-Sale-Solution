@@ -20,16 +20,11 @@ if ($activationCheck['status'] === 'not_activated' || $activationCheck['status']
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-try {
-    $businessInfoDb = new PDO('sqlite:info.db');
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '00:00'; // Default to 00:00 if not set
-} catch (PDOException $e) {
-    // Default closing time if DB error
-    $closingTime = '00:00';
-}
+require_once __DIR__ . '/business_day_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Database connection
 $db = new PDO('sqlite:pos.db');
@@ -37,16 +32,11 @@ if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 
-// Get selected date from GET parameter, default to today
-$selectedDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
-
-// Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
-
-// Calculate next day for business day logic
+$selectedDate = isset($_GET['date']) ? $_GET['date'] : bdDefaultSelectedDate($closingTime, $isAfterMidnight);
 $nextDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
+$bdWhereOCreated = bdSingleDayWhereSql('o.created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereCreated = bdSingleDayWhereSql('created_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
+$bdWhereTiAdded = bdSingleDayWhereSql('ti.added_at', ':selectedDate', ':nextDay', $closingTime, $isAfterMidnight);
 
 // Fetch daily sales grouped by employee (cashier_id)
 $employeeSalesQuery = $db->prepare("
@@ -60,10 +50,7 @@ $employeeSalesQuery = $db->prepare("
             (o.total - COALESCE(SUM(ep.amount), 0)) as cash_amount
         FROM orders o
         LEFT JOIN eft_payments ep ON o.id = ep.order_id
-        WHERE (
-            (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-            (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-        )
+        WHERE ($bdWhereOCreated)
         GROUP BY o.id, o.cashier_id, o.total, o.created_at
     ),
     employee_summary AS (
@@ -86,9 +73,7 @@ $employeeSalesQuery = $db->prepare("
     ORDER BY es.total_sales DESC
 ");
 
-$employeeSalesQuery->bindParam(':selectedDate', $selectedDate);
-$employeeSalesQuery->bindParam(':nextDay', $nextDay);
-$employeeSalesQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($employeeSalesQuery, $selectedDate, $nextDay);
 $employeeSalesQuery->execute();
 $employeeSales = $employeeSalesQuery->fetchAll(PDO::FETCH_ASSOC);
 
@@ -102,17 +87,12 @@ $employeeItemsQuery = $db->prepare("
         SUM(oi.quantity * oi.price) as total_value
     FROM orders o
     JOIN order_items oi ON o.id = oi.order_id
-    WHERE (
-        (DATE(o.created_at) = :selectedDate AND strftime('%H:%M', o.created_at) >= :closingTime) OR
-        (DATE(o.created_at) = :nextDay AND strftime('%H:%M', o.created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE ($bdWhereOCreated)
     GROUP BY o.cashier_id, oi.product_name, oi.price
     ORDER BY o.cashier_id, total_value DESC
 ");
 
-$employeeItemsQuery->bindParam(':selectedDate', $selectedDate);
-$employeeItemsQuery->bindParam(':nextDay', $nextDay);
-$employeeItemsQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($employeeItemsQuery, $selectedDate, $nextDay);
 $employeeItemsQuery->execute();
 $employeeItems = $employeeItemsQuery->fetchAll(PDO::FETCH_ASSOC);
 
@@ -140,14 +120,9 @@ foreach ($employeeSales as $emp) {
 $creditSalesQuery = $db->prepare("
     SELECT COALESCE(SUM(total_amount - paid_amount), 0) as total_credit
     FROM credit_sales
-    WHERE payment_status = 'unpaid' AND (
-        (DATE(created_at) = :selectedDate AND strftime('%H:%M', created_at) >= :closingTime) OR
-        (DATE(created_at) = :nextDay AND strftime('%H:%M', created_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE payment_status = 'unpaid' AND ($bdWhereCreated)
 ");
-$creditSalesQuery->bindParam(':selectedDate', $selectedDate);
-$creditSalesQuery->bindParam(':nextDay', $nextDay);
-$creditSalesQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($creditSalesQuery, $selectedDate, $nextDay);
 $creditSalesQuery->execute();
 $totalCreditSales = $creditSalesQuery->fetchColumn();
 
@@ -167,14 +142,9 @@ $tabSalesQuery = $db->prepare("
         FROM tab_item_payments
         GROUP BY tab_item_id
     ) paid ON ti.id = paid.tab_item_id
-    WHERE t.status = 'open' AND (
-        (DATE(ti.added_at) = :selectedDate AND strftime('%H:%M', ti.added_at) >= :closingTime) OR
-        (DATE(ti.added_at) = :nextDay AND strftime('%H:%M', ti.added_at) < :closingTime AND " . ($isAfterMidnight ? "1=1" : "1=0") . ")
-    )
+    WHERE t.status = 'open' AND ($bdWhereTiAdded)
 ");
-$tabSalesQuery->bindParam(':selectedDate', $selectedDate);
-$tabSalesQuery->bindParam(':nextDay', $nextDay);
-$tabSalesQuery->bindParam(':closingTime', $closingTime);
+bdBindSingleDayParams($tabSalesQuery, $selectedDate, $nextDay);
 $tabSalesQuery->execute();
 $totalTabSales = $tabSalesQuery->fetchColumn();
 

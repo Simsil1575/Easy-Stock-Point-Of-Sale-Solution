@@ -38,6 +38,15 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+$salesReportHelperPath = is_file(__DIR__ . '/sales_report_helper.php')
+    ? __DIR__ . '/sales_report_helper.php'
+    : __DIR__ . '/../sales_report_helper.php';
+$salesReportCashierFilterPath = is_file(__DIR__ . '/includes/sales_report_cashier_filter.php')
+    ? __DIR__ . '/includes/sales_report_cashier_filter.php'
+    : __DIR__ . '/../includes/sales_report_cashier_filter.php';
+require_once $salesReportCashierFilterPath;
+require_once $salesReportHelperPath;
+
 // Get business info
 $businessInfo = [];
 try {
@@ -417,9 +426,24 @@ switch ($reportType) {
     case 'sales':
     case 'daily_sales':
     case 'monthly_sales':
-        require_once __DIR__ . '/sales_report_helper.php';
+        $salesCashierContext = salesReportResolveCashierContext($userDb, $cashierId);
         // Get orders
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
+        $ordersWhereClause = salesReportAppendCashierSql(
+            $db,
+            $ordersWhereClause,
+            'o.cashier_id',
+            $salesCashierContext['username'],
+            $salesCashierContext['user_id']
+        );
+        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
+        $creditWhereClause = salesReportAppendCashierSql(
+            $db,
+            $creditWhereClause,
+            'cs.cashier_id',
+            $salesCashierContext['username'],
+            $salesCashierContext['user_id']
+        );
         $ordersQuery = $db->prepare("
             SELECT o.id, o.total, o.cash_received, o.created_at, o.cashier_id,
                    COALESCE(o.gratuity_amount, 0) AS gratuity_amount,
@@ -509,10 +533,15 @@ switch ($reportType) {
         }
 
         $salesBreakdown = buildSalesReportBreakdown($db, $ordersWhereClause, $startDateTime, $endDateTime);
-        $dailyBreakdown = buildSalesReportDailyBreakdown($db, $startDateTime, $endDateTime);
+        $dailyBreakdown = buildSalesReportDailyBreakdown(
+            $db,
+            $startDateTime,
+            $endDateTime,
+            $salesCashierContext['username'],
+            $salesCashierContext['user_id']
+        );
 
         // Get credit sales
-        $creditWhereClause = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
         $creditQuery = $db->prepare("
             SELECT cs.*, c.name as creditor_name
             FROM credit_sales cs
@@ -1153,126 +1182,19 @@ switch ($reportType) {
         break;
         
     case 'cashier_sales':
-        // Get cashier sales - cashier_id now stores username directly
-        $cashierCondition = $cashierId ? " AND o.cashier_id = " . $db->quote($cashierId) : "";
         $ordersWhereClause = getDateTimeWhereClause('o.created_at', $startDateTime, $endDateTime);
-        
-        // Get all cashiers from user.db
-        $cashiersQuery = $userDb->query("SELECT id, username, role FROM users");
-        $allCashiers = $cashiersQuery->fetchAll(PDO::FETCH_ASSOC);
-        
-        $cashierSales = [];
-        foreach ($allCashiers as $cashier) {
-            // Filter by username if cashierId is provided (now contains username)
-            if ($cashierId && $cashier['username'] != $cashierId) continue;
-            
-            // Get order count and total - match by username
-            $salesQuery = $db->prepare("
-                SELECT COUNT(*) as order_count, COALESCE(SUM(total), 0) as total_sales
-                FROM orders o
-                WHERE (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?) AND ($ordersWhereClause)
-            ");
-            $salesQuery->execute([$cashier['username'], $cashier['id']]);
-            $salesData = $salesQuery->fetch(PDO::FETCH_ASSOC);
-            
-            // Get credit sales - match by username
-            $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
-            $creditQuery = $db->prepare("
-                SELECT COUNT(*) as credit_count, COALESCE(SUM(total_amount), 0) as credit_total
-                FROM credit_sales
-                WHERE (cashier_id = ? OR CAST(cashier_id AS TEXT) = ?) AND ($creditWhereClause)
-            ");
-            $creditQuery->execute([$cashier['username'], $cashier['id']]);
-            $creditData = $creditQuery->fetch(PDO::FETCH_ASSOC);
-            
-            $cashierSales[] = [
-                'cashier_id' => $cashier['username'],
-                'cashier_name' => $cashier['username'],
-                'role' => $cashier['role'],
-                'order_count' => $salesData['order_count'],
-                'total_sales' => $salesData['total_sales'],
-                'credit_count' => $creditData['credit_count'],
-                'credit_total' => $creditData['credit_total'],
-                'grand_total' => $salesData['total_sales'] + $creditData['credit_total']
-            ];
-        }
-        
-        // Sort by total sales
-        usort($cashierSales, fn($a, $b) => $b['grand_total'] <=> $a['grand_total']);
-        
-        $totalSales = array_sum(array_column($cashierSales, 'grand_total'));
-
-        $selectedCashierUserId = '';
-        if ($cashierId) {
-            foreach ($allCashiers as $u) {
-                if ($u['username'] === $cashierId) {
-                    $selectedCashierUserId = (string) $u['id'];
-                    break;
-                }
-            }
-        }
-        if ($cashierId) {
-            $orderDetailQuery = $db->prepare("
-                SELECT o.id, o.total, o.created_at, COALESCE(o.cashier_id, 'Unknown') as cashier_name
-                FROM orders o
-                WHERE ($ordersWhereClause) AND (o.cashier_id = ? OR CAST(o.cashier_id AS TEXT) = ?)
-                ORDER BY o.created_at DESC
-            ");
-            $orderDetailQuery->execute([$cashierId, $selectedCashierUserId]);
-        } else {
-            $orderDetailQuery = $db->prepare("
-                SELECT o.id, o.total, o.created_at, COALESCE(o.cashier_id, 'Unknown') as cashier_name
-                FROM orders o
-                WHERE ($ordersWhereClause)
-                ORDER BY o.created_at DESC
-            ");
-            $orderDetailQuery->execute();
-        }
-        $orderTransactions = $orderDetailQuery->fetchAll(PDO::FETCH_ASSOC);
-        $oiDetailStmt = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ?");
-        foreach ($orderTransactions as &$ot) {
-            $oiDetailStmt->execute([$ot['id']]);
-            $ot['items'] = $oiDetailStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-        unset($ot);
-
+        $creditWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
         $creditDetailWhere = getDateTimeWhereClause('cs.created_at', $startDateTime, $endDateTime);
-        if ($cashierId) {
-            $creditDetailQuery = $db->prepare("
-                SELECT cs.*, c.name as creditor_name
-                FROM credit_sales cs
-                LEFT JOIN creditors c ON cs.creditor_id = c.id
-                WHERE ($creditDetailWhere) AND (cs.cashier_id = ? OR CAST(cs.cashier_id AS TEXT) = ?)
-                ORDER BY cs.created_at DESC
-            ");
-            $creditDetailQuery->execute([$cashierId, $selectedCashierUserId]);
-        } else {
-            $creditDetailQuery = $db->prepare("
-                SELECT cs.*, c.name as creditor_name
-                FROM credit_sales cs
-                LEFT JOIN creditors c ON cs.creditor_id = c.id
-                WHERE ($creditDetailWhere)
-                ORDER BY cs.created_at DESC
-            ");
-            $creditDetailQuery->execute();
-        }
-        $creditTransactions = $creditDetailQuery->fetchAll(PDO::FETCH_ASSOC);
-        $csiDetailStmt = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ?");
-        foreach ($creditTransactions as &$ct) {
-            $csiDetailStmt->execute([$ct['id']]);
-            $ct['items'] = $csiDetailStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-        unset($ct);
-        
-        $reportData = [
-            'cashiers' => $cashierSales,
-            'order_transactions' => $orderTransactions,
-            'credit_transactions' => $creditTransactions,
-            'summary' => [
-                'total_cashiers' => count($cashierSales),
-                'total_sales' => $totalSales
-            ]
-        ];
+        $expensesWhereClause = getDateTimeWhereClause('created_at', $startDateTime, $endDateTime);
+        $reportData = buildCashierSalesReportData(
+            $db,
+            $userDb,
+            $ordersWhereClause,
+            $creditWhereClause,
+            $creditDetailWhere,
+            $cashierId,
+            $expensesWhereClause
+        );
         break;
 
     case 'gratuity':
@@ -1701,6 +1623,11 @@ header('Content-Type: text/html; charset=utf-8');
             <div class="business-info">Tel: <?= htmlspecialchars($businessPhone) ?></div>
         <?php endif; ?>
         <div class="date-range"><?= htmlspecialchars($dateRange) ?></div>
+        <?php if ($reportType === 'cashier_sales'): ?>
+            <div class="business-info">Cashier: <?= htmlspecialchars($cashierId !== '' ? $cashierId : 'All cashiers') ?></div>
+        <?php elseif ($cashierId !== ''): ?>
+            <div class="business-info">Cashier: <?= htmlspecialchars($cashierId) ?></div>
+        <?php endif; ?>
         <?php if ($category !== '' && in_array($reportType, ['sales', 'daily_sales', 'monthly_sales'], true)): ?>
             <div class="business-info">Category: <?= htmlspecialchars($category) ?></div>
         <?php endif; ?>
@@ -2987,109 +2914,7 @@ header('Content-Type: text/html; charset=utf-8');
         </table>
         
     <?php break; case 'cashier_sales': ?>
-        <div class="summary-cards">
-            <div class="summary-card">
-                <div class="label">Total Staff</div>
-                <div class="value"><?= $reportData['summary']['total_cashiers'] ?></div>
-            </div>
-            <div class="summary-card positive">
-                <div class="label">Total Sales</div>
-                <div class="value">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></div>
-            </div>
-        </div>
-        
-        <table>
-            <thead>
-                <tr>
-                    <th>Cashier</th>
-                    <th>Role</th>
-                    <th class="text-right">Orders</th>
-                    <th class="text-right">Order Sales</th>
-                    <th class="text-right">Credit Sales</th>
-                    <th class="text-right">Total</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (!empty($reportData['cashiers'])): ?>
-                    <?php foreach ($reportData['cashiers'] as $cashier): ?>
-                    <?php if ($cashier['grand_total'] > 0): ?>
-                    <tr>
-                        <td><?= htmlspecialchars($cashier['cashier_name']) ?></td>
-                        <td><?= ucfirst($cashier['role']) ?></td>
-                        <td class="text-right"><?= $cashier['order_count'] ?></td>
-                        <td class="text-right">N$<?= formatCurrency($cashier['total_sales']) ?></td>
-                        <td class="text-right">N$<?= formatCurrency($cashier['credit_total']) ?></td>
-                        <td class="text-right font-bold">N$<?= formatCurrency($cashier['grand_total']) ?></td>
-                    </tr>
-                    <?php endif; ?>
-                    <?php endforeach; ?>
-                    <tr class="total-row">
-                        <td colspan="5">Total</td>
-                        <td class="text-right">N$<?= formatCurrency($reportData['summary']['total_sales']) ?></td>
-                    </tr>
-                <?php else: ?>
-                    <tr><td colspan="6" class="no-data">No cashier sales found for this period</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-        
-        <h3 class="section-title">Cash &amp; card orders (line items)</h3>
-        <?php if (!empty($reportData['order_transactions'])): ?>
-        <table>
-            <thead>
-                <tr>
-                    <th>Order #</th>
-                    <th>Date/Time</th>
-                    <th>Cashier</th>
-                    <th>Products</th>
-                    <th class="text-right">Total</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($reportData['order_transactions'] as $tx): ?>
-                <tr>
-                    <td>#<?= $tx['id'] ?></td>
-                    <td><?= date('M j, Y H:i', strtotime($tx['created_at'])) ?></td>
-                    <td><?= htmlspecialchars($tx['cashier_name'] ?? 'Unknown') ?></td>
-                    <td class="items-list"><?php renderTransactionItemsCell($tx['items'] ?? []); ?></td>
-                    <td class="text-right font-bold">N$<?= formatCurrency($tx['total']) ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-        <?php else: ?>
-        <div class="no-data">No orders in this period</div>
-        <?php endif; ?>
-        
-        <h3 class="section-title">Credit sales (line items)</h3>
-        <?php if (!empty($reportData['credit_transactions'])): ?>
-        <table>
-            <thead>
-                <tr>
-                    <th>Sale #</th>
-                    <th>Date</th>
-                    <th>Customer</th>
-                    <th>Products</th>
-                    <th class="text-right">Amount</th>
-                    <th class="text-right">Paid</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($reportData['credit_transactions'] as $ctx): ?>
-                <tr>
-                    <td>#<?= $ctx['id'] ?></td>
-                    <td><?= date('M j, Y H:i', strtotime($ctx['created_at'])) ?></td>
-                    <td><?= htmlspecialchars($ctx['creditor_name'] ?? 'Unknown') ?></td>
-                    <td class="items-list"><?php renderTransactionItemsCell($ctx['items'] ?? []); ?></td>
-                    <td class="text-right">N$<?= formatCurrency($ctx['total_amount']) ?></td>
-                    <td class="text-right">N$<?= formatCurrency($ctx['paid_amount']) ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-        <?php else: ?>
-        <div class="no-data">No credit sales in this period</div>
-        <?php endif; ?>
+        <?php require __DIR__ . '/../includes/cashier_sales_report_view.php'; ?>
         
     <?php break; case 'gratuity':
     case 'tips': ?>

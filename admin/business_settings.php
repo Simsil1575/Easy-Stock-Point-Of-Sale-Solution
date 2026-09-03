@@ -79,6 +79,10 @@ try {
         $db->exec("ALTER TABLE business_info ADD COLUMN logo_path TEXT NOT NULL DEFAULT ''");
     }
 
+    if(!in_array('name_secondary', $columnNames)) {
+        $db->exec("ALTER TABLE business_info ADD COLUMN name_secondary TEXT NOT NULL DEFAULT ''");
+    }
+
     ensureManagerVoidPinColumn($db);
 
     // Save / change manager void PIN (separate form)
@@ -101,9 +105,10 @@ try {
     }
     
     // Handle form submission
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['save_manager_void_pin']) && !isset($_POST['update_receipt_setting']) && !isset($_POST['import_csv']) && !isset($_POST['update_cashier_permissions']) && !isset($_POST['update_cashier_inactivity']) && !isset($_POST['update_waitress_permissions']) && !isset($_POST['update_admin_permissions']) && !isset($_POST['update_pos_interface'])) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['save_manager_void_pin']) && !isset($_POST['update_receipt_setting']) && !isset($_POST['import_csv']) && !isset($_POST['update_cashier_permissions']) && !isset($_POST['update_manager_permissions']) && !isset($_POST['update_cashier_inactivity']) && !isset($_POST['update_waitress_permissions']) && !isset($_POST['update_admin_permissions']) && !isset($_POST['update_pos_interface']) && !isset($_POST['update_cart_permissions'])) {
         // Validate inputs
         $name = trim($_POST['name'] ?? '');
+        $name_secondary = trim($_POST['name_secondary'] ?? '');
         $location = trim($_POST['location'] ?? '');
         $phone = trim($_POST['phone'] ?? '');
         $header_custom_text = trim($_POST['header_custom_text'] ?? '');
@@ -232,6 +237,7 @@ try {
                 // Update existing record
                 $stmt = $db->prepare("UPDATE business_info SET 
                     name = :name, 
+                    name_secondary = :name_secondary,
                     location = :location, 
                     phone = :phone, 
                     header_custom_text = :header_custom_text,
@@ -246,12 +252,13 @@ try {
             } else {
                 // Insert new record
                 $stmt = $db->prepare("INSERT INTO business_info 
-                    (name, location, phone, header_custom_text, footer_text, printer_port, closing_time, opening_time, vat_inclusive, vat_rate, logo_path) 
-                    VALUES (:name, :location, :phone, :header_custom_text, :footer_text, :printer_port, :closing_time, :opening_time, :vat_inclusive, :vat_rate, :logo_path)");
+                    (name, name_secondary, location, phone, header_custom_text, footer_text, printer_port, closing_time, opening_time, vat_inclusive, vat_rate, logo_path) 
+                    VALUES (:name, :name_secondary, :location, :phone, :header_custom_text, :footer_text, :printer_port, :closing_time, :opening_time, :vat_inclusive, :vat_rate, :logo_path)");
             }
             
             $stmt->execute([
                 ':name' => $name,
+                ':name_secondary' => $name_secondary,
                 ':location' => $location,
                 ':phone' => $phone,
                 ':header_custom_text' => $header_custom_text,
@@ -493,6 +500,27 @@ try {
             $successMessage = 'Receipt settings updated successfully!';
         } catch(PDOException $e) {
             $errorMessage = 'Error updating receipt settings: ' . $e->getMessage();
+        }
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
+            }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
+        }
+    }
+
+    // Handle cart feature permissions form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_cart_permissions'])) {
+        try {
+            require_once __DIR__ . '/../cart_permissions_helper.php';
+            saveCartPermissionsFromPost($_POST);
+            $successMessage = 'Cart permissions updated successfully!';
+        } catch (Throwable $e) {
+            $errorMessage = 'Error updating cart permissions: ' . $e->getMessage();
         }
         if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
             if (!empty($successMessage)) {
@@ -796,6 +824,64 @@ try {
         }
 
     }
+
+    // Handle manager permissions form submission
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_manager_permissions'])) {
+        try {
+            $db->exec("CREATE TABLE IF NOT EXISTS manager_permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                allow_menu BOOLEAN NOT NULL DEFAULT 1,
+                allow_sales BOOLEAN NOT NULL DEFAULT 1,
+                allow_reports BOOLEAN NOT NULL DEFAULT 1,
+                allow_inventory BOOLEAN NOT NULL DEFAULT 1,
+                allow_transactions BOOLEAN NOT NULL DEFAULT 1,
+                allow_settings BOOLEAN NOT NULL DEFAULT 1
+            )");
+
+            $checkStmt = $db->query("SELECT COUNT(*) FROM manager_permissions")->fetchColumn();
+            if ($checkStmt == 0) {
+                $db->exec("INSERT INTO manager_permissions (allow_menu, allow_sales, allow_reports, allow_inventory, allow_transactions, allow_settings) VALUES (1, 1, 1, 1, 1, 1)");
+            }
+
+            $allowMenu = isset($_POST['manager_allow_menu']) ? 1 : 0;
+            $allowSales = isset($_POST['manager_allow_sales']) ? 1 : 0;
+            $allowReports = isset($_POST['manager_allow_reports']) ? 1 : 0;
+            $allowInventory = isset($_POST['manager_allow_inventory']) ? 1 : 0;
+            $allowTransactions = isset($_POST['manager_allow_transactions']) ? 1 : 0;
+            $allowSettings = isset($_POST['manager_allow_settings']) ? 1 : 0;
+
+            $updateStmt = $db->prepare("UPDATE manager_permissions SET
+                allow_menu = :allow_menu,
+                allow_sales = :allow_sales,
+                allow_reports = :allow_reports,
+                allow_inventory = :allow_inventory,
+                allow_transactions = :allow_transactions,
+                allow_settings = :allow_settings
+                WHERE id = 1");
+            $updateStmt->execute([
+                ':allow_menu' => $allowMenu,
+                ':allow_sales' => $allowSales,
+                ':allow_reports' => $allowReports,
+                ':allow_inventory' => $allowInventory,
+                ':allow_transactions' => $allowTransactions,
+                ':allow_settings' => $allowSettings,
+            ]);
+
+            $successMessage = 'Manager permissions updated successfully!';
+        } catch (PDOException $e) {
+            $errorMessage = 'Error updating manager permissions: ' . $e->getMessage();
+        }
+        if (isset($_POST['return_to']) && $_POST['return_to'] === 'display') {
+            if (!empty($successMessage)) {
+                $_SESSION['settings_flash_success'] = $successMessage;
+            }
+            if (!empty($errorMessage)) {
+                $_SESSION['settings_flash_error'] = $errorMessage;
+            }
+            header('Location: settings?s=display');
+            exit;
+        }
+    }
     
     // Get current business info
     $businessInfo = $db->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
@@ -922,6 +1008,13 @@ try {
                                 <label for="name" class="block text-sm font-medium text-gray-700">Business Name</label>
                                 <input type="text" id="name" name="name" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
                                        value="<?php echo htmlspecialchars($businessInfo['name']); ?>" required>
+                                <p class="mt-1 text-xs text-gray-500">Primary name on receipts (large, bold).</p>
+                            </div>
+                            <div>
+                                <label for="name_secondary" class="block text-sm font-medium text-gray-700">Second Business Name (optional)</label>
+                                <input type="text" id="name_secondary" name="name_secondary" class="mt-1 focus:ring-teal-500 focus:border-teal-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"
+                                       value="<?php echo htmlspecialchars($businessInfo['name_secondary'] ?? ''); ?>">
+                                <p class="mt-1 text-xs text-gray-500">Shown below the main name on its own line in a smaller style.</p>
                             </div>
                             <div>
                                 <label for="location" class="block text-sm font-medium text-gray-700">Business Location</label>

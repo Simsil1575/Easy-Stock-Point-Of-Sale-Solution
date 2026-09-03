@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../ensure_laybye_schema.php';
+require_once __DIR__ . '/../includes/inventory_list_lib.php';
 
 session_start();
 
@@ -16,38 +17,13 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 // Database connection
 $db = new PDO('sqlite:../pos.db');
-// Set the default timezone to Namibian time
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 date_default_timezone_set('Africa/Harare');
 
-// Fetch products from the database (exclude synthetic lay-bye payment product)
-$stmt = $db->query('
-    SELECT p.*, COALESCE(SUM(oi.quantity), 0) as total_sold
-    FROM products p
-    LEFT JOIN order_items oi ON p.name = oi.product_name
-    WHERE ' . laybyePaymentProductWhereExclude('p.name') . '
-    GROUP BY p.id
-    ORDER BY total_sold DESC
-');
-
-$products = [];
-$lowStock = [];
-$outOfStock = [];
-
-// Fetch unique categories
-$catStmt = $db->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND " . laybyePaymentProductWhereExclude('name') . " ORDER BY category");
-$categories = [];
-while ($cat = $catStmt->fetch(PDO::FETCH_ASSOC)) {
-    $categories[] = $cat['category'];
-}
-
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $products[] = $row;
-    if ($row['quantity'] <= 0) {
-        $outOfStock[] = $row;
-    } else if ($row['quantity'] < 5) {
-        $lowStock[] = $row;
-    }
-}
+$stockAlerts = inventoryListFetchAlerts($db);
+$lowStock = $stockAlerts['lowStock'];
+$outOfStock = $stockAlerts['outOfStock'];
+$categories = inventoryListFetchCategories($db);
 ?>
 
 <!DOCTYPE html>
@@ -821,29 +797,9 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="tableBody">
-                            <?php
-                            $db = new SQLite3('../pos.db');
-                            $results = $db->query("SELECT * FROM products WHERE " . laybyePaymentProductWhereExclude('name'));
-                            while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
-                                echo "<tr class='hover:bg-gray-50 transition-colors' data-category=\"" . htmlspecialchars($row['category'] ?? '', ENT_QUOTES, 'UTF-8') . "\">";
-                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium text-black-900 truncate' title='{$row['name']}'>{$row['name']}</td>";
-                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['quantity']}</td>";
-                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['price']}</td>";
-                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm text-black-500'>{$row['buying_price']}</td>";
-                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center'><div class='flex items-center justify-center relative'><img src='../products/{$row['image_url']}' alt='Product' class='w-6 h-6 sm:w-8 sm:h-8 md:w-9 md:h-9 lg:w-10 lg:h-10 rounded-lg object-cover mobile-table-image' style='display:none;' onload=\"this.style.display='block';this.nextElementSibling.style.display='none';\" onerror=\"this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='inline-block';\"><i class='fas fa-cube text-gray-400 text-lg sm:text-xl md:text-2xl lg:text-3xl mobile-table-icon'></i></div></td>";
-                                echo "<td class='px-2 sm:px-3 md:px-4 lg:px-6 py-2 sm:py-3 md:py-4 lg:py-4 whitespace-nowrap text-center text-[10px] sm:text-xs md:text-sm lg:text-sm font-medium'>";
-                                echo "<a href='edit.php?id={$row['id']}' class='text-teal-600 hover:text-teal-900 mr-0.5 sm:mr-3 lg:mr-3 px-0.5 py-0.5 inline-flex items-center justify-center' title='Edit'>";
-                                echo "<svg class='w-3.5 h-3.5 sm:hidden' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z'></path></svg>";
-                                echo "<span class='hidden sm:inline'>Edit</span>";
-                                echo "</a>";
-                                echo "<a href='#' data-product-id='{$row['id']}' data-product-name='" . htmlspecialchars($row['name']) . "' class='delete-link text-red-600 hover:text-red-900 px-0.5 py-0.5 inline-flex items-center justify-center' title='Delete'>";
-                                echo "<svg class='w-3.5 h-3.5 sm:hidden' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16'></path></svg>";
-                                echo "<span class='hidden sm:inline'>Delete</span>";
-                                echo "</a>";
-                                echo "</td>";
-                                echo "</tr>";
-                            }
-                            ?>
+                            <tr>
+                                <td colspan="6" class="py-8 px-6 text-center text-gray-500">Loading inventory...</td>
+                            </tr>
                         </tbody>
                     </table>
 
@@ -936,349 +892,9 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         </div>
     </div>
 
+    <script src="../js/inventory-table.js"></script>
     <script>
-        // Set rows per page based on screen size
-        let rowsPerPage = window.innerWidth < 640 ? 10 : 6;
-        
-        // Update rowsPerPage on window resize
-        window.addEventListener('resize', () => {
-            // Don't reset pagination if showAllMode is active
-            if (showAllMode) {
-                return;
-            }
-            rowsPerPage = window.innerWidth < 640 ? 10 : 6;
-            showPage(currentPage);
-        });
-        const tableBody = document.getElementById("tableBody");
-        let allRows = Array.from(tableBody.children);
-        let rows = [...allRows];
-        const pageNumber = document.getElementById("pageNumber");
-        let sortDirection = {};
-        const totalPages = Math.ceil(rows.length / rowsPerPage);
-        let currentPage = 1;
-        let showAllMode = false;
-        const searchInput = document.getElementById('searchInput');
-        const searchInputDesktop = document.getElementById('searchInputDesktop');
-        const categoryFilter = document.getElementById('categoryFilter');
-        const categoryFilterDesktop = document.getElementById('categoryFilterDesktop');
-        
-        // Sync search inputs
-        function syncSearchInputs(value) {
-            if (searchInput) searchInput.value = value;
-            if (searchInputDesktop) searchInputDesktop.value = value;
-        }
-        
-        // Get active search input value
-        function getSearchValue() {
-            return (searchInput && searchInput.value) || (searchInputDesktop && searchInputDesktop.value) || '';
-        }
-        
-        function getInventoryCategoryValue() {
-            if (categoryFilter && categoryFilterDesktop) {
-                return categoryFilter.value || categoryFilterDesktop.value;
-            }
-            if (categoryFilter) return categoryFilter.value;
-            if (categoryFilterDesktop) return categoryFilterDesktop.value;
-            return '';
-        }
-
-        // Store current page and category in sessionStorage
-        function saveCurrentPage() {
-            sessionStorage.setItem('inventoryCurrentPage', currentPage);
-            sessionStorage.setItem('inventoryCategory', getInventoryCategoryValue());
-        }
-        
-        // Retrieve current page and category from sessionStorage
-        function loadCurrentPage() {
-            const savedPage = sessionStorage.getItem('inventoryCurrentPage');
-            const savedCategory = sessionStorage.getItem('inventoryCategory');
-            if (savedPage) {
-                currentPage = parseInt(savedPage);
-            }
-            if (savedCategory) {
-                if (categoryFilter) categoryFilter.value = savedCategory;
-                if (categoryFilterDesktop) categoryFilterDesktop.value = savedCategory;
-                filterRows(getSearchValue());
-            }
-            const urlCategory = new URLSearchParams(window.location.search).get('category');
-            if (urlCategory && urlCategory.trim()) {
-                const initialCategory = urlCategory.trim();
-                if (categoryFilter) categoryFilter.value = initialCategory;
-                if (categoryFilterDesktop) categoryFilterDesktop.value = initialCategory;
-                try { sessionStorage.setItem('inventoryCategory', initialCategory); } catch (e) {}
-                filterRows(getSearchValue());
-            }
-        }
-        
-        // Load saved page on page initialization
-        loadCurrentPage();
-
-        // Add event listeners for both search inputs
-        function handleSearchInput(e) {
-            const value = e.target.value;
-            // Sync both inputs
-            syncSearchInputs(value);
-            // If user types in search, exit showAllMode and use pagination
-            if (showAllMode) {
-                showAllMode = false;
-                resetPagination();
-            }
-            filterRows(value);
-        }
-        
-        if (searchInput) {
-            searchInput.addEventListener('input', handleSearchInput);
-        }
-        if (searchInputDesktop) {
-            searchInputDesktop.addEventListener('input', handleSearchInput);
-        }
-
-        // Helper function to handle category filter change (must use event.target: both selects exist in DOM; only one is visible)
-        function handleCategoryFilter(e) {
-            // If category is selected, exit showAllMode and use pagination
-            if (showAllMode) {
-                showAllMode = false;
-                resetPagination();
-            }
-
-            const source = e && e.target ? e.target : (categoryFilter || categoryFilterDesktop);
-            const selectedValue = source ? source.value : '';
-            if (categoryFilter) categoryFilter.value = selectedValue;
-            if (categoryFilterDesktop) categoryFilterDesktop.value = selectedValue;
-            filterRows(getSearchValue());
-        }
-
-        // Add event listeners for category filters
-        if (categoryFilter) categoryFilter.addEventListener('change', handleCategoryFilter);
-        if (categoryFilterDesktop) categoryFilterDesktop.addEventListener('change', handleCategoryFilter);
-        
-        // View All button functionality - toggle between show all and pagination
-        function handleViewAll() {
-            // Toggle showAllMode
-            showAllMode = !showAllMode;
-            
-            if (showAllMode) {
-                // Enter show all mode
-                if (categoryFilter) categoryFilter.value = '';
-                if (categoryFilterDesktop) categoryFilterDesktop.value = '';
-                filterRows(getSearchValue());
-                showAllProducts();
-            } else {
-                // Exit show all mode and return to pagination
-                resetPagination();
-            }
-        }
-        
-        function showAllProducts() {
-            // Hide all rows first
-            allRows.forEach(row => row.style.display = 'none');
-            
-            // Show only filtered rows (all matching products)
-            rows.forEach(row => row.style.display = 'table-row');
-            
-            // Update page number display to show "All Products"
-            const pageNumberMobile = document.getElementById('pageNumber');
-            const pageNumberDesktop = document.getElementById('pageNumberDesktop');
-            if (pageNumberMobile) pageNumberMobile.textContent = `All Products (${rows.length})`;
-            if (pageNumberDesktop) pageNumberDesktop.textContent = `All Products (${rows.length})`;
-            
-            // Hide pagination controls
-            const paginationControls = document.querySelectorAll('#firstPage, #prevPage, #nextPage, #lastPage, #firstPageDesktop, #prevPageDesktop, #nextPageDesktop, #lastPageDesktop, #pageInput, #pageInputDesktop');
-            paginationControls.forEach(control => {
-                if (control) control.style.display = 'none';
-            });
-            
-            // Ensure showAllMode flag is set
-            showAllMode = true;
-        }
-        
-        function resetPagination() {
-            showAllMode = false;
-            // Show pagination controls
-            const paginationControls = document.querySelectorAll('#firstPage, #prevPage, #nextPage, #lastPage, #firstPageDesktop, #prevPageDesktop, #nextPageDesktop, #lastPageDesktop, #pageInput, #pageInputDesktop');
-            paginationControls.forEach(control => {
-                if (control) control.style.display = '';
-            });
-            // Reset to first page and show paginated results
-            currentPage = 1;
-            showPage(currentPage);
-        }
-        
-        const viewAllMobile = document.getElementById('viewAllMobile');
-        const viewAllDesktop = document.getElementById('viewAllDesktop');
-        if (viewAllMobile) viewAllMobile.addEventListener('click', handleViewAll);
-        if (viewAllDesktop) viewAllDesktop.addEventListener('click', handleViewAll);
-
-        function filterRows(searchTerm) {
-            // If searchTerm is not provided, get from active input
-            if (searchTerm === undefined) {
-                searchTerm = getSearchValue();
-            }
-            const selectedCategory = (getInventoryCategoryValue() || '').trim();
-            rows = allRows.filter(row => {
-                const productName = row.children[0].textContent.toLowerCase();
-                const productCategory = (row.dataset.category || '').trim();
-                const matchesSearch = productName.includes(searchTerm.toLowerCase());
-                const matchesCategory = !selectedCategory || productCategory === selectedCategory;
-                return matchesSearch && matchesCategory;
-            });
-            
-            // If showAllMode is active, show all products; otherwise use pagination
-            if (showAllMode) {
-                showAllProducts();
-            } else {
-                currentPage = 1;
-                showPage(currentPage);
-            }
-            saveCurrentPage();
-        }
-
-        function showPage(page) {
-            // Don't paginate if showAllMode is active
-            if (showAllMode) {
-                return;
-            }
-            
-            const start = (page - 1) * rowsPerPage;
-            const end = start + rowsPerPage;
-            const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-            
-            allRows.forEach(row => row.style.display = 'none');
-            rows.slice(start, end).forEach(row => row.style.display = 'table-row');
-            
-            // Update both mobile and desktop page numbers
-            const pageNumberMobile = document.getElementById('pageNumber');
-            const pageNumberDesktop = document.getElementById('pageNumberDesktop');
-            if (pageNumberMobile) pageNumberMobile.textContent = `Page ${page} of ${maxPage}`;
-            if (pageNumberDesktop) pageNumberDesktop.textContent = `Page ${page} of ${maxPage}`;
-            
-            // Update both mobile and desktop page inputs
-            const pageInputMobile = document.getElementById('pageInput');
-            const pageInputDesktop = document.getElementById('pageInputDesktop');
-            if (pageInputMobile) {
-                pageInputMobile.value = page;
-                pageInputMobile.placeholder = `Pg (1-${maxPage})`;
-            }
-            if (pageInputDesktop) {
-                pageInputDesktop.value = page;
-                pageInputDesktop.placeholder = `Page (1-${maxPage})`;
-            }
-            
-            saveCurrentPage();
-        }
-
-        function sortTable(columnIndex, isNumeric = false) {
-            if (!sortDirection[columnIndex]) {
-                sortDirection[columnIndex] = 'asc';
-            } else {
-                sortDirection[columnIndex] = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
-            }
-
-            rows.sort((a, b) => {
-                let aValue = a.children[columnIndex].textContent.trim();
-                let bValue = b.children[columnIndex].textContent.trim();
-
-                if (isNumeric) {
-                    aValue = parseFloat(aValue);
-                    bValue = parseFloat(bValue);
-                } else {
-                    aValue = aValue.toLowerCase();
-                    bValue = bValue.toLowerCase();
-                }
-
-                if (sortDirection[columnIndex] === 'asc') {
-                    return aValue > bValue ? 1 : -1;
-                } else {
-                    return aValue < bValue ? 1 : -1;
-                }
-            });
-
-            // Re-append rows so sorted order is visible, but keep all allRows in DOM so category filter keeps working
-            const rowsSet = new Set(rows);
-            const otherRows = allRows.filter(row => !rowsSet.has(row));
-            while (tableBody.firstChild) {
-                tableBody.removeChild(tableBody.firstChild);
-            }
-            rows.forEach(row => tableBody.appendChild(row));
-            otherRows.forEach(row => tableBody.appendChild(row));
-
-            // Only show page if not in showAllMode
-            if (!showAllMode) {
-                showPage(currentPage);
-            }
-            saveCurrentPage();
-        }
-
-        // Mobile pagination controls
-        const prevPageMobile = document.getElementById("prevPage");
-        const nextPageMobile = document.getElementById("nextPage");
-        const firstPageMobile = document.getElementById("firstPage");
-        const lastPageMobile = document.getElementById("lastPage");
-        const pageInputMobile = document.getElementById("pageInput");
-        
-        // Desktop pagination controls
-        const prevPageDesktop = document.getElementById("prevPageDesktop");
-        const nextPageDesktop = document.getElementById("nextPageDesktop");
-        const firstPageDesktop = document.getElementById("firstPageDesktop");
-        const lastPageDesktop = document.getElementById("lastPageDesktop");
-        const pageInputDesktop = document.getElementById("pageInputDesktop");
-        
-        // Helper function to handle prev page
-        function handlePrevPage() {
-            if (currentPage > 1) {
-                currentPage--;
-                showPage(currentPage);
-                saveCurrentPage();
-            }
-        }
-        
-        // Helper function to handle next page
-        function handleNextPage() {
-            if (currentPage * rowsPerPage < rows.length) {
-                currentPage++;
-                showPage(currentPage);
-                saveCurrentPage();
-            }
-        }
-        
-        // Helper function to handle first page
-        function handleFirstPage() {
-            currentPage = 1;
-            showPage(currentPage);
-            saveCurrentPage();
-        }
-        
-        // Helper function to handle last page
-        function handleLastPage() {
-            currentPage = Math.ceil(rows.length / rowsPerPage);
-            showPage(currentPage);
-            saveCurrentPage();
-        }
-        
-        // Helper function to handle page input
-        function handlePageInput(inputElement) {
-            const desiredPage = parseInt(inputElement.value);
-            if (!isNaN(desiredPage)) {
-                const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-                currentPage = Math.min(Math.max(1, desiredPage), maxPage);
-                showPage(currentPage);
-                saveCurrentPage();
-            }
-        }
-        
-        // Add event listeners for mobile
-        if (prevPageMobile) prevPageMobile.addEventListener("click", handlePrevPage);
-        if (nextPageMobile) nextPageMobile.addEventListener("click", handleNextPage);
-        if (firstPageMobile) firstPageMobile.addEventListener("click", handleFirstPage);
-        if (lastPageMobile) lastPageMobile.addEventListener("click", handleLastPage);
-        if (pageInputMobile) pageInputMobile.addEventListener("change", () => handlePageInput(pageInputMobile));
-        
-        // Add event listeners for desktop
-        if (prevPageDesktop) prevPageDesktop.addEventListener("click", handlePrevPage);
-        if (nextPageDesktop) nextPageDesktop.addEventListener("click", handleNextPage);
-        if (firstPageDesktop) firstPageDesktop.addEventListener("click", handleFirstPage);
-        if (lastPageDesktop) lastPageDesktop.addEventListener("click", handleLastPage);
-        if (pageInputDesktop) pageInputDesktop.addEventListener("change", () => handlePageInput(pageInputDesktop));
+        const tableBody = document.getElementById('tableBody');
 
         // Add event listeners for inline editing
         tableBody.addEventListener('dblclick', (e) => {
@@ -1470,7 +1086,6 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 // Update the cell with the new value
                 cell.textContent = newValue;
                 showToast('Product updated successfully!', 'success');
-                saveCurrentPage(); // Save page after update
             } catch (error) {
                 console.error('Error:', error);
                 showToast('Failed to update product: ' + error.message, 'error');
@@ -1596,29 +1211,10 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     throw new Error('Delete failed');
                 }
 
-                // Remove the row from the table
-                const row = document.querySelector(`a[data-product-id="${productId}"]`).closest('tr');
-                row.remove();
                 showToast('Product deleted successfully!', 'success');
-                
-                // Update pagination
-                allRows = Array.from(tableBody.children);
-                rows = [...allRows];
-                
-                // Adjust current page if needed
-                const maxPage = Math.ceil(rows.length / rowsPerPage) || 1;
-                if (currentPage > maxPage) {
-                    currentPage = maxPage;
+                if (typeof window.reloadInventoryTable === 'function') {
+                    window.reloadInventoryTable();
                 }
-                
-                // Only show page if not in showAllMode
-                if (!showAllMode) {
-                    showPage(currentPage);
-                } else {
-                    // If in showAllMode, refresh the display
-                    showAllProducts();
-                }
-                saveCurrentPage();
             } catch (error) {
                 console.error('Error:', error);
                 showToast('Failed to delete product', 'error');
@@ -1688,11 +1284,6 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     toast.remove();
                 }, 500);
             }, 3000);
-        }
-
-        // Initialize the page display - only if not in showAllMode
-        if (!showAllMode) {
-            showPage(currentPage);
         }
 
         // Handle URL parameters for toast notifications
@@ -1803,74 +1394,60 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     }
     
     // Print Inventory Receipt function
-    function printInventoryReceipt() {
-        // Collect inventory data from the table
-        const tableBody = document.getElementById('tableBody');
-        const rows = tableBody.querySelectorAll('tr');
-        
-        const items = [];
-        let grandTotal = 0;
-        
-        rows.forEach(row => {
-            const cells = row.querySelectorAll('td');
-            if (cells.length >= 3) {
-                const name = cells[0].textContent.trim();
-                const quantity = parseInt(cells[1].textContent.trim()) || 0;
-                const price = parseFloat(cells[2].textContent.trim()) || 0;
-                const totalValue = quantity * price;
-                
-                items.push({
-                    name: name,
-                    quantity: quantity,
-                    price: price,
-                    total_value: totalValue
-                });
-                
-                grandTotal += totalValue;
+    async function printInventoryReceipt() {
+        const btn = event.target.closest('button');
+        const originalContent = btn.innerHTML;
+        btn.innerHTML = '<svg class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+        btn.disabled = true;
+
+        try {
+            const params = new URLSearchParams({
+                view_all: '1',
+                per_page: '10000',
+                search: '',
+                category: '',
+                sort_col: 'name',
+                sort_dir: 'ASC',
+            });
+            const response = await fetch('inventory_list.php?' + params.toString());
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || 'Failed to load inventory for printing');
             }
-        });
-        
-        // Prepare receipt data
+
+            const items = (data.items || []).map((item) => ({
+                name: item.name,
+                quantity: item.quantity,
+                price: item.price,
+                total_value: item.quantity * item.price,
+            }));
+            const grandTotal = items.reduce((sum, item) => sum + item.total_value, 0);
+
         const receiptData = {
             is_inventory_receipt: true,
             print_only: true,
             cashier_username: '<?= htmlspecialchars($_SESSION['username'] ?? 'Admin') ?>',
             items: items,
-            grand_total: grandTotal
-        };
-        
-        // Show loading indicator
-        const btn = event.target.closest('button');
-        const originalContent = btn.innerHTML;
-        btn.innerHTML = '<svg class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
-        btn.disabled = true;
+                grand_total: grandTotal,
+            };
         
         const printFn = (typeof window.sendToPrinter === 'function')
             ? window.sendToPrinter
-            : (data) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json());
+                : (payload) => fetch('../receipt.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(r => r.json());
 
-        printFn(receiptData)
-        .then(result => {
-            // Restore button
-            btn.innerHTML = originalContent;
-            btn.disabled = false;
-            
+            const result = await printFn(receiptData);
             if (result.success) {
-                // Show success toast
                 showToast('Inventory receipt printed successfully!', 'success');
             } else {
-                // Show error toast
                 showToast('Print failed: ' + (result.message || 'Unknown error'), 'error');
             }
-        })
-        .catch(error => {
-            // Restore button
-            btn.innerHTML = originalContent;
-            btn.disabled = false;
-            
+        } catch (error) {
             console.error('Print error:', error);
             showToast('Print failed: ' + error.message, 'error');
-        });
+        } finally {
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+        }
     }
     
     // Toast notification function (if not already defined)

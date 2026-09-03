@@ -13,10 +13,13 @@ if ($activationStatus == 0) {
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+configureSqlitePdo($db);
 
 require_once __DIR__ . '/../void_transaction_helper.php';
 require_once __DIR__ . '/../manager_pin_helper.php';
 require_once __DIR__ . '/../laybye_order_helper.php';
+require_once __DIR__ . '/../cashback_accounting_helper.php';
+require_once __DIR__ . '/../recipe_stock_helper.php';
 
 header('Content-Type: application/json');
 
@@ -38,6 +41,8 @@ try {
         }
     }
 
+    $voidReceipt = null;
+
     switch ($type) {
         case 'sales':
             // Delete from orders and order_items
@@ -51,19 +56,15 @@ try {
             $stmt->execute([$id]);
             $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            recordVoidForDeletedOrder($db, (int) $id);
+            $voidReceipt = recordVoidForDeletedOrder($db, (int) $id);
             laybyeRevertPaymentOrder($db, (int) $id);
 
             // Restore the quantities in the inventory (skip synthetic till lines)
-            $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name");
             foreach ($items as $item) {
                 if (laybyeIsSyntheticOrderItemName((string) $item['product_name'])) {
                     continue;
                 }
-                $stmtUpdateInventory->execute([
-                    ':quantity' => $item['quantity'],
-                    ':product_name' => $item['product_name']
-                ]);
+                restoreSaleLineStock($db, (string) $item['product_name'], floatval($item['quantity']));
             }
 
             // Delete all related records (order doesn't matter with foreign keys disabled)
@@ -74,6 +75,8 @@ try {
 
             $stmt = $db->prepare("DELETE FROM eft_payments WHERE order_id = ?");
             $stmt->execute([$id]);
+
+            deleteCashBackAccountingForOrder($db, (int) $id);
             
             $stmt = $db->prepare("DELETE FROM order_items WHERE order_id = ?");
             $stmt->execute([$id]);
@@ -102,12 +105,8 @@ try {
             $creditItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Restore the quantities in the inventory for credit sales
-            $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name");
             foreach ($creditItems as $item) {
-                $stmtUpdateInventory->execute([
-                    ':quantity' => $item['quantity'],
-                    ':product_name' => $item['product_name']
-                ]);
+                restoreSaleLineStock($db, (string) $item['product_name'], floatval($item['quantity']));
             }
             
             // Revert lay-bye payment orders for this date
@@ -129,10 +128,7 @@ try {
                 if (laybyeIsSyntheticOrderItemName((string) $item['product_name'])) {
                     continue;
                 }
-                $stmtUpdateInventory->execute([
-                    ':quantity' => $item['quantity'],
-                    ':product_name' => $item['product_name']
-                ]);
+                restoreSaleLineStock($db, (string) $item['product_name'], floatval($item['quantity']));
             }
             
             // Delete all related records (order doesn't matter with foreign keys disabled)
@@ -188,12 +184,8 @@ try {
             $creditItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Restore quantities for credit sales
-            $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name");
             foreach ($creditItems as $item) {
-                $stmtUpdateInventory->execute([
-                    ':quantity' => $item['quantity'],
-                    ':product_name' => $name
-                ]);
+                restoreSaleLineStock($db, (string) $name, floatval($item['quantity']));
             }
             
             // Revert lay-bye ledgers for orders that used this product line (e.g. Lay-bye Payment)
@@ -211,10 +203,7 @@ try {
             // Restore quantities for orders
             if (!laybyeIsSyntheticOrderItemName((string) $name)) {
                 foreach ($orderItems as $item) {
-                    $stmtUpdateInventory->execute([
-                        ':quantity' => $item['quantity'],
-                        ':product_name' => $name
-                    ]);
+                    restoreSaleLineStock($db, (string) $name, floatval($item['quantity']));
                 }
             }
             
@@ -256,6 +245,7 @@ try {
             break;
 
         case 'cash':
+        case 'cash_transaction':
             // Delete cash transaction
             $db->beginTransaction();
             $stmt = $db->prepare("DELETE FROM cash_transactions WHERE id = ?");
@@ -302,15 +292,11 @@ try {
                 $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
                 // Restore the quantities in the inventory
-                $stmtUpdateInventory = $db->prepare("UPDATE products SET quantity = quantity + :quantity WHERE name = :product_name");
                 foreach ($items as $item) {
-                    $stmtUpdateInventory->execute([
-                        ':quantity' => $item['quantity'],
-                        ':product_name' => $item['product_name']
-                    ]);
+                    restoreSaleLineStock($db, (string) $item['product_name'], floatval($item['quantity']));
                 }
 
-                recordVoidForDeletedCreditSale($db, (int) $id);
+                $voidReceipt = recordVoidForDeletedCreditSale($db, (int) $id);
                 
                 // Delete all related records
                 $stmt = $db->prepare("DELETE FROM payment_logs WHERE sale_id = ?");
@@ -411,7 +397,7 @@ try {
             throw new Exception('Invalid record type');
     }
 
-    echo json_encode(['success' => true]);
+    echo json_encode(['success' => true, 'void_receipt' => $voidReceipt]);
 } catch (Exception $e) {
     if ($db->inTransaction()) {
         $db->rollBack();

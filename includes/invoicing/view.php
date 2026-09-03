@@ -138,7 +138,15 @@ $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
 
                 <a href="<?= $invBase ?? '../' ?>invoicing_pdf.php?type=<?= $type ?>&id=<?= $id ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-file-pdf mr-1"></i> Download PDF</a>
                 <a href="<?= $invBase ?? '../' ?><?= $printPage ?>.php?id=<?= $id ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-print mr-1"></i> Print</a>
-                <button onclick="invEmailPlaceholder()" class="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-envelope mr-1"></i> Email</button>
+                <button type="button"
+                    data-id="<?= $id ?>"
+                    data-type="<?= $e($type) ?>"
+                    data-email="<?= $e($customer['email'] ?? '') ?>"
+                    data-name="<?= $e($customer['name'] ?? '') ?>"
+                    data-number="<?= $e($number) ?>"
+                    data-reload="1"
+                    onclick="invEmailFromButton(this)"
+                    class="w-full px-4 py-2.5 rounded-lg border border-teal-200 text-teal-700 hover:bg-teal-50 text-sm font-medium"><i class="fas fa-envelope mr-1"></i> Email to Client</button>
                 <button onclick="invDuplicate(<?= $id ?>)" class="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-copy mr-1"></i> Duplicate</button>
 
                 <?php if (!$isQuote && !in_array($status, ['Cancelled'], true) && $status !== 'Paid'): ?>
@@ -191,7 +199,8 @@ $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
 
 <script>
     window.INV_CURRENCY = <?= json_encode($currency) ?>;
-    const INV_TYPE = <?= json_encode($type) ?>;
+    window.INV_TYPE = <?= json_encode($type) ?>;
+    const INV_TYPE = window.INV_TYPE;
 
     async function invAct(action, payload, msg, confirmDanger) {
         try {
@@ -221,8 +230,6 @@ $printPage = $isQuote ? 'quotation_print' : 'invoice_print';
         try { const d = await invApi('convert_quotation', { id }); invToast('Converted.', 'success'); setTimeout(() => location.href = 'invoice_view?id=' + d.invoice_id, 500); }
         catch (err) { invToast(err.message, 'error'); }
     }
-    function invEmailPlaceholder() { invToast('Email delivery is coming soon. Download or print the PDF for now.', 'info'); }
-
     function openPaymentModal() { document.getElementById('paymentModal').classList.add('active'); }
     function closePaymentModal() { document.getElementById('paymentModal').classList.remove('active'); }
     async function submitPayment(invoiceId) {

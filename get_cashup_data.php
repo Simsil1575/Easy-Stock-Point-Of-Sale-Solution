@@ -36,6 +36,7 @@ $includeExpectedAmounts = !empty($input['include_expected_amounts']);
 // Cashiers/waitresses may only load their own totals (ignore client cashier_id override)
 $role = strtolower((string)($_SESSION['role'] ?? ''));
 if (in_array($role, ['cashier', 'waitress'], true)) {
+    $includeExpectedAmounts = false;
     $cu = (string)($_SESSION['username'] ?? '');
     if ($cu === '' && isset($_SESSION['user_id'])) {
         $selectedCashier = (string)$_SESSION['user_id'];

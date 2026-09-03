@@ -35,66 +35,16 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
     exit();
 }
 
-// Get business closing time from business_info
-$businessInfo = [];
-$closingTime = '00:00'; // Default
-try {
-    $businessInfoDb = new PDO('sqlite:../info.db');
-    $businessInfoDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $businessInfo = $businessInfoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    if ($businessInfo && isset($businessInfo['closing_time'])) {
-        $closingTime = $businessInfo['closing_time'];
-    }
-} catch (PDOException $e) {
-    error_log('Business info DB error: ' . $e->getMessage());
-    // Continue with default closing time
-}
+require_once __DIR__ . '/../business_day_helper.php';
 
-// Calculate business day boundaries based on closing time
-$closingHour = (int)substr($closingTime, 0, 2);
-$closingMinute = (int)substr($closingTime, 3, 2);
-$isAfterMidnight = $closingHour < 12;
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 
 // Business day WHERE clause helper
 class BusinessDayCache {
-    private static $cache = [];
-    
     public static function getWhereClause($dateField, $startDate, $endDate, $closingTime, $isAfterMidnight) {
-        $cacheKey = "$dateField-$startDate-$endDate-$closingTime-$isAfterMidnight";
-        
-        if (!isset(self::$cache[$cacheKey])) {
-            if ($startDate === $endDate) {
-                // Single day - use business day logic
-                $nextDay = date('Y-m-d', strtotime($startDate . ' +1 day'));
-                self::$cache[$cacheKey] = "
-                    (DATE($dateField) = '$startDate' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                    (DATE($dateField) = '$nextDay' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-                ";
-            } else {
-                // Multiple days - need to handle each day's business hours
-                $whereClauses = [];
-                $currentDate = new DateTime($startDate);
-                $endDateTime = new DateTime($endDate);
-                
-                while ($currentDate <= $endDateTime) {
-                    $dateStr = $currentDate->format('Y-m-d');
-                    $nextDay = clone $currentDate;
-                    $nextDay->modify('+1 day');
-                    $nextDayStr = $nextDay->format('Y-m-d');
-                    
-                    $whereClauses[] = "
-                        (DATE($dateField) = '$dateStr' AND strftime('%H:%M', $dateField) >= '$closingTime') OR
-                        (DATE($dateField) = '$nextDayStr' AND strftime('%H:%M', $dateField) < '$closingTime' AND " . ($isAfterMidnight ? "1" : "0") . " = 1)
-                    ";
-                    
-                    $currentDate->modify('+1 day');
-                }
-                
-                self::$cache[$cacheKey] = "(" . implode(") OR (", $whereClauses) . ")";
-            }
-        }
-        
-        return self::$cache[$cacheKey];
+        return bdDateRangeWhereSql($dateField, $startDate, $endDate, $closingTime, (bool) $isAfterMidnight);
     }
 }
 

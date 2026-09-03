@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../cashier_helper.php';
 require_once __DIR__ . '/../terminal_helper.php';
+require_once __DIR__ . '/../recipe_stock_helper.php';
 requireApiSession();
 header('Content-Type: application/json');
 
@@ -9,6 +10,7 @@ try {
     $scriptDir = dirname(__FILE__);
     $dbPath = $scriptDir . '/../pos.db';
     $db = new PDO('sqlite:' . $dbPath);
+    configureSqlitePdo($db);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
     // Get JSON input
@@ -56,11 +58,6 @@ try {
             VALUES (:refund_id, :order_item_id, :product_name, :quantity, :price, :buying_price)
         ");
         
-        // Prepare statement for updating product stock
-        $stmtStock = $db->prepare("
-            UPDATE products SET quantity = quantity + :qty WHERE name = :product_name
-        ");
-        
         // Prepare statement for updating order_items quantities
         $stmtOrderItems = $db->prepare("
             UPDATE order_items 
@@ -100,11 +97,8 @@ try {
                 $checkQtyStmt->execute();
             }
             
-            // Return stock to inventory
-            $stmtStock->execute([
-                ':qty' => $refundQty,
-                ':product_name' => $productName
-            ]);
+            // Return stock to inventory (recipe ingredients + main SKU)
+            restoreSaleLineStock($db, $productName, floatval($refundQty));
         }
         
         // Update order total - recalculate based on remaining items

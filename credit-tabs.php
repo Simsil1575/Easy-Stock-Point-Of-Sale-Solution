@@ -26,6 +26,7 @@ require_once __DIR__ . '/ensure_tab_payments_mixed_migration.php';
 ensureTabPaymentsAllowsMixedPaymentMethod($db);
 require_once __DIR__ . '/tab_balance_helper.php';
 ensureTabVoidMarkColumns($db);
+ensureTabItemVoidMarkColumns($db);
 
 // Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
@@ -86,91 +87,12 @@ function getUsernamesByIds($userIds) {
 // Handle POST requests for adding/updating/deleting/closing tabs
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     handle_tab_void_mark_post_request($db);
+    handle_tab_item_void_mark_post_request($db);
+    handle_tab_edit_item_post_request($db);
+    handle_tab_delete_item_post_request($db);
+    tab_enforce_session_access_on_post($db);
 
-    if (isset($_POST['delete_item_id'])) {
-        // Delete tab item
-        $itemId = intval($_POST['delete_item_id']);
-        if (!can_delete_tab_items_from_session()) {
-            $tabId = intval($_POST['tab_id'] ?? 0);
-            $_SESSION['error'] = 'You do not have permission to remove items from a tab. Ask a manager.';
-            header('Location: ' . ($tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs'));
-            exit();
-        }
-        $itemStmt = $db->prepare("SELECT tab_id, quantity, price FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $db->beginTransaction();
-            try {
-                // Delete the item
-                $deleteStmt = $db->prepare("DELETE FROM tab_items WHERE id = ?");
-                $deleteStmt->execute([$itemId]);
-                
-                // Update tab balance (subtract the item cost)
-                $itemTotal = $item['quantity'] * $item['price'];
-                $updateStmt = $db->prepare("UPDATE tabs SET current_balance = current_balance - ? WHERE id = ?");
-                $updateStmt->execute([$itemTotal, $item['tab_id']]);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product removed from tab successfully';
-                header('Location: view-tab.php?id=' . $item['tab_id']);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to delete item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $item['tab_id']);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['edit_item_id'])) {
-        // Edit tab item
-        $itemId = intval($_POST['edit_item_id']);
-        $newQuantity = intval($_POST['edit_item_quantity']);
-        $newPrice = floatval($_POST['edit_item_price']);
-        
-        if ($newQuantity <= 0) {
-            $_SESSION['error'] = 'Quantity must be greater than zero';
-            header('Location: view-tab.php?id=' . $_POST['tab_id']);
-            exit();
-        }
-        
-        $itemStmt = $db->prepare("SELECT tab_id, quantity, price FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $db->beginTransaction();
-            try {
-                // Calculate old and new totals
-                $oldTotal = $item['quantity'] * $item['price'];
-                $newTotal = $newQuantity * $newPrice;
-                $difference = $newTotal - $oldTotal;
-                
-                // Update the item
-                $updateStmt = $db->prepare("UPDATE tab_items SET quantity = ?, price = ? WHERE id = ?");
-                $updateStmt->execute([$newQuantity, $newPrice, $itemId]);
-                
-                // Update tab balance (add the difference)
-                $updateBalanceStmt = $db->prepare("UPDATE tabs SET current_balance = current_balance + ? WHERE id = ?");
-                $updateBalanceStmt->execute([$difference, $item['tab_id']]);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product updated successfully';
-                header('Location: view-tab.php?id=' . $item['tab_id']);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to update item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $item['tab_id']);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['payment_amount'])) {
+    if (isset($_POST['payment_amount'])) {
         // Make payment on tab
         $tabId = intval($_POST['tab_id']);
         $amount = floatval($_POST['payment_amount']);
@@ -224,20 +146,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
     } elseif (isset($_POST['delete_id'])) {
-        // Check tab balance first
-        $stmt = $db->prepare("SELECT current_balance, status FROM tabs WHERE id = ?");
-        $stmt->execute([$_POST['delete_id']]);
-        $tab = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($tab['current_balance'] > 0) {
-            $_SESSION['error'] = 'Cannot delete tab with outstanding balance. Please close it first.';
+        $tabId = (int) $_POST['delete_id'];
+        tab_require_session_access($db, $tabId);
+        $tab = tab_fetch_for_delete_check($db, $tabId);
+        if (!$tab) {
+            $_SESSION['error'] = 'Tab not found';
             header('Location: credit-tabs');
             exit();
         }
 
-        // Handle deletion if balance is zero
+        $deleteBlockedReason = tab_delete_blocked_reason($tab);
+        if ($deleteBlockedReason !== null) {
+            $_SESSION['error'] = $deleteBlockedReason;
+            header('Location: credit-tabs');
+            exit();
+        }
+
         $stmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
-        $stmt->execute([$_POST['delete_id']]);
+        $stmt->execute([$tabId]);
         $_SESSION['success'] = 'Tab deleted successfully';
         header('Location: credit-tabs');
         exit();
@@ -252,30 +178,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
         $deleted = 0;
-        $skipped = 0;
+        $skippedBalance = 0;
+        $skippedVoid = 0;
         foreach ($selectedIds as $id) {
-            $stmt = $db->prepare("SELECT current_balance FROM tabs WHERE id = ?");
-            $stmt->execute([$id]);
-            $balance = $stmt->fetchColumn();
-            if ($balance === false) {
+            $tab = tab_fetch_for_delete_check($db, $id);
+            if (!$tab || !session_can_view_tab($tab)) {
                 continue;
             }
-            if ((float) $balance > 0) {
-                $skipped++;
+            if ((float) ($tab['current_balance'] ?? 0) > 0) {
+                $skippedBalance++;
+                continue;
+            }
+            if (tab_roles_blocked_from_deleting_void_pending_from_session() && tab_has_void_pending_in_list($tab)) {
+                $skippedVoid++;
                 continue;
             }
             $stmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
             $stmt->execute([$id]);
             $deleted++;
         }
-        if ($deleted > 0 && $skipped > 0) {
-            $_SESSION['success'] = $deleted === 1
-                ? "1 tab deleted. {$skipped} skipped (outstanding balance)."
-                : "{$deleted} tabs deleted. {$skipped} skipped (outstanding balance).";
-        } elseif ($deleted > 0) {
-            $_SESSION['success'] = $deleted === 1 ? '1 tab deleted successfully.' : "{$deleted} tabs deleted successfully.";
-        } else {
+        if ($deleted > 0) {
+            $skipNotes = [];
+            if ($skippedBalance > 0) {
+                $skipNotes[] = "{$skippedBalance} skipped (outstanding balance)";
+            }
+            if ($skippedVoid > 0) {
+                $skipNotes[] = "{$skippedVoid} skipped (void pending)";
+            }
+            $suffix = empty($skipNotes) ? '' : '. ' . implode(', ', $skipNotes) . '.';
+            $_SESSION['success'] = ($deleted === 1 ? '1 tab deleted successfully' : "{$deleted} tabs deleted successfully") . $suffix;
+        } elseif ($skippedVoid > 0 && $skippedBalance === 0) {
+            $_SESSION['error'] = 'No tabs deleted — selected tabs have items marked for void.';
+        } elseif ($skippedBalance > 0 && $skippedVoid === 0) {
             $_SESSION['error'] = 'No tabs deleted — selected tabs have an outstanding balance.';
+        } else {
+            $_SESSION['error'] = 'No tabs deleted — selected tabs have an outstanding balance or void-pending items.';
         }
         header('Location: credit-tabs');
         exit();
@@ -291,10 +228,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
         $closedByUsername = $_SESSION['username'] ?? 'Unknown';
-        $placeholders = implode(',', array_fill(0, count($selectedIds), '?'));
+        $allowedIds = [];
+        foreach ($selectedIds as $id) {
+            $tab = tab_fetch_for_delete_check($db, $id);
+            if ($tab && session_can_view_tab($tab)) {
+                $allowedIds[] = $id;
+            }
+        }
+        if (empty($allowedIds)) {
+            $_SESSION['error'] = 'No tabs selected that you have access to close.';
+            header('Location: credit-tabs');
+            exit();
+        }
+        $placeholders = implode(',', array_fill(0, count($allowedIds), '?'));
         $sql = "UPDATE tabs SET status = 'closed', closed_at = CURRENT_TIMESTAMP, closed_by = ? WHERE status = 'open' AND id IN ($placeholders)";
         $stmt = $db->prepare($sql);
-        $params = array_merge([$closedByUsername], $selectedIds);
+        $params = array_merge([$closedByUsername], $allowedIds);
         $stmt->execute($params);
         $closedCount = $stmt->rowCount();
         if ($closedCount > 0) {
@@ -306,16 +255,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     } elseif (isset($_POST['close_id'])) {
         // Close tab - store username for consistent tracking
+        $closeTabId = (int) $_POST['close_id'];
+        tab_require_session_access($db, $closeTabId);
         $closedByUsername = $_SESSION['username'] ?? 'Unknown';
         $stmt = $db->prepare("UPDATE tabs SET status = 'closed', closed_at = CURRENT_TIMESTAMP, closed_by = ? WHERE id = ?");
-        $stmt->execute([$closedByUsername, $_POST['close_id']]);
+        $stmt->execute([$closedByUsername, $closeTabId]);
         $_SESSION['success'] = 'Tab closed successfully';
         header('Location: credit-tabs');
         exit();
     } elseif (isset($_POST['reopen_id'])) {
         // Reopen tab
+        $reopenTabId = (int) $_POST['reopen_id'];
+        tab_require_session_access($db, $reopenTabId);
         $stmt = $db->prepare("UPDATE tabs SET status = 'open', closed_at = NULL, closed_by = NULL WHERE id = ?");
-        $stmt->execute([$_POST['reopen_id']]);
+        $stmt->execute([$reopenTabId]);
         $_SESSION['success'] = 'Tab reopened successfully';
         header('Location: credit-tabs');
         exit();
@@ -336,8 +289,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['success'] = 'Tab created successfully';
         } else {
             // Update tab (only allow updating name and notes, not balance)
+            $editTabId = (int) $_POST['id'];
+            tab_require_session_access($db, $editTabId);
             $stmt = $db->prepare("UPDATE tabs SET tab_name = ?, notes = ? WHERE id = ?");
-            $stmt->execute([$tab_name, $notes, $_POST['id']]);
+            $stmt->execute([$tab_name, $notes, $editTabId]);
             $_SESSION['success'] = 'Tab updated successfully';
         }
         header('Location: credit-tabs');
@@ -346,67 +301,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Fetch tabs visible to the logged-in user.
-// Cashiers see their own tabs plus every tab opened by a waitress account.
-$currentUsername = $_SESSION['username'] ?? '';
-$currentUserId = (string) ($_SESSION['user_id'] ?? '');
-$currentRole = strtolower($_SESSION['role'] ?? '');
-
-$tabOwnerIds = array_values(array_unique(array_filter(
-    [$currentUsername, $currentUserId],
-    static function ($value) {
-        return $value !== '' && $value !== null;
-    }
-)));
-
-if ($currentRole === 'cashier') {
-    try {
-        $userDb = new PDO('sqlite:user.db');
-        $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $waitressStmt = $userDb->query("SELECT id, username FROM users WHERE role = 'waitress'");
-        while ($waitress = $waitressStmt->fetch(PDO::FETCH_ASSOC)) {
-            $tabOwnerIds[] = (string) $waitress['username'];
-            $tabOwnerIds[] = (string) $waitress['id'];
-        }
-        $tabOwnerIds = array_values(array_unique(array_filter(
-            $tabOwnerIds,
-            static function ($value) {
-                return $value !== '';
-            }
-        )));
-    } catch (PDOException $e) {
-        // Fall back to own tabs only if user.db is unavailable.
-    }
-}
-
+$ownerFilter = tab_list_owner_filter_for_session('t.cashier_id');
 $tabs = [];
-if (!empty($tabOwnerIds)) {
-    $placeholders = implode(', ', array_fill(0, count($tabOwnerIds), '?'));
-    $tabsStmt = $db->prepare("
-        SELECT 
-            t.id,
-            t.creditor_id,
-            t.tab_name,
-            t.opening_balance,
-            t.current_balance,
-            t.status,
-            t.opened_at,
-            t.closed_at,
-            t.closed_by,
-            t.notes,
-            t.cashier_id,
-            t.marked_for_void,
-            t.void_marked_by,
-            t.void_marked_at,
-            c.name as creditor_name,
-            c.phone as creditor_phone
-        FROM tabs t
-        LEFT JOIN creditors c ON t.creditor_id = c.id
-        WHERE t.cashier_id IN ($placeholders)
-        ORDER BY t.opened_at DESC
-    ");
-    $tabsStmt->execute($tabOwnerIds);
-    $tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
-}
+$tabsStmt = $db->prepare("
+    SELECT 
+        t.id,
+        t.creditor_id,
+        t.tab_name,
+        t.opening_balance,
+        t.current_balance,
+        t.status,
+        t.opened_at,
+        t.closed_at,
+        t.closed_by,
+        t.notes,
+        t.cashier_id,
+        t.marked_for_void,
+        t.void_marked_by,
+        t.void_marked_at,
+        (SELECT COUNT(*) FROM tab_items ti WHERE ti.tab_id = t.id AND ti.marked_for_void = 1) AS items_marked_for_void_count,
+        c.name as creditor_name,
+        c.phone as creditor_phone
+    FROM tabs t
+    LEFT JOIN creditors c ON t.creditor_id = c.id
+    WHERE {$ownerFilter['sql']}
+    ORDER BY t.opened_at DESC
+");
+$tabsStmt->execute($ownerFilter['params']);
+$tabs = $tabsStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Add usernames to tabs using getUsernameById (handles both numeric IDs and usernames)
 $usernameCache = [];
@@ -1200,11 +1122,11 @@ th[onclick]:hover {
                                                 <?php foreach($tabs as $tab): 
                                                     $isUnpaid = $tab['current_balance'] > 0;
                                                 ?>
-                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= tab_is_marked_for_void($tab) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
+                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= tab_has_void_pending_in_list($tab) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
                                                         data-tab-id="<?= $tab['id'] ?>"
                                                         data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                         data-tab-status="<?= strtolower($tab['status']) ?>"
-                                                        data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
+                                                        data-tab-void-mark="<?= tab_has_void_pending_in_list($tab) ? '1' : '0' ?>"
                                                         data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                         data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                         data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"
@@ -1260,7 +1182,7 @@ th[onclick]:hover {
                                                                     </form>
                                                                 <?php endif; ?>
                                                                 
-                                                                <?php if ($tab['current_balance'] == 0): ?>
+                                                                <?php if (tab_can_show_delete_action($tab)): ?>
                                                                     <button onclick="deleteTab(<?= $tab['id'] ?>, '<?= htmlspecialchars($tab['tab_name'], ENT_QUOTES) ?>');"
                                                                         class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-600 hover:text-red-800 disabled:opacity-50 disabled:pointer-events-none dark:text-red-500 dark:hover:text-red-400"
                                                                         title="Delete Tab">
@@ -1288,11 +1210,11 @@ th[onclick]:hover {
                                             $isUnpaid = $tab['current_balance'] > 0;
                                             $balanceColor = $tab['current_balance'] > 0 ? 'text-red-600' : ($tab['current_balance'] < 0 ? 'text-teal-600' : 'text-gray-800');
                                         ?>
-                                            <div class="mobile-tab-card<?= tab_is_marked_for_void($tab) ? ' border-red-300 bg-red-50' : '' ?>" 
+                                            <div class="mobile-tab-card<?= tab_has_void_pending_in_list($tab) ? ' border-red-300 bg-red-50' : '' ?>" 
                                                  data-tab-id="<?= $tab['id'] ?>"
                                                  data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                  data-tab-status="<?= strtolower($tab['status']) ?>"
-                                                 data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
+                                                 data-tab-void-mark="<?= tab_has_void_pending_in_list($tab) ? '1' : '0' ?>"
                                                  data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                  data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                  data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"
@@ -1358,7 +1280,7 @@ th[onclick]:hover {
                                                             </button>
                                                         </form>
                                                     <?php endif; ?>
-                                                    <?php if ($tab['current_balance'] == 0): ?>
+                                                    <?php if (tab_can_show_delete_action($tab)): ?>
                                                         <button onclick="deleteTab(<?= $tab['id'] ?>, '<?= htmlspecialchars($tab['tab_name'], ENT_QUOTES) ?>');"
                                                             class="bg-red-50 text-red-600 hover:bg-red-100">
                                                             <i data-lucide="trash-2" class="w-4 h-4 mx-auto"></i>
@@ -1783,21 +1705,27 @@ th[onclick]:hover {
             });
         }
 
+        const blockDeleteOnVoidPending = <?= tab_roles_blocked_from_deleting_void_pending_from_session() ? 'true' : 'false' ?>;
+
         function deleteSelectedTabs() {
             const selectedPaidIds = [];
             let selectedUnpaidCount = 0;
+            let selectedVoidPendingCount = 0;
 
             document.querySelectorAll('.row-checkbox:checked').forEach((checkbox) => {
                 const row = checkbox.closest('.tab-row');
                 const balance = parseFloat(row?.getAttribute('data-tab-balance') || 0);
+                const tabVoidMark = row?.getAttribute('data-tab-void-mark') || '0';
                 if (balance > 0) {
                     selectedUnpaidCount++;
+                } else if (blockDeleteOnVoidPending && tabVoidMark === '1') {
+                    selectedVoidPendingCount++;
                 } else {
                     selectedPaidIds.push(checkbox.value);
                 }
             });
 
-            if (selectedPaidIds.length === 0 && selectedUnpaidCount === 0) {
+            if (selectedPaidIds.length === 0 && selectedUnpaidCount === 0 && selectedVoidPendingCount === 0) {
                 Swal.fire({
                     icon: 'warning',
                     title: 'No tabs selected',
@@ -1811,7 +1739,9 @@ th[onclick]:hover {
                 Swal.fire({
                     icon: 'warning',
                     title: 'Cannot delete selected tabs',
-                    text: 'Selected tabs have outstanding balances. Only zero-balance tabs can be deleted.',
+                    text: selectedVoidPendingCount > 0 && selectedUnpaidCount === 0
+                        ? 'Selected tabs have items marked for void. Wait for a manager to approve or clear the void request.'
+                        : 'Selected tabs have outstanding balances or void-pending items. Only deletable zero-balance tabs can be removed.',
                     confirmButtonColor: '#dc2626'
                 });
                 return;
@@ -1820,10 +1750,13 @@ th[onclick]:hover {
             const unpaidNote = selectedUnpaidCount > 0
                 ? `<p class="text-xs text-gray-500 mt-2">${selectedUnpaidCount} tab(s) with outstanding balance will be skipped.</p>`
                 : '';
+            const voidNote = selectedVoidPendingCount > 0
+                ? `<p class="text-xs text-gray-500 mt-2">${selectedVoidPendingCount} tab(s) with void-pending items will be skipped.</p>`
+                : '';
 
             Swal.fire({
                 title: 'Delete selected tabs?',
-                html: `<p class="text-sm text-gray-700">You are about to permanently delete <strong>${selectedPaidIds.length}</strong> tab(s).</p><p class="text-sm text-red-600 mt-2">This action cannot be undone!</p>${unpaidNote}`,
+                html: `<p class="text-sm text-gray-700">You are about to permanently delete <strong>${selectedPaidIds.length}</strong> tab(s).</p><p class="text-sm text-red-600 mt-2">This action cannot be undone!</p>${unpaidNote}${voidNote}`,
                 icon: 'warning',
                 showCancelButton: true,
                 confirmButtonColor: '#dc2626',

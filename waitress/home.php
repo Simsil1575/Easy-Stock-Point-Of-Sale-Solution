@@ -155,7 +155,8 @@ if (!$businessInfo) {
     <meta name="theme-color" content="#ffffff" media="(max-width: 767px)">
     <title>POS Solution</title>
     <link href="../src/output.css" rel="stylesheet">
-    <script src="../navigation.js" async></script>
+    <script src="../session_guard.js"></script>
+    <script src="../navigation.js"></script>
     <script src="../src/howler.min.js"></script>
     <script src="../src/chart.js"></script>
     <script src="../lucide.js"></script>
@@ -1324,7 +1325,7 @@ if (!$businessInfo) {
             
             <!-- Search Bar -->
             <div class="relative flex-1 min-w-[200px] w-full lg:w-auto">
-                <input type="text" id="searchBar" class="w-full pl-10 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-teal-500 transition-colors duration-200" placeholder="Search for products or scan barcode..." oninput="filterProducts()" onkeydown="handleBarcodeEntry(event)">
+                <input type="text" id="searchBar" inputmode="none" autocomplete="off" class="w-full pl-10 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-teal-500 transition-colors duration-200" placeholder="Search for products or scan barcode..." oninput="filterProducts()" onkeydown="handleBarcodeEntry(event)">
                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                         <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
@@ -1575,6 +1576,18 @@ if (!$businessInfo) {
 
 
     <script>
+        function dismissPosTouchKeyboard() {
+            if (window.PosKioskBoard && typeof window.PosKioskBoard.closeNow === 'function') {
+                window.PosKioskBoard.closeNow();
+            } else if (window.PosKioskBoard && typeof window.PosKioskBoard.close === 'function') {
+                window.PosKioskBoard.close();
+            }
+            const searchBarEl = document.getElementById('searchBar');
+            if (searchBarEl && document.activeElement === searchBarEl) {
+                searchBarEl.blur();
+            }
+        }
+
         // Add this event listener for keydown on the document
         document.addEventListener('keydown', function(event) {
     const searchBar = document.getElementById('searchBar');
@@ -1596,7 +1609,12 @@ if (!$businessInfo) {
         }
 
         // Focus on the search bar if it's not already focused
+        // Skip when the touch keyboard is on — barcode scans must not pop it open
         if (document.activeElement !== searchBar) {
+            if (window.POS_TOUCH_KEYBOARD_ENABLED === true
+                && !(window.PosKioskBoard && typeof window.PosKioskBoard.isMobile === 'function' && window.PosKioskBoard.isMobile())) {
+                return;
+            }
             searchBar.focus();
         }
         // Trigger the search
@@ -1617,6 +1635,7 @@ if (!$businessInfo) {
                 const products = document.querySelectorAll('.product-item[data-barcode="' + searchTerm + '"]');
                 
                 if (products.length > 0) {
+                    dismissPosTouchKeyboard();
                     // Add product to cart immediately
                     addToCart(products[0]);
                     // Clear search AFTER processing
@@ -2593,19 +2612,17 @@ if (!$businessInfo) {
                     })
                     .then(response => {
                         if (response.success) {
-                            // Open cash drawer before showing success and reloading (like cash.php)
-                            // Use .then() to wait for drawer to complete, matching cash.php's .always()
-                            openCashDrawer().then(() => {
-                                Swal.fire({
-                                    icon: 'success',
-                                    title: 'Cash Back Processed',
-                                    text: `Cash back transaction completed successfully`,
-                                    timer: 1500,
-                                    showConfirmButton: false
-                                });
-                                
-                                // Refresh the page to update display (1 second delay like cash.php)
-                                setTimeout(() => location.reload(), 1000);
+                            handleCashBackCompleted(response, {
+                                onDone: function() {
+                                    Swal.fire({
+                                        icon: 'success',
+                                        title: 'Cash Back Processed',
+                                        text: 'Cash back completed. Drawer opened and receipts printed.',
+                                        timer: 1500,
+                                        showConfirmButton: false
+                                    });
+                                    setTimeout(() => location.reload(), 1000);
+                                }
                             });
                         } else {
                             Swal.fire({
@@ -4703,11 +4720,16 @@ if (!$businessInfo) {
                 return;
             }
             
-            // Focus search bar for any alphanumeric input when not already focused
+            // Focus search bar for any alphanumeric input when not already focused.
+            // Do not focus when the touch keyboard is enabled — scanners would open it.
             if (/^[a-zA-Z0-9]$/.test(event.key) && document.activeElement.id !== 'searchBar') {
-                document.getElementById('searchBar').focus();
-                // Clear any existing search to start fresh
-                document.getElementById('searchBar').value = '';
+                var waitressKbWouldOpen = window.POS_TOUCH_KEYBOARD_ENABLED === true
+                    && !(window.PosKioskBoard && typeof window.PosKioskBoard.isMobile === 'function' && window.PosKioskBoard.isMobile());
+                if (!waitressKbWouldOpen) {
+                    document.getElementById('searchBar').focus();
+                    // Clear any existing search to start fresh
+                    document.getElementById('searchBar').value = '';
+                }
             }
             
             // Handle rapid barcode input
@@ -4722,6 +4744,7 @@ if (!$businessInfo) {
                 barcodeTimeout = setTimeout(() => {
                     // If buffer has content and input was fast (like a scanner)
                     if (barcodeBuffer.length > 5) {
+                        dismissPosTouchKeyboard();
                         // Look for product with this barcode
                         const product = document.querySelector(`.product-item[data-barcode="${barcodeBuffer}"]`);
                         if (product) {
@@ -4735,6 +4758,7 @@ if (!$businessInfo) {
             } else if (event.key === 'Enter') {
                 // Process Enter key immediately for barcode scanners that send Enter
                 if (barcodeBuffer.length > 5) {
+                    dismissPosTouchKeyboard();
                     const product = document.querySelector(`.product-item[data-barcode="${barcodeBuffer}"]`);
                     if (product) {
                         addToCart(product);

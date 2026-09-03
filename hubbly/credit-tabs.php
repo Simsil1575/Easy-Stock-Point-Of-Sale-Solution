@@ -24,6 +24,7 @@ $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 require_once __DIR__ . '/../tab_balance_helper.php';
 ensureTabVoidMarkColumns($db);
+ensureTabItemVoidMarkColumns($db);
 
 // Helper function to get username from user_id or return username if already a string
 function getUsernameById($userId, &$usernameCache = []) {
@@ -84,123 +85,35 @@ function getUsernamesByIds($userIds) {
 // Handle POST requests for adding/updating/deleting/closing tabs
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     handle_tab_void_mark_post_request($db);
+    handle_tab_item_void_mark_post_request($db);
+    handle_tab_edit_item_post_request($db);
+    handle_tab_delete_item_post_request($db);
+    tab_enforce_session_access_on_post($db);
 
-    if (isset($_POST['delete_item_id'])) {
-        // Delete tab item
-        $itemId = intval($_POST['delete_item_id']);
-        if (!can_delete_tab_items_from_session()) {
-            $tabId = intval($_POST['tab_id'] ?? 0);
-            $_SESSION['error'] = 'You do not have permission to remove items from a tab. Ask a manager.';
-            header('Location: ' . ($tabId > 0 ? 'view-tab.php?id=' . $tabId : 'credit-tabs'));
-            exit();
-        }
-        $itemStmt = $db->prepare("SELECT tab_id FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $tabId = $item['tab_id'];
-            $db->beginTransaction();
-            try {
-                // Delete related tab_item_payments first (cascade should handle this, but being explicit)
-                $deletePaymentsStmt = $db->prepare("DELETE FROM tab_item_payments WHERE tab_item_id = ?");
-                $deletePaymentsStmt->execute([$itemId]);
-                
-                // Delete the item
-                $deleteStmt = $db->prepare("DELETE FROM tab_items WHERE id = ?");
-                $deleteStmt->execute([$itemId]);
-                
-                // Recalculate tab balance from scratch
-                recalculateTabBalance($db, $tabId);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product removed from tab successfully';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to delete item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['edit_item_id'])) {
-        // Edit tab item
-        $itemId = intval($_POST['edit_item_id']);
-        $newQuantity = intval($_POST['edit_item_quantity']);
-        $newPrice = floatval($_POST['edit_item_price']);
-        
-        if ($newQuantity <= 0) {
-            $_SESSION['error'] = 'Quantity must be greater than zero';
-            header('Location: view-tab.php?id=' . $_POST['tab_id']);
-            exit();
-        }
-        
-        $itemStmt = $db->prepare("SELECT tab_id FROM tab_items WHERE id = ?");
-        $itemStmt->execute([$itemId]);
-        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($item) {
-            $tabId = $item['tab_id'];
-            $db->beginTransaction();
-            try {
-                // Check if there are payments on this item - if so, we can't edit price
-                $paymentCheckStmt = $db->prepare("SELECT COUNT(*) FROM tab_item_payments WHERE tab_item_id = ?");
-                $paymentCheckStmt->execute([$itemId]);
-                $hasPayments = $paymentCheckStmt->fetchColumn() > 0;
-                
-                if ($hasPayments) {
-                    // If item has payments, only allow quantity changes, not price changes
-                    // Get current price to preserve it
-                    $currentItemStmt = $db->prepare("SELECT price FROM tab_items WHERE id = ?");
-                    $currentItemStmt->execute([$itemId]);
-                    $currentItem = $currentItemStmt->fetch(PDO::FETCH_ASSOC);
-                    $newPrice = floatval($currentItem['price']); // Keep original price
-                }
-                
-                // Update the item
-                $updateStmt = $db->prepare("UPDATE tab_items SET quantity = ?, price = ? WHERE id = ?");
-                $updateStmt->execute([$newQuantity, $newPrice, $itemId]);
-                
-                // Recalculate tab balance from scratch
-                recalculateTabBalance($db, $tabId);
-                
-                $db->commit();
-                $_SESSION['success'] = 'Product updated successfully';
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            } catch (Exception $e) {
-                $db->rollBack();
-                $_SESSION['error'] = 'Failed to update item: ' . $e->getMessage();
-                header('Location: view-tab.php?id=' . $tabId);
-                exit();
-            }
-        }
-        header('Location: credit-tabs');
-        exit();
-    } elseif (isset($_POST['payment_amount'])) {
+    if (isset($_POST['payment_amount'])) {
         // Make payment on tab - redirect to view-tab.php for proper item-based payment processing
         $tabId = intval($_POST['tab_id']);
         $_SESSION['error'] = 'Please use the payment feature from the tab details page for accurate payment processing.';
         header('Location: view-tab.php?id=' . $tabId);
         exit();
     } elseif (isset($_POST['delete_id'])) {
-        // Check tab balance first
-        $stmt = $db->prepare("SELECT current_balance, status FROM tabs WHERE id = ?");
-        $stmt->execute([$_POST['delete_id']]);
-        $tab = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($tab['current_balance'] > 0) {
-            $_SESSION['error'] = 'Cannot delete tab with outstanding balance. Please close it first.';
+        $tabId = (int) $_POST['delete_id'];
+        $tab = tab_fetch_for_delete_check($db, $tabId);
+        if (!$tab) {
+            $_SESSION['error'] = 'Tab not found';
             header('Location: credit-tabs');
             exit();
         }
 
-        // Handle deletion if balance is zero
+        $deleteBlockedReason = tab_delete_blocked_reason($tab);
+        if ($deleteBlockedReason !== null) {
+            $_SESSION['error'] = $deleteBlockedReason;
+            header('Location: credit-tabs');
+            exit();
+        }
+
         $stmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
-        $stmt->execute([$_POST['delete_id']]);
+        $stmt->execute([$tabId]);
         $_SESSION['success'] = 'Tab deleted successfully';
         header('Location: credit-tabs');
         exit();
@@ -215,30 +128,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
         $deleted = 0;
-        $skipped = 0;
+        $skippedBalance = 0;
+        $skippedVoid = 0;
         foreach ($selectedIds as $id) {
-            $stmt = $db->prepare("SELECT current_balance FROM tabs WHERE id = ?");
-            $stmt->execute([$id]);
-            $balance = $stmt->fetchColumn();
-            if ($balance === false) {
+            $tab = tab_fetch_for_delete_check($db, $id);
+            if (!$tab) {
                 continue;
             }
-            if ((float) $balance > 0) {
-                $skipped++;
+            if ((float) ($tab['current_balance'] ?? 0) > 0) {
+                $skippedBalance++;
+                continue;
+            }
+            if (tab_roles_blocked_from_deleting_void_pending_from_session() && tab_has_void_pending_in_list($tab)) {
+                $skippedVoid++;
                 continue;
             }
             $stmt = $db->prepare("DELETE FROM tabs WHERE id = ?");
             $stmt->execute([$id]);
             $deleted++;
         }
-        if ($deleted > 0 && $skipped > 0) {
-            $_SESSION['success'] = $deleted === 1
-                ? "1 tab deleted. {$skipped} skipped (outstanding balance)."
-                : "{$deleted} tabs deleted. {$skipped} skipped (outstanding balance).";
-        } elseif ($deleted > 0) {
-            $_SESSION['success'] = $deleted === 1 ? '1 tab deleted successfully.' : "{$deleted} tabs deleted successfully.";
-        } else {
+        if ($deleted > 0) {
+            $skipNotes = [];
+            if ($skippedBalance > 0) {
+                $skipNotes[] = "{$skippedBalance} skipped (outstanding balance)";
+            }
+            if ($skippedVoid > 0) {
+                $skipNotes[] = "{$skippedVoid} skipped (void pending)";
+            }
+            $suffix = empty($skipNotes) ? '' : '. ' . implode(', ', $skipNotes) . '.';
+            $_SESSION['success'] = ($deleted === 1 ? '1 tab deleted successfully' : "{$deleted} tabs deleted successfully") . $suffix;
+        } elseif ($skippedVoid > 0 && $skippedBalance === 0) {
+            $_SESSION['error'] = 'No tabs deleted — selected tabs have items marked for void.';
+        } elseif ($skippedBalance > 0 && $skippedVoid === 0) {
             $_SESSION['error'] = 'No tabs deleted — selected tabs have an outstanding balance.';
+        } else {
+            $_SESSION['error'] = 'No tabs deleted — selected tabs have an outstanding balance or void-pending items.';
         }
         header('Location: credit-tabs');
         exit();
@@ -313,6 +237,7 @@ $tabsStmt = $db->prepare("
         t.marked_for_void,
         t.void_marked_by,
         t.void_marked_at,
+        (SELECT COUNT(*) FROM tab_items ti WHERE ti.tab_id = t.id AND ti.marked_for_void = 1) AS items_marked_for_void_count,
         c.name as creditor_name,
         c.phone as creditor_phone
     FROM tabs t
@@ -885,6 +810,7 @@ th[onclick]:hover {
                                                 <option value="" <?= ($currentView === '' || $currentView === 'balance') ? 'selected' : '' ?>>All Status</option>
                                                 <option value="open" <?= $currentView === 'active' ? 'selected' : '' ?>>Open</option>
                                                 <option value="closed" <?= $currentView === 'closed' ? 'selected' : '' ?>>Closed</option>
+                                                <option value="void_pending">Void Pending</option>
                                             </select>
                                             <select id="balanceFilter" class="py-2 px-3 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500">
                                                 <option value="" <?= ($currentView === '' || $currentView === 'active' || $currentView === 'closed') ? 'selected' : '' ?>>All Balances</option>
@@ -948,11 +874,11 @@ th[onclick]:hover {
                                                 <?php foreach($tabs as $tab): 
                                                     $isUnpaid = $tab['current_balance'] > 0;
                                                 ?>
-                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= tab_is_marked_for_void($tab) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
+                                                    <tr class="tab-row hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer<?= tab_has_void_pending_in_list($tab) ? ' bg-red-50 hover:bg-red-100' : '' ?>" 
                                                         data-tab-id="<?= $tab['id'] ?>"
                                                         data-tab-name="<?= htmlspecialchars(strtolower($tab['tab_name'])) ?>"
                                                         data-tab-status="<?= strtolower($tab['status']) ?>"
-                                                        data-tab-void-mark="<?= tab_is_marked_for_void($tab) ? '1' : '0' ?>"
+                                                        data-tab-void-mark="<?= tab_has_void_pending_in_list($tab) ? '1' : '0' ?>"
                                                         data-tab-opened-by="<?= htmlspecialchars(strtolower($tab['opened_by_username'] ?? '')) ?>"
                                                         data-tab-opened-at="<?= strtolower(date('Y-m-d H:i', strtotime($tab['opened_at']))) ?>"
                                                         data-tab-creditor="<?= htmlspecialchars(strtolower($tab['creditor_name'] ?? '')) ?>"
@@ -1004,7 +930,7 @@ th[onclick]:hover {
                                                                     </form>
                                                                 <?php endif; ?>
                                                                 
-                                                                <?php if ($tab['current_balance'] == 0): ?>
+                                                                <?php if (tab_can_show_delete_action($tab)): ?>
                                                                     <button onclick="deleteTab(<?= $tab['id'] ?>, '<?= htmlspecialchars($tab['tab_name'], ENT_QUOTES) ?>');"
                                                                         class="inline-flex items-center gap-x-1 text-sm font-semibold rounded-lg border border-transparent text-red-600 hover:text-red-800 disabled:opacity-50 disabled:pointer-events-none dark:text-red-500 dark:hover:text-red-400"
                                                                         title="Delete Tab">
@@ -1130,6 +1056,7 @@ th[onclick]:hover {
                 const tabCreditor = row.getAttribute('data-tab-creditor') || '';
                 const tabId = row.getAttribute('data-tab-id') || '';
                 const tabBalance = parseFloat(row.getAttribute('data-tab-balance') || 0);
+                const tabVoidMark = row.getAttribute('data-tab-void-mark') || '0';
 
                 // Search filter
                 const matchesSearch = searchTerm === '' || 
@@ -1141,7 +1068,12 @@ th[onclick]:hover {
                     tabId.includes(searchTerm);
 
                 // Status filter
-                const matchesStatus = statusValue === '' || tabStatus === statusValue;
+                let matchesStatus = true;
+                if (statusValue === 'void_pending') {
+                    matchesStatus = tabVoidMark === '1';
+                } else if (statusValue !== '') {
+                    matchesStatus = tabStatus === statusValue;
+                }
 
                 // Balance filter
                 let matchesBalance = true;
@@ -1327,21 +1259,27 @@ th[onclick]:hover {
             });
         }
 
+        const blockDeleteOnVoidPending = <?= tab_roles_blocked_from_deleting_void_pending_from_session() ? 'true' : 'false' ?>;
+
         function deleteSelectedTabs() {
             const selectedPaidIds = [];
             let selectedUnpaidCount = 0;
+            let selectedVoidPendingCount = 0;
 
             document.querySelectorAll('.row-checkbox:checked').forEach((checkbox) => {
                 const row = checkbox.closest('.tab-row');
                 const balance = parseFloat(row?.getAttribute('data-tab-balance') || 0);
+                const tabVoidMark = row?.getAttribute('data-tab-void-mark') || '0';
                 if (balance > 0) {
                     selectedUnpaidCount++;
+                } else if (blockDeleteOnVoidPending && tabVoidMark === '1') {
+                    selectedVoidPendingCount++;
                 } else {
                     selectedPaidIds.push(checkbox.value);
                 }
             });
 
-            if (selectedPaidIds.length === 0 && selectedUnpaidCount === 0) {
+            if (selectedPaidIds.length === 0 && selectedUnpaidCount === 0 && selectedVoidPendingCount === 0) {
                 Swal.fire({
                     icon: 'warning',
                     title: 'No tabs selected',
@@ -1355,7 +1293,9 @@ th[onclick]:hover {
                 Swal.fire({
                     icon: 'warning',
                     title: 'Cannot delete selected tabs',
-                    text: 'Selected tabs have outstanding balances. Only zero-balance tabs can be deleted.',
+                    text: selectedVoidPendingCount > 0 && selectedUnpaidCount === 0
+                        ? 'Selected tabs have items marked for void. Wait for a manager to approve or clear the void request.'
+                        : 'Selected tabs have outstanding balances or void-pending items. Only deletable zero-balance tabs can be removed.',
                     confirmButtonColor: '#dc2626'
                 });
                 return;
@@ -1364,10 +1304,13 @@ th[onclick]:hover {
             const unpaidNote = selectedUnpaidCount > 0
                 ? `<p class="text-xs text-gray-500 mt-2">${selectedUnpaidCount} tab(s) with outstanding balance will be skipped.</p>`
                 : '';
+            const voidNote = selectedVoidPendingCount > 0
+                ? `<p class="text-xs text-gray-500 mt-2">${selectedVoidPendingCount} tab(s) with void-pending items will be skipped.</p>`
+                : '';
 
             Swal.fire({
                 title: 'Delete selected tabs?',
-                html: `<p class="text-sm text-gray-700">You are about to permanently delete <strong>${selectedPaidIds.length}</strong> tab(s).</p><p class="text-sm text-red-600 mt-2">This action cannot be undone!</p>${unpaidNote}`,
+                html: `<p class="text-sm text-gray-700">You are about to permanently delete <strong>${selectedPaidIds.length}</strong> tab(s).</p><p class="text-sm text-red-600 mt-2">This action cannot be undone!</p>${unpaidNote}${voidNote}`,
                 icon: 'warning',
                 showCancelButton: true,
                 confirmButtonColor: '#dc2626',

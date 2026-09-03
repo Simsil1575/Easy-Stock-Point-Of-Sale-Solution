@@ -12,6 +12,7 @@ if ($activationStatus == 0) {
 }
 
 require_once __DIR__ . '/business_day_helper.php';
+require_once __DIR__ . '/cash_transactions_totals_helper.php';
 
 $bdCtx = bdLoadClosingContext(__DIR__ . '/info.db');
 $closingTime = $bdCtx['closing_time'];
@@ -209,10 +210,11 @@ Cash available in till is calculated as:
 $cashAvailableInTill = $totalCashIn - $totalCashOut + $cumulativeCashSales + $cumulativePaidCredit;
 
 // Total revenue includes all sales regardless of payment method (only for selected date)
-$totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments;
+$cashTillDeductions = sumCashTillDeductionsReportTotal($db, $selectedDate, $nextDay, $closingTime, $isAfterMidnight);
+$totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments - $cashTillDeductions;
 
-// Update the definition of cashSalesTotal to include paid credit amounts (for the Cash Sales card)
-$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount;
+// Cash Sales card: gross cash in minus till deductions
+$cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount - $cashTillDeductions;
 
 // Fetch top selling products with business day logic
 $topProductsQuery = $db->prepare("

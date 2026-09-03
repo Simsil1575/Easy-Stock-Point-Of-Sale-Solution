@@ -263,7 +263,7 @@ function rrRenderReceivingPdf(string $displayDate, string $supplierName, string 
             $name = substr($name, 0, 35) . '...';
         }
         $pdf->Cell(62, 8, $name, 1);
-        $pdf->Cell(16, 8, '+' . $item['added_quantity'], 1, 0, 'C');
+        $pdf->Cell(16, 8, ($item['added_quantity'] > 0 ? '+' : '') . $item['added_quantity'], 1, 0, 'C');
         $pdf->Cell(26, 8, 'N$' . number_format($item['price'], 2), 1, 0, 'R');
         $pdf->Cell(26, 8, 'N$' . number_format($item['buying_price'], 2), 1, 0, 'R');
         $pdf->Cell(28, 8, 'N$' . number_format($item['total_value'], 2), 1, 0, 'R');
@@ -335,11 +335,13 @@ function rrDeleteRecord(PDO $db, int $id): void
         foreach ($bundle['items'] as $line) {
             $pid = (int) $line['product_id'];
             $qty = floatval($line['quantity_added']);
-            if ($qty <= 0) {
+            if (abs($qty) < 0.00001) {
                 continue;
             }
             rrApplyStockDelta($db, $pid, -$qty, floatval($line['buying_price']), $receivingDate, $username);
-            $poItems[] = ['product_id' => $pid, 'quantity' => (int) $qty];
+            if ($qty > 0) {
+                $poItems[] = ['product_id' => $pid, 'quantity' => (int) $qty];
+            }
         }
         $poId = !empty($record['purchase_order_id']) ? (int) $record['purchase_order_id'] : 0;
         if ($poId > 0 && !empty($poItems)) {
@@ -426,7 +428,7 @@ function rrUpdateRecord(PDO $db, int $id, array $header, array $lines): void
             $oldLine = $existingById[$lineId];
             $productId = (int) $oldLine['product_id'];
             $oldQty = floatval($oldLine['quantity_added']);
-            $newQty = max(0, floatval($lineInput['quantity_added'] ?? $oldQty));
+            $newQty = floatval($lineInput['quantity_added'] ?? $oldQty);
             $buyingPrice = floatval($lineInput['buying_price'] ?? $oldLine['buying_price']);
             $unitPrice = floatval($oldLine['unit_price']);
             $delta = $newQty - $oldQty;

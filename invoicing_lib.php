@@ -1287,15 +1287,15 @@ function invAdjustStock(PDO $db, int $invoiceId, int $sign): void
         if ($pid < 1 || $qty <= 0) {
             continue; // Custom/description-only lines never touch stock.
         }
-        $isFood = strtolower(trim((string) ($row['category'] ?? ''))) === 'food';
 
         if ($hasRecipe && !empty($row['product_name'])) {
-            // Recipe ingredients: deduct on apply, restore on reverse.
-            deductRecipeStockByProductName($db, (string) $row['product_name'], $sign === -1 ? $qty : -$qty);
+            if ($sign === -1) {
+                deductRecipeStockByProductName($db, (string) $row['product_name'], $qty);
+            } else {
+                restoreRecipeStockByProductName($db, (string) $row['product_name'], $qty);
+            }
         }
-        if (!$isFood) {
-            $update->execute([':delta' => $sign * $qty, ':id' => $pid]);
-        }
+        $update->execute([':delta' => $sign * $qty, ':id' => $pid]);
     }
 }
 
@@ -1369,7 +1369,7 @@ function invListQuotations(PDO $db, array $filters = [], int $page = 1, int $per
     [$limit, $offset, $page, $pages] = invPaginate($total, $page, $perPage);
 
     $sql = "
-        SELECT q.*, c.name AS customer_name, c.phone AS customer_phone
+        SELECT q.*, c.name AS customer_name, c.phone AS customer_phone, c.email AS customer_email
         FROM quotations q
         LEFT JOIN customers c ON c.id = q.customer_id
         $whereSql
@@ -1432,7 +1432,7 @@ function invListInvoices(PDO $db, array $filters = [], int $page = 1, int $perPa
     [$limit, $offset, $page, $pages] = invPaginate($total, $page, $perPage);
 
     $sql = "
-        SELECT i.*, c.name AS customer_name, c.phone AS customer_phone
+        SELECT i.*, c.name AS customer_name, c.phone AS customer_phone, c.email AS customer_email
         FROM invoices i
         LEFT JOIN customers c ON c.id = i.customer_id
         $whereSql

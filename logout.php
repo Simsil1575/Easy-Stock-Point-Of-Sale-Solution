@@ -18,6 +18,17 @@ if (isset($_SESSION['user_id']) && $username !== null && $username !== '') {
 
 session_unset();
 session_destroy();
-
-header("Location: /");
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+        try { sessionStorage.removeItem('pos_browser_session'); } catch (e) {}
+        window.location.replace('/');
+    </script>
+</head>
+<body></body>
+</html>
+<?php
 exit();

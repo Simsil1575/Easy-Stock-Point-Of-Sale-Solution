@@ -37,8 +37,10 @@ function ensureVoidTransactionsExtendedSchema(PDO $db): void
 
 /**
  * Snapshot a deleted POS order into void_transactions (call before removing order rows).
+ *
+ * @return array<string, mixed>|null Receipt payload for printing, or null if order not found
  */
-function recordVoidForDeletedOrder(PDO $db, int $orderId): void
+function recordVoidForDeletedOrder(PDO $db, int $orderId): ?array
 {
     ensureVoidTransactionsExtendedSchema($db);
 
@@ -46,7 +48,7 @@ function recordVoidForDeletedOrder(PDO $db, int $orderId): void
     $orderStmt->execute([$orderId]);
     $order = $orderStmt->fetch(PDO::FETCH_ASSOC);
     if (!$order) {
-        return;
+        return null;
     }
 
     $itemsStmt = $db->prepare("SELECT product_name, quantity, price FROM order_items WHERE order_id = ? ORDER BY id");
@@ -109,6 +111,7 @@ function recordVoidForDeletedOrder(PDO $db, int $orderId): void
             :terminal_mac, :terminal_name
         )
     ");
+    $cashierId = $order['cashier_id'] !== null && $order['cashier_id'] !== '' ? (string) $order['cashier_id'] : 'Unknown';
     $ins->execute([
         ':order_id' => $orderId,
         ':total' => $total,
@@ -118,17 +121,35 @@ function recordVoidForDeletedOrder(PDO $db, int $orderId): void
         ':transaction_ref' => $transactionRef,
         ':wallet_provider' => $walletProvider,
         ':eft_amount' => $eftSum > 0 ? $eftSum : null,
-        ':cashier_id' => $order['cashier_id'] !== null && $order['cashier_id'] !== '' ? (string) $order['cashier_id'] : 'Unknown',
+        ':cashier_id' => $cashierId,
         ':voided_at' => date('Y-m-d H:i:s'),
         ':terminal_mac' => $order['terminal_mac'] ?? null,
         ':terminal_name' => $order['terminal_name'] ?? null,
+    ]);
+
+    require_once __DIR__ . '/void_receipt_helper.php';
+
+    return buildVoidReceiptData([
+        'void_id' => (int) $db->lastInsertId(),
+        'order_id' => $orderId,
+        'total' => $total,
+        'cash_received' => (float) $order['cash_received'],
+        'items' => $itemsPayload,
+        'payment_method' => $paymentMethod,
+        'transaction_ref' => $transactionRef,
+        'wallet_provider' => $walletProvider,
+        'eft_amount' => $eftSum > 0 ? $eftSum : null,
+        'cashier_username' => $cashierId,
+        'void_source' => 'deleted_order',
     ]);
 }
 
 /**
  * Snapshot a deleted credit sale into void_transactions (call before removing credit sale rows).
+ *
+ * @return array<string, mixed>|null Receipt payload for printing, or null if sale not found
  */
-function recordVoidForDeletedCreditSale(PDO $db, int $saleId): void
+function recordVoidForDeletedCreditSale(PDO $db, int $saleId): ?array
 {
     ensureVoidTransactionsExtendedSchema($db);
 
@@ -141,7 +162,7 @@ function recordVoidForDeletedCreditSale(PDO $db, int $saleId): void
     $saleStmt->execute([$saleId]);
     $sale = $saleStmt->fetch(PDO::FETCH_ASSOC);
     if (!$sale) {
-        return;
+        return null;
     }
 
     $itemsStmt = $db->prepare("SELECT product_name, quantity, price FROM credit_sale_items WHERE sale_id = ? ORDER BY id");
@@ -171,16 +192,31 @@ function recordVoidForDeletedCreditSale(PDO $db, int $saleId): void
             :terminal_mac, :terminal_name
         )
     ");
+    $cashierId = $sale['cashier_id'] !== null && $sale['cashier_id'] !== '' ? (string) $sale['cashier_id'] : 'Unknown';
     $ins->execute([
         ':credit_sale_id' => $saleId,
         ':total' => (float) $sale['total_amount'],
         ':cash_received' => 0,
         ':items' => json_encode($itemsPayload),
         ':payment_method' => $readablePm,
-        ':cashier_id' => $sale['cashier_id'] !== null && $sale['cashier_id'] !== '' ? (string) $sale['cashier_id'] : 'Unknown',
+        ':cashier_id' => $cashierId,
         ':voided_at' => date('Y-m-d H:i:s'),
         ':creditor_name' => $sale['creditor_name'] ?? null,
         ':terminal_mac' => $sale['terminal_mac'] ?? null,
         ':terminal_name' => $sale['terminal_name'] ?? null,
+    ]);
+
+    require_once __DIR__ . '/void_receipt_helper.php';
+
+    return buildVoidReceiptData([
+        'void_id' => (int) $db->lastInsertId(),
+        'credit_sale_id' => $saleId,
+        'total' => (float) $sale['total_amount'],
+        'cash_received' => 0,
+        'items' => $itemsPayload,
+        'payment_method' => $readablePm,
+        'cashier_username' => $cashierId,
+        'void_source' => 'deleted_credit',
+        'creditor_name' => $sale['creditor_name'] ?? null,
     ]);
 }

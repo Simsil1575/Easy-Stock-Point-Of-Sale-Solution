@@ -64,12 +64,6 @@ try {
         throw new Exception('Invalid line total');
     }
 
-    $stmtGetProductInfo = $db->prepare('SELECT category FROM products WHERE name = ?');
-    $stmtGetProductInfo->execute([$name]);
-    $info = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
-    $cat = $info ? ($info['category'] ?? '') : '';
-    $isFood = strtolower(trim($cat)) === 'food';
-
     $addedTs = $item['added_at'] ?? null;
     $summaryDate = $addedTs ? date('Y-m-d', strtotime((string) $addedTs)) : date('Y-m-d');
 
@@ -78,9 +72,7 @@ try {
     $db->beginTransaction();
 
     restoreRecipeStockByProductName($db, $name, floatval($qty));
-    if (!$isFood) {
-        $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?')->execute([$qty, $name]);
-    }
+    $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?')->execute([$qty, $name]);
 
     $resolveProductStmt->execute([$name]);
     if ($resolveProductStmt->fetchColumn()) {

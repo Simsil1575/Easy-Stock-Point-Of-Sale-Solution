@@ -2,6 +2,7 @@
 // net_profit_pdf.php - Generate PDF net profit report using FPDF
 
 require('../fpdf/fpdf.php');
+require_once __DIR__ . '/../cash_transactions_totals_helper.php';
 
 class NetProfitPDF extends FPDF {
     // Page header
@@ -127,12 +128,32 @@ function getTotalCashIn($db, $startDate, $endDate) {
     }
 }
 
-// Function to get total cash out
+// Function to get total cash out (expenses + refunds + cash back)
 function getTotalCashOut($db, $startDate, $endDate) {
     try {
-        $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM cash_transactions WHERE type = 'cash-out' AND created_at BETWEEN :start_date AND :end_date");
-        $stmt->execute([':start_date' => $startDate . ' 00:00:00', ':end_date' => $endDate . ' 23:59:59']);
-        return $stmt->fetchColumn();
+        $whereSql = "created_at BETWEEN :start_date AND :end_date";
+        $params = [':start_date' => $startDate . ' 00:00:00', ':end_date' => $endDate . ' 23:59:59'];
+        $outflowWhere = cashReportOutflowWhereSql('description');
+        $cashBackWhere = cashBackDescriptionSql('description');
+        $stmt = $db->prepare("
+            SELECT COALESCE(SUM(" . cashWithdrawalsSumExpr() . "), 0)
+            FROM cash_transactions
+            WHERE {$outflowWhere}
+              AND {$whereSql}
+        ");
+        $stmt->execute($params);
+        $outflows = (float) $stmt->fetchColumn();
+
+        $cashBackStmt = $db->prepare("
+            SELECT COALESCE(SUM(amount), 0)
+            FROM cash_transactions
+            WHERE type = 'cash-out'
+              AND {$cashBackWhere}
+              AND {$whereSql}
+        ");
+        $cashBackStmt->execute($params);
+
+        return $outflows + (float) $cashBackStmt->fetchColumn();
     } catch (PDOException $e) {
         error_log("Error in getTotalCashOut: " . $e->getMessage());
         return 0;

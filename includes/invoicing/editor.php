@@ -55,7 +55,7 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
                             <select id="customerId" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm">
                                 <option value="">Select customer...</option>
                                 <?php foreach ($customers as $c): ?>
-                                    <option value="<?= (int) $c['id'] ?>" <?= $curCustomer === (int) $c['id'] ? 'selected' : '' ?>><?= $e($c['name']) ?><?= $c['phone'] ? ' · ' . $e($c['phone']) : '' ?></option>
+                                    <option value="<?= (int) $c['id'] ?>" data-email="<?= $e($c['email'] ?? '') ?>" data-name="<?= $e($c['name'] ?? '') ?>" <?= $curCustomer === (int) $c['id'] ? 'selected' : '' ?>><?= $e($c['name']) ?><?= $c['phone'] ? ' · ' . $e($c['phone']) : '' ?></option>
                                 <?php endforeach; ?>
                             </select>
                             <button type="button" onclick="openCustomerModal()" class="px-3 py-2 rounded-lg bg-gray-800 text-white text-sm hover:bg-gray-900" title="New customer"><i class="fas fa-user-plus"></i></button>
@@ -155,11 +155,13 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
                 <div class="space-y-2">
                     <button type="button" onclick="saveDoc('draft')" <?= $readonly ? 'disabled' : '' ?> class="w-full px-4 py-2.5 rounded-lg bg-gray-800 text-white hover:bg-gray-900 disabled:opacity-50 text-sm font-medium"><i class="fas fa-save mr-1"></i> Save Draft</button>
                     <?php if ($isQuote): ?>
-                    <button type="button" onclick="saveDoc('send')" <?= $readonly ? 'disabled' : '' ?> class="w-full px-4 py-2.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 text-sm font-medium"><i class="fas fa-paper-plane mr-1"></i> Save &amp; Mark Sent</button>
+                    <button type="button" onclick="saveDoc('send')" <?= $readonly ? 'disabled' : '' ?> class="w-full px-4 py-2.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 text-sm font-medium"><i class="fas fa-paper-plane mr-1"></i> Save &amp; Email</button>
                     <?php else: ?>
                     <button type="button" onclick="saveDoc('issue')" <?= $readonly ? 'disabled' : '' ?> class="w-full px-4 py-2.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 text-sm font-medium"><i class="fas fa-check mr-1"></i> Save &amp; Issue</button>
+                    <button type="button" onclick="saveDoc('send')" <?= $readonly ? 'disabled' : '' ?> class="w-full px-4 py-2.5 rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 disabled:opacity-50 text-sm font-medium"><i class="fas fa-paper-plane mr-1"></i> Save, Issue &amp; Email</button>
                     <?php endif; ?>
                     <?php if ($isEdit): ?>
+                    <button type="button" onclick="emailSavedDoc()" class="w-full px-4 py-2.5 rounded-lg border border-teal-200 text-teal-700 hover:bg-teal-50 text-sm font-medium"><i class="fas fa-envelope mr-1"></i> Email to Client</button>
                     <a href="<?= $invBase ?? '../' ?>invoicing_pdf.php?type=<?= $type ?>&id=<?= $docId ?>" target="_blank" class="block text-center w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 text-sm font-medium"><i class="fas fa-file-pdf mr-1"></i> Generate PDF</a>
                     <?php endif; ?>
                 </div>
@@ -237,7 +239,8 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
 </datalist>
 
 <script>
-    const INV_TYPE = <?= json_encode($type) ?>;
+    window.INV_TYPE = <?= json_encode($type) ?>;
+    const INV_TYPE = window.INV_TYPE;
     const IS_QUOTE = <?= $isQuote ? 'true' : 'false' ?>;
     window.INV_CURRENCY = <?= json_encode($currency) ?>;
     let PRODUCTS = <?= json_encode(array_map(fn($p) => [
@@ -363,17 +366,37 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
         if (IS_QUOTE) {
             p.quotation_date = document.getElementById('primaryDate').value;
             p.expiry_date = document.getElementById('secondaryDate').value;
-            p.status = status === 'send' ? 'Sent' : 'Draft';
+            p.status = 'Draft';
         } else {
             p.invoice_date = document.getElementById('primaryDate').value;
             p.due_date = document.getElementById('secondaryDate').value;
             p.payment_terms = (document.getElementById('paymentTerms') || {}).value || '';
-            if (status === 'issue') p.issue = 1;
+            if (status === 'issue' || status === 'send') p.issue = 1;
         }
         return p;
     }
 
     let saving = false;
+    function selectedCustomerMeta() {
+        const sel = document.getElementById('customerId');
+        const opt = sel && sel.options[sel.selectedIndex];
+        return {
+            email: (opt && opt.dataset.email) || '',
+            name: (opt && opt.dataset.name) || (opt ? opt.textContent : '')
+        };
+    }
+    async function emailSavedDoc(id) {
+        const docId = id || parseInt(document.getElementById('docId').value) || 0;
+        if (!docId) { invToast('Save the document first.', 'error'); return false; }
+        const meta = selectedCustomerMeta();
+        return invEmailDocument({
+            id: docId,
+            type: IS_QUOTE ? 'quotation' : 'invoice',
+            email: meta.email,
+            name: meta.name,
+            number: <?= json_encode($isEdit ? (string) ($isQuote ? ($doc['quotation_number'] ?? '') : ($doc['invoice_number'] ?? '')) : '') ?>
+        });
+    }
     async function saveDoc(status) {
         if (saving) return;
         const payload = collectPayload(status);
@@ -382,6 +405,13 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
         saving = true;
         try {
             const d = await invApi(IS_QUOTE ? 'save_quotation' : 'save_invoice', payload);
+            if (d.id) document.getElementById('docId').value = d.id;
+            if (status === 'send') {
+                const emailed = await emailSavedDoc(d.id);
+                if (!emailed) invToast('Saved. Email was not sent.', 'info');
+                setTimeout(() => location.href = '<?= $viewPage ?>?id=' + d.id, emailed ? 700 : 900);
+                return;
+            }
             invToast('Saved.', 'success');
             setTimeout(() => location.href = '<?= $viewPage ?>?id=' + d.id, 500);
         } catch (err) {
@@ -404,7 +434,7 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
             document.getElementById('autosaveHint').textContent = 'Saving draft...';
             const d = await invApi(IS_QUOTE ? 'save_quotation' : 'save_invoice', payload);
             if (d.id) document.getElementById('docId').value = d.id;
-            const t = new Date().toLocaleTimeString();
+            const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
             document.getElementById('autosaveHint').textContent = 'Draft auto-saved at ' + t;
         } catch (err) {
             document.getElementById('autosaveHint').textContent = '';
@@ -500,6 +530,8 @@ $title = ($isEdit ? 'Edit ' : 'New ') . ($isQuote ? 'Quotation' : 'Invoice');
             const sel = document.getElementById('customerId');
             const opt = document.createElement('option');
             opt.value = d.customer.id; opt.textContent = d.customer.name + (d.customer.phone ? ' · ' + d.customer.phone : '');
+            opt.dataset.email = d.customer.email || '';
+            opt.dataset.name = d.customer.name || '';
             sel.appendChild(opt); sel.value = d.customer.id;
             closeCustomerModal();
             ['cxName','cxPhone','cxEmail','cxAddress','cxTax'].forEach(i => document.getElementById(i).value = '');

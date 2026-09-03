@@ -82,20 +82,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $itemsStmt->execute([$laybyeId]);
             $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
             $currentDate = date('Y-m-d');
-            $stmtGetProductInfo = $db->prepare('SELECT category FROM products WHERE name = ?');
             $resolveProductStmt = $db->prepare('SELECT id FROM products WHERE name = ? LIMIT 1');
 
             foreach ($items as $item) {
                 $name = $item['product_name'];
                 $qty = (int) $item['quantity'];
-                $stmtGetProductInfo->execute([$name]);
-                $info = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
-                $cat = $info ? ($info['category'] ?? '') : '';
-                $isFood = strtolower(trim($cat)) === 'food';
                 restoreRecipeStockByProductName($db, $name, floatval($qty));
-                if (!$isFood) {
-                    $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?')->execute([$qty, $name]);
-                }
+                $db->prepare('UPDATE products SET quantity = quantity + ? WHERE name = ?')->execute([$qty, $name]);
                 $resolveProductStmt->execute([$name]);
                 if ($resolveProductStmt->fetchColumn()) {
                     $db->prepare("
@@ -431,7 +424,6 @@ $laybyeReceiptJsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON
                     <div class="flex flex-wrap gap-2 items-end">
                         <select id="addProductId" class="border border-gray-300 rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]">
                             <?php foreach ($products as $pr):
-                                $isFood = strtolower(trim((string) ($pr['category'] ?? ''))) === 'food';
                                 $hasRecipe = isset($recipeProductNames[$pr['name']]);
                                 $q = (float) $pr['quantity'];
                                 $stockDisp = (abs($q - round($q)) < 0.00001) ? (string) (int) round($q) : number_format($q, 2);
@@ -447,7 +439,6 @@ $laybyeReceiptJsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON
                                     data-name="<?= htmlspecialchars($pr['name'], ENT_QUOTES) ?>"
                                     data-price="<?= htmlspecialchars((string) $pr['price'], ENT_QUOTES) ?>"
                                     data-stock="<?= htmlspecialchars((string) $pr['quantity'], ENT_QUOTES) ?>"
-                                    data-is-food="<?= $isFood ? '1' : '0' ?>"
                                     data-has-recipe="<?= $hasRecipe ? '1' : '0' ?>"><?= $label ?></option>
                             <?php endforeach; ?>
                         </select>
@@ -639,9 +630,8 @@ $laybyeReceiptJsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON
             const qty = parseInt(document.getElementById('addQty').value, 10) || 1;
             if (!name) return;
             if (!skipStockChecksLaybye) {
-                const isFood = opt.getAttribute('data-is-food') === '1';
                 const hasRecipe = opt.getAttribute('data-has-recipe') === '1';
-                if (!isFood && !hasRecipe) {
+                if (!hasRecipe) {
                     const avail = parseFloat(opt.getAttribute('data-stock') || '0');
                     if (qty > avail) {
                         Swal.fire('Insufficient stock', 'Only ' + avail + ' available for ' + name + '.', 'warning');

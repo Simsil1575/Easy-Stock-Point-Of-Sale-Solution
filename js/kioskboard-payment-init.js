@@ -304,7 +304,7 @@
         }
         if (value === '__done__') {
             closeKeyboard(true);
-            if (input.classList.contains('quantity-input')) {
+            if (input.classList.contains('quantity-input') || input.getAttribute('data-pos-kb-open-on') === 'pointer') {
                 input.blur();
             }
             return;
@@ -448,12 +448,23 @@
         el.classList.add(mode === 'decimal' ? 'js-kioskboard-decimal' : 'js-kioskboard-text');
         el.setAttribute('autocomplete', 'off');
 
-        if (options.allowRealKeyboard !== false) {
+        var openOnPointerOnly = options.openOnPointerOnly === true
+            || el.getAttribute('data-pos-kb-open-on') === 'pointer';
+
+        if (openOnPointerOnly) {
+            el.setAttribute('data-pos-kb-open-on', 'pointer');
+            el.setAttribute('inputmode', 'none');
+            el.setAttribute('readonly', 'readonly');
+        } else if (options.allowRealKeyboard !== false) {
             el.setAttribute('inputmode', mode === 'decimal' ? 'decimal' : 'text');
         }
 
         el.addEventListener('focus', function () {
             if (isMobileDevice()) {
+                return;
+            }
+            // Barcode scanners focus this field programmatically — do not open the panel.
+            if (openOnPointerOnly) {
                 return;
             }
             if (!document.getElementById(KB_ID) || activeInput !== el) {
@@ -465,10 +476,24 @@
             if (isMobileDevice()) {
                 return;
             }
+            if (openOnPointerOnly) {
+                el.removeAttribute('readonly');
+            }
             if (!document.getElementById(KB_ID) || activeInput !== el) {
                 showKeyboard(el, mode, true);
             }
         });
+
+        if (openOnPointerOnly) {
+            el.addEventListener('blur', function () {
+                window.setTimeout(function () {
+                    if (activeInput === el && document.getElementById(KB_ID)) {
+                        return;
+                    }
+                    el.setAttribute('readonly', 'readonly');
+                }, 0);
+            });
+        }
     }
 
     function bindDecimal(selectorOrElements, options) {
@@ -571,7 +596,7 @@
 
         attachGlobalHandlers();
         initPaymentKeyboards('#paymentModal');
-        bindText('#searchBar', { allowRealKeyboard: true });
+        bindText('#searchBar', { allowRealKeyboard: true, openOnPointerOnly: true });
         bindDecimal('#cashReceived', { placement: 'bottom', allowRealKeyboard: false });
     }
 
@@ -588,8 +613,11 @@
             var mode = isDecimalInput(inputEl) ? 'decimal' : 'text';
             showKeyboard(inputEl, mode);
         },
-        close: function () {
-            closeKeyboard(true);
+        close: function (animate) {
+            closeKeyboard(animate !== false);
+        },
+        closeNow: function () {
+            closeKeyboard(false);
         },
         isMobile: isMobileDevice,
         isEnabled: isTouchKeyboardEnabled

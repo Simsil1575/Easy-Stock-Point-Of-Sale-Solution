@@ -35,33 +35,24 @@ try {
     die("Connection failed: " . $e->getMessage());
 }
 
-// Get business info
+require_once __DIR__ . '/../business_day_helper.php';
+
+$bdCtx = bdLoadBusinessHoursContext(__DIR__ . '/../info.db');
+$closingTime = $bdCtx['closing_time'];
+$isAfterMidnight = $bdCtx['is_after_midnight'];
 $businessInfo = [];
-$closingTime = '22:00';
 try {
-    $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $closingTime = $businessInfo['closing_time'] ?? '22:00';
+    $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
 } catch (PDOException $e) {
-    $closingTime = '22:00';
+    $businessInfo = [];
 }
 
-// Get date from POST or GET
-$selectedDate = isset($_POST['date']) ? $_POST['date'] : (isset($_GET['date']) ? $_GET['date'] : date('Y-m-d'));
+$selectedDate = isset($_POST['date']) ? $_POST['date'] : (isset($_GET['date']) ? $_GET['date'] : bdDefaultSelectedDate($closingTime, $isAfterMidnight));
 $nextBusinessDay = date('Y-m-d', strtotime($selectedDate . ' +1 day'));
 
-// Calculate business day boundaries
-$closingHour = (int)substr($closingTime, 0, 2);
-$isAfterMidnight = $closingHour < 12;
-
-/**
- * Helper function to get business day WHERE clause
- */
 function getBusinessDayWhere($dateField) {
-    global $selectedDate, $nextBusinessDay, $closingTime, $isAfterMidnight;
-    return "
-        (DATE($dateField) = :selectedDate AND strftime('%H:%M', $dateField) >= :closingTime) OR
-        (DATE($dateField) = :nextBusinessDay AND strftime('%H:%M', $dateField) < :closingTime AND :isAfterMidnight = 1)
-    ";
+    global $closingTime, $isAfterMidnight;
+    return bdSingleDayWhereSql($dateField, ':selectedDate', ':nextBusinessDay', $closingTime, (bool) $isAfterMidnight);
 }
 
 // Calculate all amounts using same logic as cashupmaster.php
@@ -90,8 +81,6 @@ if ($eftTableExists) {
 }
 $cashSalesQuery->bindParam(':selectedDate', $selectedDate);
 $cashSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashSalesQuery->bindParam(':closingTime', $closingTime);
-$cashSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashSalesQuery->execute();
 $totalCashSales = $cashSalesQuery->fetchColumn();
 
@@ -102,8 +91,6 @@ $cashInQuery = $db->prepare("
 ");
 $cashInQuery->bindParam(':selectedDate', $selectedDate);
 $cashInQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashInQuery->bindParam(':closingTime', $closingTime);
-$cashInQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashInQuery->execute();
 $totalCashIn = $cashInQuery->fetchColumn();
 
@@ -115,8 +102,6 @@ $creditPaymentsQuery = $db->prepare("
 ");
 $creditPaymentsQuery->bindParam(':selectedDate', $selectedDate);
 $creditPaymentsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$creditPaymentsQuery->bindParam(':closingTime', $closingTime);
-$creditPaymentsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $creditPaymentsQuery->execute();
 $totalCreditPayments = $creditPaymentsQuery->fetchColumn();
 
@@ -127,8 +112,6 @@ $cashOutQuery = $db->prepare("
 ");
 $cashOutQuery->bindParam(':selectedDate', $selectedDate);
 $cashOutQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashOutQuery->bindParam(':closingTime', $closingTime);
-$cashOutQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashOutQuery->execute();
 $totalCashOut = $cashOutQuery->fetchColumn();
 
@@ -145,8 +128,6 @@ if ($eftTableExists) {
     ");
     $cardSalesQuery->bindParam(':selectedDate', $selectedDate);
     $cardSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-    $cardSalesQuery->bindParam(':closingTime', $closingTime);
-    $cardSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
     $cardSalesQuery->execute();
     $cardSalesExpected = $cardSalesQuery->fetchColumn();
 }
@@ -158,8 +139,6 @@ $unpaidCreditSalesQuery = $db->prepare("
 ");
 $unpaidCreditSalesQuery->bindParam(':selectedDate', $selectedDate);
 $unpaidCreditSalesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$unpaidCreditSalesQuery->bindParam(':closingTime', $closingTime);
-$unpaidCreditSalesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $unpaidCreditSalesQuery->execute();
 $unpaidCreditSales = $unpaidCreditSalesQuery->fetchColumn();
 
@@ -170,8 +149,6 @@ $openTabsQuery = $db->prepare("
 ");
 $openTabsQuery->bindParam(':selectedDate', $selectedDate);
 $openTabsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$openTabsQuery->bindParam(':closingTime', $closingTime);
-$openTabsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $openTabsQuery->execute();
 $openTabsBalance = $openTabsQuery->fetchColumn();
 
@@ -182,8 +159,6 @@ $creditReturnsQuery = $db->prepare("
 ");
 $creditReturnsQuery->bindParam(':selectedDate', $selectedDate);
 $creditReturnsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$creditReturnsQuery->bindParam(':closingTime', $closingTime);
-$creditReturnsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $creditReturnsQuery->execute();
 $creditReturnsAmount = $creditReturnsQuery->fetchColumn();
 $creditReturns = $creditReturnsAmount + $totalCreditPayments;
@@ -197,8 +172,6 @@ $expensesQuery = $db->prepare("
 ");
 $expensesQuery->bindParam(':selectedDate', $selectedDate);
 $expensesQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$expensesQuery->bindParam(':closingTime', $closingTime);
-$expensesQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $expensesQuery->execute();
 $expenses = $expensesQuery->fetchColumn();
 
@@ -211,8 +184,6 @@ $cashBackQuery = $db->prepare("
 ");
 $cashBackQuery->bindParam(':selectedDate', $selectedDate);
 $cashBackQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$cashBackQuery->bindParam(':closingTime', $closingTime);
-$cashBackQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $cashBackQuery->execute();
 $cashBackSystem = $cashBackQuery->fetchColumn();
 
@@ -223,8 +194,6 @@ $voidsQuery = $db->prepare("
 ");
 $voidsQuery->bindParam(':selectedDate', $selectedDate);
 $voidsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$voidsQuery->bindParam(':closingTime', $closingTime);
-$voidsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $voidsQuery->execute();
 $voids = $voidsQuery->fetchColumn();
 
@@ -235,8 +204,6 @@ $refundsQuery = $db->prepare("
 ");
 $refundsQuery->bindParam(':selectedDate', $selectedDate);
 $refundsQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$refundsQuery->bindParam(':closingTime', $closingTime);
-$refundsQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $refundsQuery->execute();
 $refunds = $refundsQuery->fetchColumn();
 
@@ -247,8 +214,6 @@ $totalItemsSoldQuery = $db->prepare("
 ");
 $totalItemsSoldQuery->bindParam(':selectedDate', $selectedDate);
 $totalItemsSoldQuery->bindParam(':nextBusinessDay', $nextBusinessDay);
-$totalItemsSoldQuery->bindParam(':closingTime', $closingTime);
-$totalItemsSoldQuery->bindParam(':isAfterMidnight', $isAfterMidnight, PDO::PARAM_INT);
 $totalItemsSoldQuery->execute();
 $totalItemsSold = $totalItemsSoldQuery->fetchColumn() ?? 0;
 

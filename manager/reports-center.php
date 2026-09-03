@@ -94,11 +94,8 @@ $reportBusinessHours = bdLoadBusinessHoursContext();
 $reportOpeningTime = htmlspecialchars($reportBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
 $reportClosingTime = htmlspecialchars($reportBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
 ensureUiCardsSchema($infoDb);
-$uiCardScope = 'manager_reports';
-$hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
-$orderedUiCards = uiGetCardOrder($infoDb, $uiCardScope);
-$showHiddenUiCards = isset($_GET['show_hidden']);
-$uiCardsCustomizeMode = isset($_GET['customize']) || $showHiddenUiCards;
+$uiCardsState = uiCardsInitPageState($infoDb, 'manager_reports', (string) $_SESSION['user_id'], false, (string) $_SESSION['role']);
+extract($uiCardsState);
 $uiCardsApiUrl = '../ui_cards_api.php';
 ?>
 <!DOCTYPE html>
@@ -554,6 +551,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <h3 class="font-semibold text-gray-800 mb-1">Tabs Report</h3>
                             <p class="text-sm text-gray-500">Open and closed tabs summary</p>
                         </div>
+
                         
                         <!-- Expenses Reports -->
                         <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="expenses" onclick="openReportModal('expenses', 'Expenses Report', 'All business expenses')">
@@ -604,6 +602,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <h3 class="font-semibold text-gray-800 mb-1">Receiving by Supplier</h3>
                             <p class="text-sm text-gray-500">Receiving history grouped by supplier</p>
                         </div>
+
                         
                         <!-- Refunds & Voids Reports -->
                         <div class="report-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="refunds" onclick="openReportModal('refunds', 'Refunds Report', 'All refund transactions')">
@@ -805,7 +804,6 @@ $uiCardsApiUrl = '../ui_cards_api.php';
     
     <?php include __DIR__ . '/../includes/date_range_time_script.php'; ?>
     <script>
-        // Update current time
         setInterval(() => {
             const now = new Date();
             document.getElementById('currentTime').textContent = 
@@ -813,12 +811,10 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                 now.getMinutes().toString().padStart(2, '0');
         }, 60000);
         
-        // Initialize Lucide icons
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
         }
         
-        // Modal functions
         function hideAllReportFilters() {
             document.getElementById('cashierFilter').classList.add('hidden');
             document.getElementById('terminalFilter').classList.add('hidden');
@@ -835,6 +831,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             document.getElementById('modalTitle').textContent = title;
             document.getElementById('modalDescription').textContent = description;
             
+            const isCashierReport = ['sales', 'cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type);
             const today = drFormatDate(new Date());
             drSetDateRangeDefaults('startDate', 'endDate', 'startTime', 'endTime', today, today);
             
@@ -844,8 +841,35 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                 document.getElementById('terminalFilter').classList.remove('hidden');
             }
 
-            if (['cashier_sales', 'shift', 'cashup', 'gratuity', 'tips'].includes(type)) {
+            if (isCashierReport) {
                 document.getElementById('cashierFilter').classList.remove('hidden');
+                
+                const cashierSelect = document.getElementById('cashierId');
+                if (cashierSelect) {
+                    const newCashierSelect = cashierSelect.cloneNode(true);
+                    cashierSelect.parentNode.replaceChild(newCashierSelect, cashierSelect);
+                    
+                    const applyReportShiftTimes = function () {
+                        const sel = document.getElementById('cashierId');
+                        return drApplyCashierShiftTimes(
+                            sel ? sel.value : '',
+                            'startDate',
+                            'endDate',
+                            'startTime',
+                            'endTime',
+                            'get_cashier_shift_times.php'
+                        );
+                    };
+                    newCashierSelect.addEventListener('change', applyReportShiftTimes);
+                    ['startDate', 'endDate'].forEach(function (dateId) {
+                        const el = document.getElementById(dateId);
+                        if (el && el.dataset.drShiftWired !== '1') {
+                            el.dataset.drShiftWired = '1';
+                            el.addEventListener('change', applyReportShiftTimes);
+                        }
+                    });
+                    applyReportShiftTimes();
+                }
             }
             
             if (['credit_sales', 'outstanding_credit', 'tabs'].includes(type)) {

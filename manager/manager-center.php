@@ -57,11 +57,10 @@ try {
     // Empty array
 }
 
-// Get all cashiers and waitresses for cash up modal dropdown (same as manager/home.php)
+// All users for cash up modal dropdown
 $allCashUpEmployees = [];
 try {
-    $employeesQuery = $userDb->query("SELECT id, username, role FROM users WHERE role IN ('cashier', 'waitress') ORDER BY username");
-    $allCashUpEmployees = $employeesQuery->fetchAll(PDO::FETCH_ASSOC);
+    $allCashUpEmployees = $userDb->query("SELECT id, username, role FROM users ORDER BY username")->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     // If query fails, leave empty
 }
@@ -72,11 +71,8 @@ $menuBusinessHours = bdLoadBusinessHoursContext();
 $menuOpeningTime = htmlspecialchars($menuBusinessHours['opening_time'], ENT_QUOTES, 'UTF-8');
 $menuClosingTime = htmlspecialchars($menuBusinessHours['closing_time'], ENT_QUOTES, 'UTF-8');
 ensureUiCardsSchema($infoDb);
-$uiCardScope = 'manager_menu';
-$hiddenUiCards = uiGetHiddenCards($infoDb, $uiCardScope);
-$orderedUiCards = uiGetCardOrder($infoDb, $uiCardScope);
-$showHiddenUiCards = isset($_GET['show_hidden']);
-$uiCardsCustomizeMode = isset($_GET['customize']) || $showHiddenUiCards;
+$uiCardsState = uiCardsInitPageState($infoDb, 'manager_menu', (string) $_SESSION['user_id'], false, (string) $_SESSION['role']);
+extract($uiCardsState);
 $uiCardsApiUrl = '../ui_cards_api.php';
 ?>
 <!DOCTYPE html>
@@ -383,6 +379,19 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <p class="text-sm text-gray-500">Issue invoices, record payments, track balances</p>
                         </div>
 
+                        <!-- Medical Aid -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="medical_aid" onclick="window.location.href='medical_aid'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-sky-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-notes-medical text-sky-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-sky-100 text-sky-700 px-2 py-1 rounded-full">Medical</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Medical Aid</h3>
+                            <p class="text-sm text-gray-500">Manage patients, medical aid accounts, and claims</p>
+                        </div>
+
                         <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="credit_book" onclick="window.location.href='credit-book'">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
@@ -538,6 +547,19 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             <p class="text-sm text-gray-500">View, edit, delete, and download past receives</p>
                         </div>
 
+                        <!-- Stock take records -->
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="stock_take_records" onclick="window.location.href='stock_take_records.php'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-clipboard-check text-indigo-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">Inventory</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Stock take records</h3>
+                            <p class="text-sm text-gray-500">View, delete, and download past opening and closing stock takes</p>
+                        </div>
+
                         <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="categories" onclick="window.location.href='categories'">
                             <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
                             <div class="flex items-start justify-between mb-3">
@@ -548,6 +570,18 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             </div>
                             <h3 class="font-semibold text-gray-800 mb-1">Categories</h3>
                             <p class="text-sm text-gray-500">Easy access to product categories and reports</p>
+                        </div>
+
+                        <div class="operation-card ui-selectable-card bg-gray-50 rounded-xl p-5 border border-gray-200" data-card-id="barcode_labels" onclick="window.location.href='barcode_labels'">
+                            <div class="ui-card-checkbox-wrap" onclick="event.stopPropagation()"><input type="checkbox" class="ui-card-checkbox rounded border-gray-300 text-teal-600 focus:ring-teal-500" aria-label="Select card"></div>
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="w-12 h-12 bg-violet-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-barcode text-violet-600 text-xl"></i>
+                                </div>
+                                <span class="text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded-full">Inventory</span>
+                            </div>
+                            <h3 class="font-semibold text-gray-800 mb-1">Barcode Labels</h3>
+                            <p class="text-sm text-gray-500">Manage barcodes and print Zebra labels in bulk</p>
                         </div>
 
                         <!-- Purchase orders (supplier POs) -->
@@ -868,7 +902,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                                 </div>
                             </div>
                             <div>
-                                <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Cashier / Waitress (Optional)</label>
+                                <label for="cashup_cashier" class="block text-sm font-medium text-gray-700 mb-2">Staff Member (Optional)</label>
                                 <select id="cashup_cashier" class="w-full px-4 py-3 border-2 border-teal-100 rounded-xl focus:ring-2 focus:ring-teal-200 focus:border-teal-500 transition-all bg-teal-50 hover:bg-teal-100">
                                     <option value="all">All Staff</option>
                                     <?php foreach ($allCashUpEmployees as $employee): ?>
@@ -1160,15 +1194,17 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                     })
                     .then(response => {
                         if (response.success) {
-                            openCashDrawer().then(() => {
-                                Swal.fire({
-                                    icon: 'success',
-                                    title: 'Cash Back Processed',
-                                    text: 'Cash back transaction completed successfully',
-                                    timer: 1500,
-                                    showConfirmButton: false
-                                });
-                                setTimeout(() => location.reload(), 1000);
+                            handleCashBackCompleted(response, {
+                                onDone: function() {
+                                    Swal.fire({
+                                        icon: 'success',
+                                        title: 'Cash Back Processed',
+                                        text: 'Cash back completed. Drawer opened and receipts printed.',
+                                        timer: 1500,
+                                        showConfirmButton: false
+                                    });
+                                    setTimeout(() => location.reload(), 1000);
+                                }
                             });
                         } else {
                             Swal.fire({
@@ -1346,6 +1382,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             .then(r => r.json())
             .then(result => {
                 if (result.success) {
+                    openCashDrawer().catch(function() {});
                     Swal.fire({ icon: 'success', title: 'Success', text: result.message || 'Expense recorded.', timer: 2000 });
                     closeModal('expenseModal');
                     form.reset();
@@ -1390,6 +1427,15 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             const el = document.getElementById('cashup_end_time');
             return drNormalizeTime(el ? el.value : '', window.BUSINESS_HOURS.closing);
         }
+
+        const applyAdminCashUpShiftTimes = drWireCashierShiftTimeAutoFill({
+            cashierSelectId: 'cashup_cashier',
+            startDateId: 'cashup_start_date',
+            endDateId: 'cashup_end_date',
+            startTimeId: 'cashup_start_time',
+            endTimeId: 'cashup_end_time',
+            apiUrl: 'get_cashier_shift_times.php'
+        });
         
         function openCashUpModal() {
             cashUpCurrentStep = 1;
@@ -1407,6 +1453,7 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             document.getElementById('cashup_expenses').value = '';
             document.getElementById('cashUpModal').classList.remove('hidden');
             updateCashUpStepDisplay();
+            applyAdminCashUpShiftTimes();
             openCashDrawer().catch(function() {});
         }
         
@@ -1487,7 +1534,8 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                             start_time: startTime,
                             end_date: endDate,
                             end_time: endTime,
-                            cashier_id: cashierId
+                            cashier_id: cashierId,
+                            include_expected_amounts: true
                         })
                     });
                     cashUpSystemData = await response.json();
@@ -1501,11 +1549,13 @@ $uiCardsApiUrl = '../ui_cards_api.php';
                     document.getElementById('cashup_credit_returns').value = cashUpSystemData.credit_returns?.toFixed(2) ?? '';
                     document.getElementById('cashup_expenses').value = cashUpSystemData.expenses?.toFixed(2) ?? '';
                     updateCashUpStep2Summary();
-                    document.getElementById('step4_expected').textContent = '—';
+                    const expCash = parseFloat(cashUpSystemData.cash_sales_expected) || 0;
+                    const expEft = parseFloat(cashUpSystemData.card_sales_expected) || 0;
+                    document.getElementById('step4_expected').textContent = 'N$ ' + expCash.toFixed(2);
                     document.getElementById('cashup_cash_on_hand').value = '';
                     document.getElementById('step4_over_short').textContent = '—';
                     document.getElementById('step4_over_short').className = 'text-2xl font-bold text-gray-500';
-                    document.getElementById('step5_eft_expected').textContent = '—';
+                    document.getElementById('step5_eft_expected').textContent = 'N$ ' + expEft.toFixed(2);
                     document.getElementById('step5_eft_over_short').textContent = '—';
                     document.getElementById('step5_eft_over_short').className = 'text-2xl font-bold text-gray-500';
                     const dateRangeText = startDate + ' ' + startTime + ' — ' + endDate + ' ' + endTime;
@@ -1556,19 +1606,22 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             const unpaidCredit = parseFloat(document.getElementById('cashup_unpaid_credit').value) || 0;
             const creditReturns = parseFloat(document.getElementById('cashup_credit_returns').value) || 0;
             const expenses = parseFloat(document.getElementById('cashup_expenses').value) || 0;
-            const hiddenExpectedLabel = '—';
+            const expCashReview = parseFloat(cashUpSystemData.cash_sales_expected) || 0;
+            const expEftReview = parseFloat(cashUpSystemData.card_sales_expected) || 0;
+            const cashVar = cashOnHand - expCashReview;
+            const eftVar = eftOnHand - expEftReview;
             const startDate = document.getElementById('cashup_start_date').value;
             const endDate = document.getElementById('cashup_end_date').value;
             document.getElementById('review_date').textContent = startDate + ' — ' + endDate;
             document.getElementById('review_cashier').textContent = document.getElementById('cashup_cashier').selectedOptions[0].text;
-            document.getElementById('review_cash_expected').textContent = hiddenExpectedLabel;
+            document.getElementById('review_cash_expected').textContent = 'N$ ' + expCashReview.toFixed(2);
             document.getElementById('review_cash_on_hand').textContent = 'N$ ' + cashOnHand.toFixed(2);
-            document.getElementById('review_over_short').textContent = hiddenExpectedLabel;
-            document.getElementById('review_over_short').className = 'font-semibold text-gray-500';
-            document.getElementById('review_eft_expected').textContent = hiddenExpectedLabel;
+            document.getElementById('review_over_short').textContent = 'N$ ' + cashVar.toFixed(2);
+            document.getElementById('review_over_short').className = 'font-semibold ' + (cashVar > 0 ? 'text-green-600' : (cashVar < 0 ? 'text-red-600' : 'text-gray-700'));
+            document.getElementById('review_eft_expected').textContent = 'N$ ' + expEftReview.toFixed(2);
             document.getElementById('review_eft_on_hand').textContent = 'N$ ' + eftOnHand.toFixed(2);
-            document.getElementById('review_eft_over_short').textContent = hiddenExpectedLabel;
-            document.getElementById('review_eft_over_short').className = 'font-semibold text-gray-500';
+            document.getElementById('review_eft_over_short').textContent = 'N$ ' + eftVar.toFixed(2);
+            document.getElementById('review_eft_over_short').className = 'font-semibold ' + (eftVar > 0 ? 'text-green-600' : (eftVar < 0 ? 'text-red-600' : 'text-gray-700'));
             document.getElementById('review_unpaid_credit').textContent = 'N$ ' + unpaidCredit.toFixed(2);
             document.getElementById('review_credit_returns').textContent = 'N$ ' + creditReturns.toFixed(2);
             document.getElementById('review_open_tabs').textContent = 'N$ ' + (cashUpSystemData.open_tabs_balance || 0).toFixed(2);
@@ -1765,29 +1818,52 @@ $uiCardsApiUrl = '../ui_cards_api.php';
             }, 3000);
         }
         
+        function formatCashUpVarianceEl(display, variance, zeroClass) {
+            if (!display) return;
+            zeroClass = zeroClass || 'text-teal-700';
+            display.textContent = 'N$ ' + variance.toFixed(2);
+            display.className = 'text-2xl font-bold ' + (variance > 0 ? 'text-green-600' : (variance < 0 ? 'text-red-600' : zeroClass));
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             const cashOnHandInput = document.getElementById('cashup_cash_on_hand');
             if (cashOnHandInput) {
                 cashOnHandInput.addEventListener('input', function() {
-                    if (cashUpSystemData) {
-                        const display = document.getElementById('step4_over_short');
-                        if (display) {
-                            display.textContent = '—';
-                            display.className = 'text-2xl font-bold text-gray-500';
-                        }
+                    const display = document.getElementById('step4_over_short');
+                    if (!cashUpSystemData || !display) return;
+                    const exp = parseFloat(cashUpSystemData.cash_sales_expected);
+                    if (Number.isNaN(exp)) {
+                        display.textContent = '—';
+                        display.className = 'text-2xl font-bold text-gray-500';
+                        return;
                     }
+                    const raw = cashOnHandInput.value.trim();
+                    if (raw === '') {
+                        display.textContent = '—';
+                        display.className = 'text-2xl font-bold text-gray-500';
+                        return;
+                    }
+                    formatCashUpVarianceEl(display, (parseFloat(raw) || 0) - exp, 'text-teal-700');
                 });
             }
             const eftOnHandInput = document.getElementById('cashup_eft_on_hand');
             if (eftOnHandInput) {
                 eftOnHandInput.addEventListener('input', function() {
-                    if (cashUpSystemData) {
-                        const display = document.getElementById('step5_eft_over_short');
-                        if (display) {
-                            display.textContent = '—';
-                            display.className = 'text-2xl font-bold text-gray-500';
-                        }
+                    const display = document.getElementById('step5_eft_over_short');
+                    if (!cashUpSystemData || !display) return;
+                    const exp = parseFloat(cashUpSystemData.card_sales_expected);
+                    if (Number.isNaN(exp)) {
+                        display.textContent = '—';
+                        display.className = 'text-2xl font-bold text-gray-500';
+                        return;
                     }
+                    const raw = eftOnHandInput.value.trim();
+                    if (raw === '') {
+                        display.textContent = '—';
+                        display.className = 'text-2xl font-bold text-gray-500';
+                        return;
+                    }
+                    formatCashUpVarianceEl(display, (parseFloat(raw) || 0) - exp, 'text-blue-700');
                 });
             }
         });

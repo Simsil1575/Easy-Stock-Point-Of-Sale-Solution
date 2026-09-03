@@ -92,15 +92,11 @@ try {
         $stmtGetProductInfo->execute([$name]);
         $productInfo = $stmtGetProductInfo->fetch(PDO::FETCH_ASSOC);
         $buyingPrice = $productInfo ? ($productInfo['buying_price'] ?? null) : null;
-        $productCategory = $productInfo ? ($productInfo['category'] ?? null) : null;
 
         laybyeAssertStockForAddItem($db, $name, $qty, $productInfo, $skipStockChecks);
 
-        $isFood = strtolower(trim($productCategory ?? '')) === 'food';
         deductRecipeStockByProductName($db, $name, floatval($qty), $skipStockChecks);
-        if (!$isFood) {
-            deductProductStockByName($db, $name, floatval($qty), $skipStockChecks);
-        }
+        deductProductStockByName($db, $name, floatval($qty), $skipStockChecks);
 
         $itemStmt->execute([$laybyeId, $name, $qty, $unitPrice, $buyingPrice, $cashierUsername]);
 

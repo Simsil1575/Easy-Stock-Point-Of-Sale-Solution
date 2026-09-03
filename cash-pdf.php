@@ -52,13 +52,15 @@ if (isset($_POST['is_cashup']) && $_POST['is_cashup'] === 'true') {
     // Simplified Income and Expenses Section
     // =====================
     try {
-        $db = new PDO('sqlite:pos.db');
-        $infoDb = new PDO('sqlite:info.db');
-        $businessInfo = $infoDb->query("SELECT * FROM business_info LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-        $closingTime = $businessInfo && !empty($businessInfo['closing_time']) ? $businessInfo['closing_time'] : '00:00';
-        $closingHour = (int)substr($closingTime, 0, 2);
-        $isAfterMidnight = $closingHour < 12;
+        require_once __DIR__ . '/business_day_helper.php';
+        $bdCtx = bdLoadClosingContext(__DIR__ . '/info.db');
+        $closingTime = $bdCtx['closing_time'];
+        $isAfterMidnight = $bdCtx['is_after_midnight'];
         $selectedDate = $_POST['date'];
+        $bdCaseOCreated = bdBusinessDateCaseSql('o.created_at', $closingTime, $isAfterMidnight);
+        $bdCaseCreated = bdBusinessDateCaseSql('created_at', $closingTime, $isAfterMidnight);
+        $bdCasePayment = bdBusinessDateCaseSql('p.payment_date', $closingTime, $isAfterMidnight);
+        $db = new PDO('sqlite:pos.db');
         
         // Query for simplified breakdown
         $sql = "
@@ -73,11 +75,7 @@ if (isset($_POST['is_cashup']) && $_POST['is_cashup'] === 'true') {
                 SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount ELSE 0 END) as total_expense
             FROM (
                 SELECT 
-                    CASE 
-                        WHEN strftime('%H:%M', o.created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                        THEN date(datetime(o.created_at, '-1 day'))
-                        ELSE date(o.created_at)
-                    END AS business_date, 
+                    $bdCaseOCreated AS business_date, 
                     o.total as amount,
                     CASE 
                         WHEN e.order_id IS NOT NULL THEN 'eft'
@@ -90,11 +88,7 @@ if (isset($_POST['is_cashup']) && $_POST['is_cashup'] === 'true') {
                 UNION ALL
                 
                 SELECT 
-                    CASE 
-                        WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                        THEN date(datetime(created_at, '-1 day'))
-                        ELSE date(created_at)
-                    END AS business_date, 
+                    $bdCaseCreated AS business_date, 
                     total_amount as amount, 
                     'credit_unpaid' as source,
                     'income' as transaction_type
@@ -104,11 +98,7 @@ if (isset($_POST['is_cashup']) && $_POST['is_cashup'] === 'true') {
                 UNION ALL
                 
                 SELECT 
-                    CASE 
-                        WHEN strftime('%H:%M', p.payment_date) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                        THEN date(datetime(p.payment_date, '-1 day'))
-                        ELSE date(p.payment_date)
-                    END AS business_date,
+                    $bdCasePayment AS business_date,
                     p.amount as amount,
                     CASE
                         WHEN cs.payment_status = 'eft' THEN 'credit_eft'
@@ -121,11 +111,7 @@ if (isset($_POST['is_cashup']) && $_POST['is_cashup'] === 'true') {
                 UNION ALL
                 
                 SELECT 
-                    CASE 
-                        WHEN strftime('%H:%M', created_at) BETWEEN '00:00' AND '$closingTime' AND " . ($isAfterMidnight ? "1=1" : "1=0") . "
-                        THEN date(datetime(created_at, '-1 day'))
-                        ELSE date(created_at)
-                    END AS business_date,
+                    $bdCaseCreated AS business_date,
                     amount,
                     'cash-out' as source,
                     'expense' as transaction_type
