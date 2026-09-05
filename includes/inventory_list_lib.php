@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../ensure_laybye_schema.php';
+require_once __DIR__ . '/../ensure_product_updated_at_schema.php';
 require_once __DIR__ . '/product_image_helper.php';
 
 /**
@@ -101,10 +102,12 @@ function inventoryListFetchPage(PDO $db, array $params): array
     $search = trim((string) ($params['search'] ?? ''));
     $category = trim((string) ($params['category'] ?? ''));
     $allowedSort = [
+        'id' => 'id',
         'name' => 'name COLLATE NOCASE',
         'quantity' => 'quantity',
         'price' => 'price',
         'buying_price' => 'buying_price',
+        'updated_at' => "COALESCE(updated_at, datetime('1970-01-01'))",
     ];
     $sortKey = (string) ($params['sort_col'] ?? 'name');
     $sortCol = $allowedSort[$sortKey] ?? $allowedSort['name'];

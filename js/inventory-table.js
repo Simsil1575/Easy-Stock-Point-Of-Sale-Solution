@@ -13,6 +13,65 @@
     let fetchTimer = null;
     const sortState = { column: 'name', direction: 'asc' };
 
+    const sortFilter = document.getElementById('sortFilter');
+    const sortFilterDesktop = document.getElementById('sortFilterDesktop');
+    const SORT_STORAGE_KEY = 'inventorySort';
+
+    function parseSortValue(value) {
+        const parts = String(value || 'name:asc').split(':');
+        return {
+            column: parts[0] || 'name',
+            direction: String(parts[1] || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc',
+        };
+    }
+
+    function formatSortValue(column, direction) {
+        return `${column}:${direction}`;
+    }
+
+    function syncSortFilters(value) {
+        if (sortFilter) sortFilter.value = value;
+        if (sortFilterDesktop) sortFilterDesktop.value = value;
+    }
+
+    function syncSortDropdownFromState() {
+        if (sortState.column === 'name' || sortState.column === 'updated_at') {
+            syncSortFilters(formatSortValue(sortState.column, sortState.direction));
+        }
+    }
+
+    function applySortFromSelect(value) {
+        const parsed = parseSortValue(value);
+        sortState.column = parsed.column;
+        sortState.direction = parsed.direction;
+        syncSortFilters(value);
+        try {
+            sessionStorage.setItem(SORT_STORAGE_KEY, value);
+        } catch (e) {}
+        scheduleInventoryReload(1);
+    }
+
+    function loadSortPreference() {
+        let value = 'name:asc';
+        try {
+            const saved = sessionStorage.getItem(SORT_STORAGE_KEY);
+            if (saved) {
+                value = saved;
+            }
+        } catch (e) {}
+        const parsed = parseSortValue(value);
+        sortState.column = parsed.column;
+        sortState.direction = parsed.direction;
+        syncSortFilters(value);
+    }
+
+    window.getInventorySortParams = function () {
+        return {
+            sort_col: sortState.column,
+            sort_dir: sortState.direction.toUpperCase(),
+        };
+    };
+
     const searchInput = document.getElementById('searchInput');
     const searchInputDesktop = document.getElementById('searchInputDesktop');
     const categoryFilter = document.getElementById('categoryFilter');
@@ -174,6 +233,7 @@
             sortState.column = nextColumn;
             sortState.direction = isNumeric ? 'desc' : 'asc';
         }
+        syncSortDropdownFromState();
         loadInventoryPage(1);
     };
 
@@ -242,6 +302,8 @@
     if (searchInputDesktop) searchInputDesktop.addEventListener('input', handleSearchInput);
     if (categoryFilter) categoryFilter.addEventListener('change', handleCategoryFilter);
     if (categoryFilterDesktop) categoryFilterDesktop.addEventListener('change', handleCategoryFilter);
+    if (sortFilter) sortFilter.addEventListener('change', (e) => applySortFromSelect(e.target.value));
+    if (sortFilterDesktop) sortFilterDesktop.addEventListener('change', (e) => applySortFromSelect(e.target.value));
     if (viewAllMobile) viewAllMobile.addEventListener('click', handleViewAll);
     if (viewAllDesktop) viewAllDesktop.addEventListener('click', handleViewAll);
 
@@ -279,5 +341,6 @@
     };
 
     loadCurrentPage();
+    loadSortPreference();
     loadInventoryPage(currentPage);
 })();

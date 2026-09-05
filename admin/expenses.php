@@ -25,6 +25,7 @@ $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $userDb = new PDO('sqlite:../user.db');
 $userDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 require_once __DIR__ . '/../cashier_helper.php';
+require_once __DIR__ . '/../terminal_helper.php';
 
 $expenseChargeUsers = [];
 try {
@@ -503,6 +504,9 @@ $expenseCategories = [
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">
                                                     Charged To
                                                 </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">
+                                                    Terminal
+                                                </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(3)">
                                                     Amount <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
@@ -512,7 +516,7 @@ $expenseCategories = [
                                         <tbody id="expensesBody" class="divide-y divide-gray-200 dark:divide-gray-700">
                                             <?php if (empty($expenses)): ?>
                                                 <tr>
-                                                    <td colspan="8" class="px-6 py-12 text-center">
+                                                    <td colspan="9" class="px-6 py-12 text-center">
                                                         <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                                         <p class="text-gray-500 text-lg">No expenses found. Add your first expense.</p>
                                                     </td>
@@ -557,6 +561,12 @@ $expenseCategories = [
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800 dark:text-gray-200">
                                                             <?= htmlspecialchars(resolveToUsername($expense['cashier_id'] ?? '', $userDb)) ?>
+                                                        </td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
+                                                            <span class="inline-flex items-center gap-1">
+                                                                <i data-lucide="monitor" class="w-3 h-3"></i>
+                                                                <?= htmlspecialchars(formatTerminalLabel($expense['terminal_name'] ?? null, $expense['terminal_mac'] ?? null)) ?>
+                                                            </span>
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-red-600">
                                                             -N$<?= number_format($expense['amount'], 2) ?>
@@ -984,14 +994,18 @@ $expenseCategories = [
         }
         
         function exportToCSV() {
-            const rows = [['ID', 'Date', 'Description', 'Category', 'Amount']];
+            const rows = [['ID', 'Date', 'Description', 'Category', 'Charged To', 'Terminal', 'Amount']];
             
             filteredRows.forEach(row => {
+                const chargedTo = row.cells[5].textContent.trim();
+                const terminal = row.cells[6].textContent.trim();
                 rows.push([
                     row.dataset.id,
                     row.dataset.date,
                     row.dataset.description,
                     row.dataset.category,
+                    chargedTo,
+                    terminal,
                     row.dataset.amount
                 ]);
             });

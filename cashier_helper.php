@@ -107,6 +107,34 @@ function requireApiSession(array $roles = []): void {
 }
 
 /**
+ * Whether the current session role is in the allowed list (case-insensitive).
+ *
+ * @param string[] $roles
+ */
+function apiSessionHasRole(array $roles): bool {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $role = strtolower(trim((string) ($_SESSION['role'] ?? '')));
+    $allowed = array_map(static function ($r) {
+        return strtolower(trim((string) $r));
+    }, $roles);
+
+    return in_array($role, $allowed, true);
+}
+
+/**
+ * Send a JSON 403 response and exit.
+ */
+function denyApiForbidden(string $message = 'Forbidden'): void {
+    http_response_code(403);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'error' => $message, 'message' => $message]);
+    exit();
+}
+
+/**
  * Convert a cashier_id (username or ID) to username
  * Useful for display and reporting
  * 

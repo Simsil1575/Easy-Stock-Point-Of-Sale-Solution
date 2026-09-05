@@ -21,6 +21,7 @@ if ($activationStatus == 0) {
 // Database connection
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+require_once __DIR__ . '/../terminal_helper.php';
 
 // Create cash_transactions table if it doesn't exist
 $db->exec("CREATE TABLE IF NOT EXISTS cash_transactions (
@@ -487,6 +488,9 @@ $expenseCategories = [
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">
                                                     Category
                                                 </th>
+                                                <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase">
+                                                    Terminal
+                                                </th>
                                                 <th scope="col" class="px-6 py-3 text-start text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600" onclick="sortTable(3)">
                                                     Amount <i data-lucide="arrow-up-down" class="w-3 h-3 inline-block ml-1"></i>
                                                 </th>
@@ -496,7 +500,7 @@ $expenseCategories = [
                                         <tbody id="expensesBody" class="divide-y divide-gray-200 dark:divide-gray-700">
                                             <?php if (empty($expenses)): ?>
                                                 <tr>
-                                                    <td colspan="7" class="px-6 py-12 text-center">
+                                                    <td colspan="8" class="px-6 py-12 text-center">
                                                         <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                                         <p class="text-gray-500 text-lg">No expenses found. Add your first expense.</p>
                                                     </td>
@@ -537,6 +541,12 @@ $expenseCategories = [
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm">
                                                             <span class="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">
                                                                 <?= htmlspecialchars($category) ?>
+                                                            </span>
+                                                        </td>
+                                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
+                                                            <span class="inline-flex items-center gap-1">
+                                                                <i data-lucide="monitor" class="w-3 h-3"></i>
+                                                                <?= htmlspecialchars(formatTerminalLabel($expense['terminal_name'] ?? null, $expense['terminal_mac'] ?? null)) ?>
                                                             </span>
                                                         </td>
                                                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-red-600">
@@ -952,14 +962,16 @@ $expenseCategories = [
         }
         
         function exportToCSV() {
-            const rows = [['ID', 'Date', 'Description', 'Category', 'Amount']];
+            const rows = [['ID', 'Date', 'Description', 'Category', 'Terminal', 'Amount']];
             
             filteredRows.forEach(row => {
+                const terminal = row.cells[5].textContent.trim();
                 rows.push([
                     row.dataset.id,
                     row.dataset.date,
                     row.dataset.description,
                     row.dataset.category,
+                    terminal,
                     row.dataset.amount
                 ]);
             });

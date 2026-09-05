@@ -14,8 +14,12 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_once __DIR__ . '/../ensure_stock_changes_username.php';
+    require_once __DIR__ . '/../ensure_product_report_schema.php';
+    require_once __DIR__ . '/../ensure_product_updated_at_schema.php';
     $db = new SQLite3('../pos.db');
     ensureStockChangesUsernameColumn($db);
+    ensureProductReportSchemaSQLite3($db);
+    ensureProductUpdatedAtSchemaSQLite3($db);
     
     $name = $_POST['name'];
     $quantity = $_POST['quantity'];
@@ -27,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $expiry_date = $_POST['expiry_date'];
     $barcode = $_POST['barcode'];
     $category = $_POST['category'];
+    $exclude_from_reports = isset($_POST['exclude_from_reports']) ? 1 : 0;
     
     // Check if product with same name already exists
     $check_stmt = $db->prepare("SELECT COUNT(*) as count FROM products WHERE name = :name");
@@ -65,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $image_url = '../props/default.png';
     }
 
-    $stmt = $db->prepare("INSERT INTO products (name, quantity, price, buying_price, image_url, restock_level, capacity, expiry_date, barcode, category) VALUES (:name, :quantity, :price, :buying_price, :image_url, :restock_level, :capacity, :expiry_date, :barcode, :category)");
+    $stmt = $db->prepare("INSERT INTO products (name, quantity, price, buying_price, image_url, restock_level, capacity, expiry_date, barcode, category, exclude_from_reports, updated_at) VALUES (:name, :quantity, :price, :buying_price, :image_url, :restock_level, :capacity, :expiry_date, :barcode, :category, :exclude_from_reports, :updated_at)");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':quantity', $quantity, SQLITE3_INTEGER);
     $stmt->bindValue(':price', $price, SQLITE3_FLOAT);
@@ -76,6 +81,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->bindValue(':expiry_date', $expiry_date, SQLITE3_TEXT);
     $stmt->bindValue(':barcode', $barcode, SQLITE3_TEXT);
     $stmt->bindValue(':category', $category, SQLITE3_TEXT);
+    $stmt->bindValue(':exclude_from_reports', $exclude_from_reports, SQLITE3_INTEGER);
+    $stmt->bindValue(':updated_at', productUpdatedAtNow(), SQLITE3_TEXT);
     $stmt->execute();
 
     // Log the initial stock addition
@@ -390,6 +397,14 @@ $prefillCategory = trim((string) ($_GET['category'] ?? ''));
                                         }
                                         ?>
                                     </datalist>
+                                </div>
+
+                                <div class="flex items-center">
+                                    <label for="exclude_from_reports" class="inline-flex items-center gap-2 text-sm font-medium text-gray-700 cursor-pointer">
+                                        <input type="checkbox" name="exclude_from_reports" id="exclude_from_reports" value="1"
+                                            class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                                        Not a line item
+                                    </label>
                                 </div>
                             </div>
 

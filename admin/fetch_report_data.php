@@ -36,6 +36,12 @@ if ($db->errorCode()) {
 
 require_once __DIR__ . '/../business_day_helper.php';
 require_once __DIR__ . '/../cash_transactions_totals_helper.php';
+require_once __DIR__ . '/../ensure_product_report_schema.php';
+ensureProductReportSchema($db);
+
+$reportLineItemOrderItems = reportLineItemWhereInclude('order_items.product_name');
+$reportLineItemCreditItems = reportLineItemWhereInclude('credit_sale_items.product_name');
+$reportLineItemT = reportLineItemWhereInclude('t.product_name');
 
 $bdCtx = bdLoadClosingContext(__DIR__ . '/../info.db');
 $closingTime = $bdCtx['closing_time'];
@@ -470,6 +476,7 @@ $topProductsQuery = $db->prepare("
         AND cs.created_at < :businessDayEnd
     ) t
     LEFT JOIN products p ON t.product_name = p.name
+    WHERE {$reportLineItemT}
     GROUP BY t.product_name
     ORDER BY total_qty DESC
 ");

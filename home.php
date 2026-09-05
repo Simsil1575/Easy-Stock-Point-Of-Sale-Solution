@@ -3927,10 +3927,22 @@ if (!$businessInfo) {
                         confirmButtonColor: '#0d9488'
                     });
                 } else {
-                    Swal.fire({ icon: 'info', title: 'Change', html: `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p>`, confirmButtonColor: '#0d9488' });
+                    const errMsg = (result && result.message) ? result.message : 'Could not open cash drawer. Check printer port in Settings.';
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Change',
+                        html: `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p><p class="text-sm text-red-600 mt-2">${errMsg}</p>`,
+                        confirmButtonColor: '#0d9488'
+                    });
                 }
-            }).catch(function() {
-                Swal.fire({ icon: 'info', title: 'Change', html: `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p>`, confirmButtonColor: '#0d9488' });
+            }).catch(function(err) {
+                const errMsg = (err && err.message) ? err.message : 'Could not open cash drawer.';
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Change',
+                    html: `<p class="text-lg">Give change: <strong class="text-teal-600">N$${changeAmount.toFixed(2)}</strong></p><p class="text-sm text-red-600 mt-2">${errMsg}</p>`,
+                    confirmButtonColor: '#0d9488'
+                });
             });
         }
 

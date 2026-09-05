@@ -26,7 +26,9 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 $db = new PDO('sqlite:../pos.db');
 $userDb = new PDO('sqlite:../user.db');
 require_once __DIR__ . '/../ensure_stock_changes_username.php';
+require_once __DIR__ . '/../ensure_product_report_schema.php';
 ensureStockChangesUsernameColumn($db);
+ensureProductReportSchema($db);
 
 // Get user email from user database
 $userEmail = '';
@@ -103,10 +105,12 @@ function revertStockTakingSubmission($db, $stockType, $category = '') {
     $actionName = $stockType === 'opening' ? 'Opening Stock Adjustment' : 'Closing Stock Adjustment';
 
     if ($category !== '') {
-        $productStmt = $db->prepare("SELECT id FROM products WHERE category = ?");
+        $lineItemWhere = reportProductWhereInclude();
+        $productStmt = $db->prepare("SELECT id FROM products WHERE category = ? AND {$lineItemWhere}");
         $productStmt->execute([$category]);
     } else {
-        $productStmt = $db->query("SELECT id FROM products");
+        $lineItemWhere = reportProductWhereInclude();
+        $productStmt = $db->query("SELECT id FROM products WHERE {$lineItemWhere}");
     }
     $productIds = $productStmt->fetchAll(PDO::FETCH_COLUMN);
 
@@ -267,7 +271,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             foreach ($stockTakingData['items'] as $item) {
                 if (!empty($item['product_id']) && isset($item['actual_quantity'])) {
-                    $productId = $item['product_id'];
+                    $productId = (int) $item['product_id'];
+                    if (!productIsLineItemById($db, $productId)) {
+                        continue;
+                    }
                     $physicalQuantity = floatval($item['actual_quantity']);
                     
                     // Get opening stock for today
@@ -582,11 +589,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdf->AddPage();
                     
                     // Get current inventory data after opening stock update
+                    $lineItemWhere = reportProductWhereInclude();
                     $inventoryStmt = $db->prepare("
                         SELECT 
                             id, name, quantity, price
                         FROM products
-                        WHERE CAST(quantity AS INTEGER) > 0
+                        WHERE CAST(quantity AS INTEGER) > 0 AND {$lineItemWhere}
                         ORDER BY name ASC
                     ");
                     $inventoryStmt->execute();

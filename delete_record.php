@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/cashier_helper.php';
-requireApiSession(['admin', 'manager']);
+requireApiSession();
 
 // Check activation status
 $pdo = new PDO('sqlite:active.db');
@@ -11,15 +11,15 @@ if ($activationStatus == 0) {
 }
 
 // Database connection
-$db = new PDO('sqlite:pos.db');
-$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-configureSqlitePdo($db);
-
 require_once __DIR__ . '/void_transaction_helper.php';
 require_once __DIR__ . '/manager_pin_helper.php';
 require_once __DIR__ . '/laybye_order_helper.php';
 require_once __DIR__ . '/cashback_accounting_helper.php';
 require_once __DIR__ . '/recipe_stock_helper.php';
+
+$db = new PDO('sqlite:pos.db');
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+configureSqlitePdo($db);
 
 header('Content-Type: application/json');
 
@@ -91,6 +91,9 @@ try {
             break;
 
         case 'daily':
+            if (!apiSessionHasRole(['admin', 'manager'])) {
+                denyApiForbidden('Admin or manager access required.');
+            }
             // Delete all records for a specific date
             $db->beginTransaction();
             
@@ -172,6 +175,9 @@ try {
             break;
 
         case 'product':
+            if (!apiSessionHasRole(['admin', 'manager'])) {
+                denyApiForbidden('Admin or manager access required.');
+            }
             // Delete all records for a specific product
             $db->beginTransaction();
             

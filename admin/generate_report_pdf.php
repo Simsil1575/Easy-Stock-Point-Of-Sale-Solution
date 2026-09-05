@@ -62,6 +62,15 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+require_once __DIR__ . '/../ensure_product_report_schema.php';
+ensureProductReportSchema($db);
+
+$reportLineItemCombined = reportLineItemWhereInclude('combined.product_name');
+$reportLineItemOi = reportLineItemWhereInclude('oi.product_name');
+$reportLineItemCsi = reportLineItemWhereInclude('csi.product_name');
+$reportProductWhere = reportProductWhereInclude();
+$reportProductWhereP = reportProductWhereInclude('p');
+
 require_once __DIR__ . '/../report_amount_override_helper.php';
 $reportScope = raoBuildReportScope(
     $reportType,
@@ -677,7 +686,7 @@ switch ($reportType) {
         $productsQuery = $db->query("
             SELECT id, name, barcode, price, buying_price, quantity, category, restock_level
             FROM products
-            WHERE 1=1 $categoryCondition
+            WHERE {$reportProductWhere} $categoryCondition
             ORDER BY name ASC
         ");
         $reportData = [
@@ -713,7 +722,7 @@ switch ($reportType) {
                 WHERE ($creditWhereClause)
             ) combined
             LEFT JOIN products p ON combined.product_name = p.name
-            WHERE 1=1 $categoryCondition
+            WHERE {$reportLineItemCombined} $categoryCondition
             GROUP BY combined.product_name
             ORDER BY total_quantity DESC
         ");
@@ -1123,10 +1132,11 @@ switch ($reportType) {
         
     case 'current_stock':
         // Get current stock
-        $categoryCondition = $category ? " WHERE category = " . $db->quote($category) : "";
+        $categoryCondition = $category ? " AND category = " . $db->quote($category) : "";
         $stockQuery = $db->query("
             SELECT id, name, quantity, price, buying_price, restock_level, category, barcode
-            FROM products $categoryCondition
+            FROM products
+            WHERE {$reportProductWhere} $categoryCondition
             ORDER BY name ASC
         ");
         $products = $stockQuery->fetchAll(PDO::FETCH_ASSOC);
@@ -1159,6 +1169,7 @@ switch ($reportType) {
             FROM stock_changes sc
             JOIN products p ON sc.product_id = p.id
             WHERE sc.changed_at >= :start AND sc.changed_at <= :end
+            AND {$reportProductWhereP}
             ORDER BY sc.changed_at DESC
         ");
         $movementQuery->execute([':start' => $startDateTime, ':end' => $endDateTime]);
@@ -1192,7 +1203,8 @@ switch ($reportType) {
             SELECT id, name, quantity, restock_level, price, category,
                    (restock_level - quantity) as shortage
             FROM products
-            WHERE quantity <= restock_level AND restock_level > 0 $categoryCondition
+            WHERE quantity <= restock_level AND restock_level > 0
+            AND {$reportProductWhere} $categoryCondition
             ORDER BY shortage DESC
         ");
         $lowStock = $lowStockQuery->fetchAll(PDO::FETCH_ASSOC);
@@ -1212,6 +1224,7 @@ switch ($reportType) {
             FROM daily_stock_summary dss
             JOIN products p ON dss.product_id = p.id
             WHERE dss.date BETWEEN :start AND :end
+            AND {$reportProductWhereP}
             ORDER BY dss.date DESC, p.name ASC
         ");
         $varianceQuery->execute([':start' => $startDate, ':end' => $endDate]);
@@ -1454,7 +1467,7 @@ switch ($reportType) {
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
             LEFT JOIN products p ON oi.product_name = p.name
-            WHERE ($ordersWhereClause)
+            WHERE ($ordersWhereClause) AND {$reportLineItemOi}
         ");
         $cogsQuery->execute();
         $cogs = $cogsQuery->fetchColumn();
@@ -1465,7 +1478,7 @@ switch ($reportType) {
             FROM credit_sale_items csi
             JOIN credit_sales cs ON csi.sale_id = cs.id
             LEFT JOIN products p ON csi.product_name = p.name
-            WHERE ($creditWhereClause)
+            WHERE ($creditWhereClause) AND {$reportLineItemCsi}
         ");
         $creditCogsQuery->execute();
         $creditCogs = $creditCogsQuery->fetchColumn();

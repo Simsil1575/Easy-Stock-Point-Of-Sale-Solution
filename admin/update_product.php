@@ -27,9 +27,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
         require_once __DIR__ . '/../recipe_stock_helper.php';
         require_once __DIR__ . '/../ensure_stock_changes_username.php';
+        require_once __DIR__ . '/../ensure_product_updated_at_schema.php';
         $db = new SQLite3('../pos.db');
         configureSqlite3($db);
         ensureStockChangesUsernameColumn($db);
+        ensureProductUpdatedAtSchemaSQLite3($db);
         
         if (!$db) {
             ob_clean();
@@ -130,7 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     
         // Prepare the update statement (column whitelisted above)
-        $stmt = $db->prepare("UPDATE products SET {$safeColumn} = :value WHERE id = :id");
+        $stmt = $db->prepare("UPDATE products SET {$safeColumn} = :value, updated_at = :updated_at WHERE id = :id");
         if ($safeColumn === 'buying_price') {
             $raw = $data['value'];
             if ($raw === null || (is_string($raw) && trim($raw) === '')) {
@@ -146,6 +148,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->bindValue(':value', $data['value'], $dataType);
         }
         $stmt->bindValue(':id', $data['id'], SQLITE3_INTEGER);
+        $stmt->bindValue(':updated_at', productUpdatedAtNow(), SQLITE3_TEXT);
         
         if ($stmt->execute()) {
             $db->exec('COMMIT');

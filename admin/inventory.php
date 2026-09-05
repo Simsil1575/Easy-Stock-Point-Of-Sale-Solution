@@ -19,6 +19,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 $db = new PDO('sqlite:../pos.db');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 date_default_timezone_set('Africa/Harare');
+ensureProductUpdatedAtSchema($db);
 
 $stockAlerts = inventoryListFetchAlerts($db);
 $lowStock = $stockAlerts['lowStock'];
@@ -829,6 +830,12 @@ $categories = inventoryListFetchCategories($db);
                                 </div>
                             </div>
                             <div class="flex gap-2">
+                                <select id="sortFilter" class="flex-1 px-2 py-1.5 border rounded text-[10px] bg-transparent">
+                                    <option value="name:asc">Alphabetical (A–Z)</option>
+                                    <option value="name:desc">Alphabetical (Z–A)</option>
+                                    <option value="updated_at:desc">Date modified (newest)</option>
+                                    <option value="updated_at:asc">Date modified (oldest)</option>
+                                </select>
                                 <select id="categoryFilter" class="flex-1 px-2 py-1.5 border rounded text-[10px] bg-transparent">
                                     <option value="">All Categories</option>
                                     <?php foreach ($categories as $category): ?>
@@ -857,6 +864,12 @@ $categories = inventoryListFetchCategories($db);
                                     <input type="number" id="pageInputDesktop" min="1" class="w-16 sm:w-20 px-2 py-1 border rounded text-xs sm:text-sm" placeholder="Page">
                                 </div>
                                 <div class="flex items-center gap-2">
+                                    <select id="sortFilterDesktop" class="px-2 py-1 border rounded text-xs sm:text-sm w-full sm:w-auto">
+                                        <option value="name:asc">Alphabetical (A–Z)</option>
+                                        <option value="name:desc">Alphabetical (Z–A)</option>
+                                        <option value="updated_at:desc">Date modified (newest)</option>
+                                        <option value="updated_at:asc">Date modified (oldest)</option>
+                                    </select>
                                     <select id="categoryFilterDesktop" class="px-2 py-1 border rounded text-xs sm:text-sm w-full sm:w-auto">
                                         <option value="">All Categories</option>
                                         <?php foreach ($categories as $category): ?>
@@ -892,7 +905,7 @@ $categories = inventoryListFetchCategories($db);
         </div>
     </div>
 
-    <script src="../js/inventory-table.js"></script>
+    <script src="../js/inventory-table.js?v=4"></script>
     <script>
         const tableBody = document.getElementById('tableBody');
 
@@ -1401,13 +1414,16 @@ $categories = inventoryListFetchCategories($db);
         btn.disabled = true;
 
         try {
+            const sortParams = (typeof window.getInventorySortParams === 'function')
+                ? window.getInventorySortParams()
+                : { sort_col: 'name', sort_dir: 'ASC' };
             const params = new URLSearchParams({
                 view_all: '1',
                 per_page: '10000',
                 search: '',
                 category: '',
-                sort_col: 'name',
-                sort_dir: 'ASC',
+                sort_col: sortParams.sort_col,
+                sort_dir: sortParams.sort_dir,
             });
             const response = await fetch('inventory_list.php?' + params.toString());
             const data = await response.json();

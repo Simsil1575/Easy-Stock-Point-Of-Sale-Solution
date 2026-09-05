@@ -28,9 +28,11 @@ require_once __DIR__ . '/../recipe_stock_helper.php';
 require_once __DIR__ . '/../purchase_order_lib.php';
 require_once __DIR__ . '/../ensure_purchase_order_schema.php';
 require_once __DIR__ . '/../ensure_stock_changes_username.php';
+require_once __DIR__ . '/../ensure_product_report_schema.php';
 configureSqlitePdo($db);
 ensurePurchaseOrderSchema($db);
 ensureStockChangesUsernameColumn($db);
+ensureProductReportSchema($db);
 $userDb = new PDO('sqlite:../user.db');
 
 // Get user email from user database
@@ -143,7 +145,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $quantity = floatval($item['quantity'] ?? 0);
                 // Positive qty = receive/restock; negative qty = stock transfer out
                 if (!empty($item['product_id']) && abs($quantity) > 0.00001) {
-                    $productId = $item['product_id'];
+                    $productId = (int) $item['product_id'];
+                    if (!productIsLineItemById($db, $productId)) {
+                        continue;
+                    }
                     
                     // Get current product info
                     $stmt = $db->prepare("SELECT name, quantity, price, buying_price FROM products WHERE id = ?");

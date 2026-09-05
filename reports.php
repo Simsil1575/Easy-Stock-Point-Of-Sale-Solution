@@ -25,6 +25,7 @@ require_once __DIR__ . '/invoice_transactions_helper.php';
 require_once __DIR__ . '/medical_aid_transactions_helper.php';
 require_once __DIR__ . '/cash_transactions_totals_helper.php';
 require_once __DIR__ . '/ensure_laybye_schema.php';
+require_once __DIR__ . '/ensure_product_report_schema.php';
 
 $bdCtx = bdLoadClosingContext(__DIR__ . '/info.db');
 $closingTime = $bdCtx['closing_time'];
@@ -37,7 +38,21 @@ if ($db->errorCode()) {
     die("Connection failed: " . $db->errorInfo()[2]);
 }
 ensureLaybyeSchema($db);
+ensureProductReportSchema($db);
 medicalAidBootstrap();
+
+$use_qz_tray = 0;
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists
+}
+try {
+    $qzSetting = $db->query("SELECT use_qz_tray FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $use_qz_tray = (int) ($qzSetting['use_qz_tray'] ?? 0);
+} catch (PDOException $e) {
+    $use_qz_tray = 0;
+}
 
 // Ensure tab tips column exists (ignore if already added)
 try {
@@ -308,6 +323,10 @@ $cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount + $invoiceCashPayme
 // Total revenue includes all sales regardless of payment method (only for selected date)
 $totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments + $medicalAidUnpaidTotal + $medicalAidPaymentsTotal - $partialPaidTotal - $eftCreditSalesTotal - $cashTillDeductions;
 
+$reportLineItemOi = reportLineItemWhereInclude('oi.product_name');
+$reportLineItemCsi = reportLineItemWhereInclude('csi.product_name');
+$reportLineItemT = reportLineItemWhereInclude('t.product_name');
+
 // Fetch top selling products with business day logic
 $topProductsQuery = $db->prepare("
     SELECT 
@@ -350,7 +369,7 @@ $topProductsQuery = $db->prepare("
         JOIN credit_sales cs ON credit_sale_items.sale_id = cs.id
     ) t
     LEFT JOIN products p ON t.product_name = p.name
-    WHERE ($bdWhereTCreated)
+    WHERE ($bdWhereTCreated) AND {$reportLineItemT}
     GROUP BY t.product_name
     ORDER BY total_qty DESC
 ");
@@ -616,6 +635,7 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
     <link href="src/output.css" rel="stylesheet">
     <link rel="stylesheet" href="src/font-awesome/css/all.min.css">
     <script src="src/jquery-3.6.0.min.js"></script>
+    <?php if (!empty($use_qz_tray)): ?><script src="receipt/js/qz-tray.js"></script><?php endif; ?>
     <!-- Load sendToPrinter function from receipt.php -->
     <script src="receipt.php?js=true"></script>
 
@@ -1520,13 +1540,20 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
                                     </svg>
                                 </a>
                                 <?php else: ?>
-                                <button type="button" onclick="reprintReceipt('<?= $row['id'] ?>', '<?= $row['sale_type'] ?>', '<?= $row['payment_status'] ?>')" 
+                                <?php if (!in_array($row['sale_type'] ?? '', ['expense', 'refund'], true)): ?>
+                                <?php
+                                $reprintSaleType = (($row['sale_type'] === 'cash' || $row['sale_type'] === 'eft' || $row['sale_type'] === 'cash_back') && empty($row['creditor_name']))
+                                    ? $row['sale_type']
+                                    : 'credit';
+                                ?>
+                                <button type="button" onclick="reprintReceipt('<?= $row['id'] ?>', '<?= htmlspecialchars($reprintSaleType, ENT_QUOTES) ?>', '<?= htmlspecialchars((string) ($row['payment_status'] ?? ''), ENT_QUOTES) ?>')" 
                                         class="inline-flex items-center justify-center w-8 h-8 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm border border-gray-200" 
                                         title="Reprint Receipt">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
                                     </svg>
                                 </button>
+                                <?php endif; ?>
                                 <?php endif; ?>
                                 <?php if (!empty($row['laybye_id'])): ?>
                                 <button type="button" onclick="reprintLaybyeBalance(<?= (int) $row['laybye_id'] ?>)" 

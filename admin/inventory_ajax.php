@@ -4,12 +4,14 @@ ob_start();
 date_default_timezone_set('Africa/Harare');
 
 require_once __DIR__ . '/../cashier_helper.php';
+require_once __DIR__ . '/../includes/inventory_list_lib.php';
 requireApiSession(['admin', 'manager']);
 
 try {
     // Database connection
     $db = new PDO('sqlite:../pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    ensureProductUpdatedAtSchema($db);
 
     $parseOptionalBuyingPrice = static function (array $post): ?float {
         $raw = isset($post['buying_price']) ? trim((string)$post['buying_price']) : '';
@@ -117,9 +119,9 @@ try {
                         $image_name = $current_image_url;
                     }
                     
-                    $sql = "UPDATE products SET name=:name, quantity=:quantity, price=:price, buying_price=:buying_price, image_url=:image_url WHERE id=:id";
+                    $sql = "UPDATE products SET name=:name, quantity=:quantity, price=:price, buying_price=:buying_price, image_url=:image_url, updated_at=:updated_at WHERE id=:id";
                     $stmt = $db->prepare($sql);
-                    if ($stmt->execute([':name' => $name, ':quantity' => $quantity, ':price' => $price, ':buying_price' => $buying_price, ':image_url' => $image_name, ':id' => $id])) {
+                    if ($stmt->execute([':name' => $name, ':quantity' => $quantity, ':price' => $price, ':buying_price' => $buying_price, ':image_url' => $image_name, ':updated_at' => productUpdatedAtNow(), ':id' => $id])) {
                         $response = ['status' => 'success', 'message' => 'Product updated successfully'];
                     } else {
                         $response = ['status' => 'error', 'message' => 'Error updating product: ' . $stmt->errorInfo()[2]];

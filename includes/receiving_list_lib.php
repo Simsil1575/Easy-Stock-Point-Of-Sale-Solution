@@ -1,13 +1,17 @@
 <?php
 
+require_once __DIR__ . '/../ensure_product_report_schema.php';
+
 /**
  * @return list<string>
  */
 function receivingListFetchCategories(PDO $db): array
 {
+    ensureProductReportSchema($db);
+    $lineItemWhere = reportProductWhereInclude();
     $categories = [];
     $stmt = $db->query(
-        "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' ORDER BY category COLLATE NOCASE ASC"
+        "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND {$lineItemWhere} ORDER BY category COLLATE NOCASE ASC"
     );
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $categories[] = (string) $row['category'];
@@ -75,6 +79,8 @@ function receivingListBuildRowHtml(array $row): string
  */
 function receivingListFetchPage(PDO $db, array $params): array
 {
+    ensureProductReportSchema($db);
+    $lineItemWhere = reportProductWhereInclude();
     $page = max(1, (int) ($params['page'] ?? 1));
     $viewAll = !empty($params['view_all']);
     $perPage = (int) ($params['per_page'] ?? 6);
@@ -97,7 +103,7 @@ function receivingListFetchPage(PDO $db, array $params): array
     $sortCol = $allowedSort[$sortKey] ?? $allowedSort['name'];
     $sortDir = strtoupper((string) ($params['sort_dir'] ?? 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
 
-    $where = ['1=1'];
+    $where = [$lineItemWhere];
     $bind = [];
     if ($search !== '') {
         $where[] = 'name LIKE :search';

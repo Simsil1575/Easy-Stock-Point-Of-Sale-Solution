@@ -39,7 +39,9 @@ if ($db->errorCode()) {
 medicalAidBootstrap();
 
 require_once __DIR__ . '/../ensure_laybye_schema.php';
+require_once __DIR__ . '/../ensure_product_report_schema.php';
 ensureLaybyeSchema($db);
+ensureProductReportSchema($db);
 
 try {
     $db->exec("ALTER TABLE tab_payments ADD COLUMN tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0");
@@ -48,6 +50,19 @@ try {
 }
 
 ensureTerminalSchema($db);
+
+$use_qz_tray = 0;
+try {
+    $db->exec("ALTER TABLE product_settings ADD COLUMN use_qz_tray BOOLEAN NOT NULL DEFAULT 0");
+} catch (PDOException $e) {
+    // Column already exists
+}
+try {
+    $qzSetting = $db->query("SELECT use_qz_tray FROM product_settings LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $use_qz_tray = (int) ($qzSetting['use_qz_tray'] ?? 0);
+} catch (PDOException $e) {
+    $use_qz_tray = 0;
+}
 
 function reportsTxnCategory(array $row): string
 {
@@ -277,6 +292,10 @@ $cashSalesDisplayTotal = $cashSalesTotal + $paidCreditAmount + $invoiceCashPayme
 // Total revenue includes all sales regardless of payment method (only for selected date), minus expenses/cash back
 $totalCashOnHand = $cashSalesTotal + $creditTotal + $paidCreditAmount + $totalEftPayments + $medicalAidUnpaidTotal + $medicalAidPaymentsTotal - $partialPaidTotal - $eftCreditSalesTotal - $cashTillDeductions;
 
+$reportLineItemOi = reportLineItemWhereInclude('oi.product_name');
+$reportLineItemCsi = reportLineItemWhereInclude('csi.product_name');
+$reportLineItemT = reportLineItemWhereInclude('t.product_name');
+
 // Fetch top selling products with business day logic
 $topProductsQuery = $db->prepare("
     SELECT 
@@ -320,7 +339,7 @@ $topProductsQuery = $db->prepare("
         JOIN credit_sales cs ON credit_sale_items.sale_id = cs.id
     ) t
     LEFT JOIN products p ON t.product_name = p.name
-    WHERE ($bdWhereTCreated)
+    WHERE ($bdWhereTCreated) AND {$reportLineItemT}
     GROUP BY t.product_name
     ORDER BY total_qty DESC
 ");
@@ -566,7 +585,8 @@ $dailyBreakdown = $dailyBreakdownQuery->fetchAll(PDO::FETCH_ASSOC);
     <link href="../src/output.css" rel="stylesheet">
     <link rel="stylesheet" href="../src/font-awesome/css/all.min.css">
     <script src="../src/jquery-3.6.0.min.js"></script>
-
+    <?php if (!empty($use_qz_tray)): ?><script src="../receipt/js/qz-tray.js"></script><?php endif; ?>
+    <script src="../receipt.php?js=true"></script>
 
     <style>
         :root {

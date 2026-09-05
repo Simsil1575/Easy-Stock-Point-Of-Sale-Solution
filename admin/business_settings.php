@@ -12,6 +12,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 }
 
 require_once __DIR__ . '/../manager_pin_helper.php';
+require_once __DIR__ . '/../receipt_printer_helper.php';
 ?>
 
 <?php
@@ -1091,13 +1092,26 @@ try {
                                 <label for="printer_port" class="block text-sm font-medium text-gray-700">Printer Port</label>
                                 <select id="printer_port" name="printer_port" class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
                                     <?php
-                                    $ports = ['COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'LPT1', 'USB001', '/dev/usb/lp0'];
-                                    if (!in_array($printerPort, $ports)) {
-                                        $ports[] = $printerPort;
+                                    $ports = ['COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'LPT1'];
+                                    foreach (receipt_list_windows_printers() as $winPrinter) {
+                                        $label = $winPrinter['name'];
+                                        if ($winPrinter['port'] !== '') {
+                                            $label .= ' (' . $winPrinter['port'] . ')';
+                                        }
+                                        $ports[$winPrinter['name']] = $label;
+                                        if ($winPrinter['port'] !== '' && preg_match('/^USB\d+$/i', $winPrinter['port'])) {
+                                            $ports[$winPrinter['port']] = $winPrinter['port'] . ' -> ' . $winPrinter['name'];
+                                        }
                                     }
-                                    foreach ($ports as $port) {
-                                        $selected = ($port === $printerPort) ? 'selected' : '';
-                                        echo "<option value=\"$port\" $selected>$port</option>";
+                                    $ports['/dev/usb/lp0'] = '/dev/usb/lp0 (Linux)';
+                                    if (!array_key_exists($printerPort, $ports) && !in_array($printerPort, $ports, true)) {
+                                        $ports[$printerPort] = $printerPort;
+                                    }
+                                    foreach ($ports as $value => $label) {
+                                        $optionValue = is_int($value) ? $label : $value;
+                                        $optionLabel = is_int($value) ? $label : $label;
+                                        $selected = ($optionValue === $printerPort) ? 'selected' : '';
+                                        echo '<option value="' . htmlspecialchars($optionValue, ENT_QUOTES, 'UTF-8') . '" ' . $selected . '>' . htmlspecialchars($optionLabel, ENT_QUOTES, 'UTF-8') . '</option>';
                                     }
                                     ?>
                                 </select>

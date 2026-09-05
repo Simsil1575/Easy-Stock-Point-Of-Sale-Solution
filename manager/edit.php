@@ -15,11 +15,15 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['username']) || !isset($_SE
 
 require_once __DIR__ . '/../recipe_stock_helper.php';
 require_once __DIR__ . '/../ensure_stock_changes_username.php';
+require_once __DIR__ . '/../ensure_product_report_schema.php';
+require_once __DIR__ . '/../includes/inventory_list_lib.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $db = new SQLite3('../pos.db');
     configureSqlite3($db);
     ensureStockChangesUsernameColumn($db);
+    ensureProductReportSchemaSQLite3($db);
+    ensureProductUpdatedAtSchemaSQLite3($db);
 
     $id = $_POST['id'];
     $name = $_POST['name'];
@@ -31,6 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $capacity = $_POST['capacity'];
     $expiry_date = $_POST['expiry_date'];
     $barcode = $_POST['barcode'];
+    $exclude_from_reports = isset($_POST['exclude_from_reports']) ? 1 : 0;
     
     // Get old quantity before update
     $stmtSelect = $db->prepare("SELECT quantity FROM products WHERE id = :id");
@@ -96,7 +101,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         category = :category,
         discount = :discount,
         discount_start = :discount_start,
-        discount_end = :discount_end
+        discount_end = :discount_end,
+        exclude_from_reports = :exclude_from_reports,
+        updated_at = :updated_at
         WHERE id = :id");
     $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
@@ -116,6 +123,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->bindValue(':discount', $_POST['discount'], SQLITE3_FLOAT);
     $stmt->bindValue(':discount_start', $_POST['discount_start'], SQLITE3_TEXT);
     $stmt->bindValue(':discount_end', $_POST['discount_end'], SQLITE3_TEXT);
+    $stmt->bindValue(':exclude_from_reports', $exclude_from_reports, SQLITE3_INTEGER);
+    $stmt->bindValue(':updated_at', productUpdatedAtNow(), SQLITE3_TEXT);
     $stmt->execute();
 
     // Track stock changes if quantity was modified
@@ -146,6 +155,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 if (isset($_GET['id'])) {
     $db = new SQLite3('../pos.db');
     configureSqlite3($db);
+    ensureProductReportSchemaSQLite3($db);
+    ensureProductUpdatedAtSchemaSQLite3($db);
     $id = $_GET['id'];
     
     $stmt = $db->prepare("SELECT * FROM products WHERE id = :id");
@@ -488,11 +499,19 @@ if (isset($_GET['id'])) {
                                     <div>
                                         <label for="discount" class="block text-sm font-medium text-gray-700 mb-2">Discount (%)</label>
                                         <input type="number" name="discount" id="discount" min="0" max="100" step="0.01"
-                                            placeholder="Enter discount percentage"
+                                            placeholder="0"
                                             value="<?php echo $product['discount'] ?? 0; ?>"
                                             class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm 
                                             placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 
                                             focus:border-teal-500 sm:text-sm transition duration-150 ease-in-out">
+                                    </div>
+                                    <div class="md:col-span-3">
+                                        <label for="exclude_from_reports" class="inline-flex items-center gap-2 text-sm font-medium text-gray-700 cursor-pointer">
+                                            <input type="checkbox" name="exclude_from_reports" id="exclude_from_reports" value="1"
+                                                <?php echo !empty($product['exclude_from_reports']) ? 'checked' : ''; ?>
+                                                class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                                            Not a line item
+                                        </label>
                                     </div>
                                     <div id="discountStartField" class="<?php echo (!isset($product['discount']) || floatval($product['discount']) <= 0) ? 'hidden' : ''; ?>">
                                         <label for="discount_start" class="block text-sm font-medium text-gray-700 mb-2">Discount Start Date</label>

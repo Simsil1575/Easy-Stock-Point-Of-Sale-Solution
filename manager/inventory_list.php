@@ -15,6 +15,7 @@ require_once __DIR__ . '/../includes/inventory_list_lib.php';
 try {
     $db = new PDO('sqlite:' . __DIR__ . '/../pos.db');
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    ensureProductUpdatedAtSchema($db);
 
     $result = inventoryListFetchPage($db, [
         'page' => $_GET['page'] ?? 1,

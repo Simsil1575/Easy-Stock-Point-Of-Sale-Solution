@@ -11,14 +11,14 @@ if ($activationStatus == 0) {
 }
 
 // Database connection
-$db = new PDO('sqlite:../pos.db');
-$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-configureSqlitePdo($db);
-
 require_once __DIR__ . '/../void_transaction_helper.php';
 require_once __DIR__ . '/../manager_pin_helper.php';
 require_once __DIR__ . '/../cashback_accounting_helper.php';
 require_once __DIR__ . '/../recipe_stock_helper.php';
+
+$db = new PDO('sqlite:../pos.db');
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+configureSqlitePdo($db);
 
 header('Content-Type: application/json');
 
